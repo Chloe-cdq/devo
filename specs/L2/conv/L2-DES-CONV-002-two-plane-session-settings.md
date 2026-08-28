@@ -6,7 +6,7 @@ active_baseline: yes
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-08-02
+last_updated: 2026-08-25
 ---
 
 # L2-DES-CONV-002 — Two-Plane Session Settings
@@ -89,6 +89,8 @@ Each field declares the decision point at which a change becomes visible and the
 | reasoning effort | each model call | Same as model |
 | collaboration mode | each system-prompt construction (per model call) | The next model call carries the new mode's prompt and tool policy; already-executed tool calls are unaffected. **Implementation status (Phase 4): deferred** — mode drives the session-context/system-prompt build, which is captured once per turn today; live mode requires per-iteration prompt rebuild and lands as a follow-up slice. Mid-turn mode changes currently take effect from the next turn. |
 | effective context window (compaction limit) | each auto-compaction check | The next check evaluates against the new limit; past compactions are not undone |
+| memory recall | once at root-turn memory preparation, before the first model call | A change during an active turn takes effect next turn; the prepared memory snapshot is immutable for that turn and `applied_to_active_turn` is false. **Implementation status: not implemented.** |
+| memory contribution | when the background memory scanner evaluates a source session | The next eligibility scan reads the latest persisted value; it does not change an active turn and `applied_to_active_turn` is false. **Implementation status: not implemented.** |
 
 The effective context window has a **different durability target** than the other fields, and this is intentional: the value is persisted globally to the user's `config.toml` (`compaction_token_limit`), so it survives restarts and applies to every session. Each session applies it **clamped** to its own model: `resolved_compaction_limit(global, session_model)` caps the requested window at the model's `context_window` (e.g. requesting 500k against a 128k model yields the model's limit), because a session physically cannot hold more context than its model supports. The clamped value is then pushed live into the session ("hot apply"). The session does not persist its own clamped copy in the rollout; on restore it re-derives the clamped value from the global config and its model. The update also fans out to all other loaded sessions under the same rule (existing behavior, preserved).
 
@@ -166,9 +168,11 @@ Findings that shape Phase 1, recorded during implementation:
 | related-to | L2-DES-SAFETY-001 | 1 | specs/L2/safety/L2-DES-SAFETY-001-permission-system.md | Permission profile semantics consumed by the promise matrix. |
 | related-to | L2-DES-SAFETY-002 | 1 | specs/L2/safety/L2-DES-SAFETY-002-approval-mechanism.md | Approval cache invalidation interacts with epoch semantics. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | The field-level settings log extends the rollout data model. |
+| related-to | L2-DES-MEM-001 | 2 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture.md | Declares the decision points and mid-turn promises for memory recall and contribution settings. |
 
 ## Revision Notes
 
 | Revision | Date | Author | Change Type | Notes |
 |---:|---|---|---|---|
 | 1 | 2026-08-02 | Assistant | Initial | Initial draft. Status Approved by human 2026-08-02, including the canonical-alignment revision (DD-10), compaction semantics, and the permission/sandbox patch-interaction rule. |
+| 1 | 2026-08-25 | Human + Assistant | Refinement | Added the approved memory recall and contribution fields to the DD-6 promise matrix. |
