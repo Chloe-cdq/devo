@@ -583,6 +583,8 @@ fn inverse_rejects_prefixed_canonical_ids() {
                 mode: None,
                 sandbox_profile: None,
                 effective_context_window: None,
+                memory_recall: Default::default(),
+                memory_contribution: Default::default(),
             },
             git_info: None,
             preview: String::new(),

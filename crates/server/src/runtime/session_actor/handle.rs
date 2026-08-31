@@ -38,6 +38,7 @@ pub(crate) struct SessionHandle {
     tx: mpsc::Sender<SessionCommand>,
     max_turns: Option<u32>,
     state_change_gate: Arc<tokio::sync::Mutex<()>>,
+    metadata_update_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SessionHandle {
@@ -67,6 +68,7 @@ impl SessionHandle {
             tx,
             max_turns,
             state_change_gate: Arc::new(tokio::sync::Mutex::new(())),
+            metadata_update_gate: Arc::new(tokio::sync::Mutex::new(())),
         };
         tokio::spawn(super::actor_loop::run_session_actor(state, rx, runtime));
         handle
@@ -80,6 +82,11 @@ impl SessionHandle {
     /// admission, such as two-phase rollback commit and message edit.
     pub(crate) async fn lock_state_change(&self) -> tokio::sync::OwnedMutexGuard<()> {
         Arc::clone(&self.state_change_gate).lock_owned().await
+    }
+
+    /// Serializes metadata read/modify/write operations for one session.
+    pub(crate) async fn lock_metadata_update(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.metadata_update_gate).lock_owned().await
     }
 
     /// Non-blocking enqueue. Used by turn event streams so they never park on a
@@ -116,6 +123,50 @@ impl SessionHandle {
             return None;
         }
         reply_rx.await.ok()
+    }
+
+    pub(crate) async fn memory_settings(
+        &self,
+    ) -> Option<crate::memory::SessionMemorySettingsSnapshot> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::GetMemorySettings { reply: reply_tx })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok()
+    }
+
+    pub(crate) async fn update_memory_settings(
+        &self,
+        recall: Option<devo_protocol::native::session::MemorySetting>,
+        contribution: Option<devo_protocol::native::session::MemorySetting>,
+    ) -> Option<crate::memory::SessionMemorySettingsSnapshot> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::UpdateMemorySettings {
+                recall,
+                contribution,
+                reply: reply_tx,
+            })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok()
+    }
+
+    pub(crate) fn notify_memory_settings(
+        &self,
+        recall: Option<devo_protocol::native::session::MemorySetting>,
+        contribution: Option<devo_protocol::native::session::MemorySetting>,
+    ) -> bool {
+        self.try_send(SessionCommand::UpdateMemorySettings {
+            recall,
+            contribution,
+            reply: oneshot::channel().0,
+        })
     }
 
     pub(crate) async fn spawn_snapshot(&self) -> Option<SpawnSnapshot> {
