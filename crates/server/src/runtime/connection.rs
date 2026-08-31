@@ -328,6 +328,7 @@ impl ServerRuntime {
                 })
                 .expect("serialize runtime/ping response"),
             ),
+            "memory/status" => Some(self.handle_native_memory_status(id?, params).await),
             "model/list" => Some(self.handle_native_model_list(id?, params).await),
             "model/preferences/read" => {
                 Some(self.handle_native_model_preferences_read(id?, params).await)

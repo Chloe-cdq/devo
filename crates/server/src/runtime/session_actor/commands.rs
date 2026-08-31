@@ -32,6 +32,9 @@ pub(crate) enum SessionCommand {
     GetSummary {
         reply: oneshot::Sender<SessionMetadata>,
     },
+    GetMemorySettings {
+        reply: oneshot::Sender<crate::memory::SessionMemorySettingsSnapshot>,
+    },
     GetSpawnSnapshot {
         reply: oneshot::Sender<SpawnSnapshot>,
     },
@@ -156,6 +159,11 @@ pub(crate) enum SessionCommand {
         reasoning_effort_selection: Option<String>,
         collaboration_mode: Option<CollaborationMode>,
         reply: oneshot::Sender<SessionMetadata>,
+    },
+    UpdateMemorySettings {
+        recall: Option<devo_protocol::native::session::MemorySetting>,
+        contribution: Option<devo_protocol::native::session::MemorySetting>,
+        reply: oneshot::Sender<crate::memory::SessionMemorySettingsSnapshot>,
     },
     ApplyPermissionProfile {
         profile: devo_safety::RuntimePermissionProfile,
