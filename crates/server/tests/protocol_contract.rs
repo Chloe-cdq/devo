@@ -459,7 +459,9 @@ fn native_session_metadata_update_params_roundtrip() {
         "settings": {
             "permissionProfile": "fullAccess",
             "sandboxProfile": "workspace",
-            "reasoningEffort": "high"
+            "reasoningEffort": "high",
+            "memoryRecall": "off",
+            "memoryContribution": "on"
         }
     }))
     .expect("deserialize canonical params");
@@ -471,6 +473,14 @@ fn native_session_metadata_update_params_roundtrip() {
     );
     assert_eq!(settings.sandbox_profile.as_deref(), Some("workspace"));
     assert_eq!(settings.reasoning_effort, Some("high".to_string()));
+    assert_eq!(
+        settings.memory_recall,
+        Some(devo_protocol::native::session::MemorySetting::Off)
+    );
+    assert_eq!(
+        settings.memory_contribution,
+        Some(devo_protocol::native::session::MemorySetting::On)
+    );
     let roundtripped: SessionMetadataUpdateParams =
         serde_json::from_value(serde_json::to_value(&params).expect("serialize canonical params"))
             .expect("re-deserialize canonical params");
@@ -486,6 +496,14 @@ fn native_session_metadata_update_params_roundtrip() {
     assert_eq!(minimal.reasoning_effort, None);
     assert_eq!(minimal.mode, None);
     assert_eq!(minimal.effective_context_window, None);
+    assert_eq!(
+        minimal.memory_recall,
+        devo_protocol::native::session::MemorySetting::Inherit
+    );
+    assert_eq!(
+        minimal.memory_contribution,
+        devo_protocol::native::session::MemorySetting::Inherit
+    );
 }
 
 /// Trace: L2-DES-CONV-002, L2-DES-APP-008

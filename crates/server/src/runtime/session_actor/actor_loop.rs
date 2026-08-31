@@ -77,6 +77,12 @@ pub(super) async fn run_session_actor(
             SessionCommand::GetSummary { reply } => {
                 let _ = reply.send(state.summary.clone());
             }
+            SessionCommand::GetMemorySettings { reply } => {
+                let _ = reply.send(crate::memory::SessionMemorySettingsSnapshot {
+                    settings: state.memory_settings,
+                    version: state.memory_settings_version,
+                });
+            }
             SessionCommand::GetSpawnSnapshot { reply } => {
                 let snapshot = state.spawn_snapshot();
                 let _ = reply.send(snapshot);
@@ -394,6 +400,37 @@ pub(super) async fn run_session_actor(
                     record.updated_at = updated_at;
                 }
                 let _ = reply.send(state.summary.clone());
+            }
+            SessionCommand::UpdateMemorySettings {
+                recall,
+                contribution,
+                reply,
+            } => {
+                let mut changed = false;
+                if let Some(recall) = recall
+                    && state.memory_settings.recall != recall
+                {
+                    state.memory_settings.recall = recall;
+                    changed = true;
+                }
+                if let Some(contribution) = contribution
+                    && state.memory_settings.contribution != contribution
+                {
+                    state.memory_settings.contribution = contribution;
+                    changed = true;
+                }
+                if changed {
+                    state.memory_settings_version = state.memory_settings_version.saturating_add(1);
+                    let updated_at = Utc::now();
+                    state.summary.updated_at = updated_at;
+                    if let Some(record) = state.record.as_mut() {
+                        record.updated_at = updated_at;
+                    }
+                }
+                let _ = reply.send(crate::memory::SessionMemorySettingsSnapshot {
+                    settings: state.memory_settings,
+                    version: state.memory_settings_version,
+                });
             }
             SessionCommand::ApplyPermissionProfile { profile, reply } => {
                 let sandbox = Some(profile.implied_sandbox_profile().to_string());
