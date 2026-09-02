@@ -1,122 +1,87 @@
 ---
 artifact_id: L1-REQ-MEM-001
-revision: 2
-status: Approved
-active_baseline: yes
-supersedes: revision 1 draft
+revision: 1
+status: Draft
+active_baseline: no
+supersedes:
 superseded_by:
 owner: Human
-last_updated: 2026-08-25
+last_updated: 2026-05-22
 ---
 
-# L1-REQ-MEM-001 — General Persistent Memory
+# L1-REQ-MEM-001 — Persistent Memory
 
 ## Purpose
 
-Define an optional, user-controlled memory mechanism that carries useful knowledge across independent sessions without confusing it with session history or automation run memory.
+Define persistent memory as agent-maintained core state rather than a client-managed user feature.
 
 ## Why This Matters
 
-Users repeatedly state preferences, correct the agent, establish project facts, and point to durable references. Repeating that context in every new session is costly and error-prone. At the same time, learned context can become stale, conflict with current instructions, contain sensitive data, or outlive the session from which it was inferred. The product therefore needs useful recall together with clear provenance, bounded authority, inspection, and deletion controls.
+Persistent memory can help the agent carry useful preferences, project knowledge, and recurring decisions across sessions. However, requiring users to inspect, curate, export, or delete individual memory entries adds unnecessary client complexity and makes memory feel like a user-facing database rather than an internal agent capability.
 
 ## Background / Context
 
-Devo has three distinct continuity mechanisms:
+Persistent memory is distinct from session transcript history. The client interface operates on sessions, turns, items, configuration, approvals, and user-visible data controls. Persistent memory is generated and maintained by the core agent runtime for future context construction.
 
-- **Session History** resumes or reviews one session identity.
-- **Automation Run Memory** carries one automation's private `memory.md` across its runs.
-- **General Persistent Memory** carries validated knowledge into later independent sessions.
-
-General Persistent Memory is helpful context, not an authoritative instruction source. Required rules belong in project instruction files such as `AGENTS.md`; current user instructions, project instructions, safety policy, and system policy always outrank recalled memory.
-
-The design combines Codex-style opt-in background learning and per-session controls with Claude-style inspectability and project isolation. It adds durable provenance, revocation, and deterministic conflict handling appropriate for Devo.
+The TUI, desktop client, IDE client, and other client surfaces do not need a persistent-memory management protocol. They should not list memory entries, subscribe to memory changes, or expose individual memory deletion/export controls unless a later requirement explicitly promotes memory management to a user-facing feature.
 
 ## User / Business Requirement
 
-When explicitly enabled, Devo must remember useful user and project knowledge across independent sessions, recall only relevant bounded context, and let users understand, control, export, forget, reset, and deliberately rebuild that memory.
+The program may maintain persistent memory internally, but users are not required to manage persistent memory directly.
 
 ## Real User Scenarios
 
-- A user asks Devo to remember a stable formatting preference and expects it to apply from the next turn in later projects.
-- A user establishes a repository-specific build convention and expects worktrees from that repository to share it without leaking it into unrelated repositories.
-- Devo infers a recurring correction from an eligible completed session and recalls it in a later session.
-- A user sees which memories were recalled for a turn and inspects their origin.
-- A user forgets an incorrect memory and expects old sessions not to recreate it.
-- A user deletes a source session and expects inferred memory with no remaining evidence to retire.
-- A session uses Web, MCP, or Tool Search; Devo does not passively learn from that session, while an explicit “remember this” request remains possible.
+- A user continues work across sessions and benefits from agent-retained context without managing memory records.
+- A user deletes or archives a session through normal session controls without needing to resolve individual memory entries.
+- A client renders sessions and turns without knowing whether the core created, updated, or used persistent memory internally.
 
 ## Functional Requirements
 
-- General Persistent Memory must be disabled by default.
-- Once globally enabled, recall and contribution must be independently controllable. Each session must support `Inherit`, `On`, and `Off` for both controls.
-- Memory scopes must be `User` and `Project`. Project memory must take precedence when both scopes contain relevant knowledge, and worktrees belonging to the same repository must share a project scope.
-- Memory kinds must be `Preference`, `Feedback`, `Fact`, and `Reference`.
-- An explicit user request to remember knowledge must be validated, redacted, deduplicated, and committed immediately; the result becomes eligible for recall on the next turn.
-- Passive learning must run only in the background against eligible, idle, persistent root sessions. Subagent, ephemeral, and automation sessions must not contribute.
-- If a session used Web, MCP, or Tool Search, the whole session must be excluded from passive learning. First release does not require candidate-level taint tracking.
-- Automation Run Memory must remain isolated. An automation may consume General Persistent Memory, but its private memory must never contribute back to General Persistent Memory.
-- Recalled memory must be advisory, bounded, and visibly distinct from instructions. It must not override current user instructions, project instructions, system policy, or safety policy.
-- Recall must be prepared once per root turn and remain stable through that turn's model/tool loop. Subagents must inherit the parent's prepared read-only snapshot and must not independently recall, contribute, remember, or forget.
-- Users must be able to inspect status and entries, view provenance, explicitly remember and forget, export, reset a scope, and deliberately rebuild from retained eligible history.
-- Forgetting knowledge must create a durable revocation so previously processed source material cannot silently recreate it. A later explicit request may intentionally restore it.
-- Deleting a session must remove its candidates and evidence. An inferred entry with no remaining evidence must retire; inferred entries with other evidence and explicit memories must remain unless the user also requests related-memory deletion.
-- Resetting a scope must prevent sources older than the reset from automatically repopulating it. New eligible sessions may contribute afterward; rebuilding old history must require an explicit user action.
-- Inferred memories must leave automatic recall after 90 days without use or verification while remaining inspectable. Explicit memories must not expire automatically.
-- Memory recall must be visible as an expandable per-turn record identifying stable entry IDs and source summaries. Assistant responses are not required to cite recalled memory.
-- Secret-bearing material must not be persisted in memory entries, projections, logs, or telemetry.
-- Memory failure or unavailability must never prevent normal session or automation operation.
+- Persistent memory, where supported, must be generated and maintained by the core agent runtime.
+- Persistent memory must not be part of the routine client-server protocol surface.
+- Clients must not be required to list, inspect, edit, delete, export, or subscribe to individual persistent memory entries.
+- Persistent memory may retain internal source provenance for debugging, safety, privacy, or context-quality purposes.
+- Session deletion may cause the core to update, unlink, retain, or remove internal memory according to internal memory policy, but ordinary clients are not required to present per-memory decisions.
+- Persistent memory used for model context must pass through the same safety, privacy, and context-construction controls as other model-visible context.
+- If persistent memory is disabled or unavailable, normal session, turn, and client behavior must continue to work.
 
 ## Non-Functional Requirements
 
-- The first release must use deterministic, explainable lexical retrieval rather than embeddings.
-- Automatic recall must select no more than 12 entries and approximately 2,000 tokens per turn.
-- Background extraction must be idempotent, quota-aware, retryable, and isolated from foreground response latency.
-- Memory state and provenance must remain locally inspectable and exportable without requiring direct database access.
-- The authoritative store must support deterministic conflict resolution, deletion, reset, replay protection, and session-evidence removal.
-- Plaintext memory content must not appear in routine logs or telemetry.
+- Persistent memory behavior must remain deterministic enough for debugging and replay where it affects model-visible context.
+- Persistent memory must not expose plaintext secrets into model context, logs, telemetry, or routine client projections.
+- Persistent memory implementation details must not leak into ordinary session and transcript UI.
 
 ## Acceptance Criteria
 
-- Given memory is globally disabled, when a session runs, then it neither recalls nor passively contributes memory and all ordinary behavior remains available.
-- Given recall is enabled and relevant active entries exist, when a root turn begins, then no more than 12 entries and approximately 2,000 tokens are supplied once as advisory context and a recall record is visible.
-- Given the user explicitly asks to remember knowledge, when validation succeeds, then the entry is committed immediately and can be recalled from the next turn.
-- Given an eligible session becomes idle, when a later root session starts a background scan, then at most one structured extraction pass processes that source idempotently without delaying the foreground session.
-- Given a session used Web, MCP, or Tool Search, when passive extraction scans it, then the entire session is excluded.
-- Given two inferred entries conflict for the same scoped subject, when recall runs, then neither conflicting claim is injected until resolved.
-- Given a user forgets an entry, when an old source is scanned again, then the revoked knowledge is not recreated.
-- Given a project has multiple Git worktrees, when sessions run in them, then they resolve to the same project memory scope.
-- Given a source session is deleted and it was the final evidence for an inferred entry, when deletion completes, then the entry is retired while unrelated and explicit entries remain.
-- Given memory extraction or storage fails, when the user continues working, then the foreground session remains usable and the failure is available through memory status without leaking content into logs.
+- Given persistent memory is supported, when the core derives memory from session activity, then no client-side memory management action is required.
+- Given a client connects to the server, when it negotiates protocol capabilities, then it does not need persistent-memory list, delete, export, or change-notification methods.
+- Given a session is deleted, when the core updates any internal memory linked to that session, then ordinary session deletion can complete without requiring the user to manage individual memory entries.
+- Given persistent memory contributes to future model context, when context is assembled, then the memory is treated as core-maintained context rather than as a transcript item or client-managed record.
+- Given persistent memory is disabled, when the user uses sessions and turns, then client behavior remains unchanged except for the absence of memory-derived context.
 
 ## Out of Scope
 
-- Cross-device or cloud synchronization.
-- Organization-wide memory scope.
-- Semantic embeddings or vector databases in the first release.
-- Candidate-level trust propagation for external context.
-- Automatic generation of skills or project instruction files from memory.
-- Git-backed memory history or manually editable Markdown as a source of truth.
-- Perfect secret detection, truth verification, or automatic resolution of inferred conflicts.
-- Merging Session History, Automation Run Memory, and General Persistent Memory into one store or lifecycle.
+- This requirement does not define memory extraction, ranking, retrieval, summarization, storage, compaction, or model-context insertion algorithms.
+- This requirement does not define a user-facing memory browser, editor, export flow, deletion flow, or notification stream.
+- This requirement does not require persistent memory to be enabled by default.
+- This requirement does not guarantee perfect provenance for every internal memory entry.
 
 ## Open Questions
 
-None for the first-release design.
+- Should a future privacy or diagnostics mode expose internal persistent memory to advanced users?
+- Should persistent memory have a global enable/disable setting, or be controlled only by agent mode and core policy?
+- How long should internal persistent memory be retained by default?
 
 ## Traceability
 
 | Relationship | Target ID | Target Revision | Target Path | Rationale |
 |---|---|---:|---|---|
-| refined-by | L2-DES-MEM-001 | 2 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture.md | Defines storage, extraction, retrieval, protocol, settings, lifecycle, and module boundaries. |
-| related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | General Persistent Memory is locally stored user data with export and deletion controls. |
-| related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | Session records supply provenance and source-eligibility facts without becoming the memory store. |
-| related-to | L2-DES-CONV-002 | 1 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings.md | Recall and contribution controls use the canonical session-settings path. |
-| related-to | L2-DES-APP-008 | 1 | specs/L2/app/L2-DES-APP-008-protocol-unification.md | Memory management is added to Native only; external protocols remain adapters. |
+| related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | Persistent memory remains user data when model-visible, but is not a routine client-managed resource. |
+| related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | L2 describes internal memory provenance links in durable session records where needed. |
 
 ## Revision Notes
 
 | Revision | Date | Author | Change Type | Notes |
 |---:|---|---|---|---|
-| 1 | 2026-05-22 | Assistant | Initial | Initial internal persistent-memory ownership requirement. |
-| 1 | 2026-05-22 | Human | Refinement | Kept memory outside routine client management. |
-| 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced the internal-only requirement with opt-in, inspectable User/Project memory and explicit lifecycle controls. |
+| 1 | 2026-05-22 | Assistant | Initial | Initial persistent memory ownership requirement. |
+| 1 | 2026-05-22 | Human | Refinement | Reframed persistent memory as core-maintained internal state rather than a client-managed protocol feature. |

@@ -6,7 +6,7 @@ active_baseline: no
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-08-25
+last_updated: 2026-06-23
 ---
 
 # L2-DES-CONV-001 — Session JSONL Data Model
@@ -41,7 +41,7 @@ The full transcript can grow without bound from the user's perspective. The acti
 - `L1-REQ-GOAL-001` requires durable Ralph Loop goal state across turns and recoverable session resumes.
 - `L1-REQ-GIT-001` constrains git-oriented change management.
 - `L1-REQ-APP-012` requires data ownership controls for user-visible stored data and model-visible context.
-- `L1-REQ-MEM-001` defines General Persistent Memory as server-owned, user-controlled state distinct from session history.
+- `L1-REQ-MEM-001` defines persistent memory as core-maintained internal state.
 - `L1-REQ-CONTEXT-001` requires useful model context management across long-running sessions.
 - `L1-REQ-CONTEXT-003` requires context compression when context approaches model limits.
 - `L1-REQ-INPUT-001` requires attachments and multimodal input as first-class task context.
@@ -562,22 +562,22 @@ Parent deletion rules:
 - Navigation to a deleted parent may fail, but inherited history visible in the fork must remain understandable.
 - Hard purge of parent records referenced by surviving forks must be blocked unless the inherited segment is first materialized or moved to protected shared storage, or unless the user explicitly chooses cascade deletion of dependent forks where supported.
 
-## General Persistent Memory Source Facts
+## Internal Persistent Memory Links
 
-General Persistent Memory entries are stored outside the session transcript and are maintained by the server Memory module. Durable session records carry only facts needed to determine source eligibility and stable source references needed for provenance.
+Persistent memory is stored outside the session transcript and is maintained by the core agent runtime. Durable session records may include internal provenance links where useful for replay, debugging, safety, or context-quality analysis.
 
-The session record persists a monotonic `external_context_used` fact once Web, MCP, or Tool Search is invoked. It also preserves the session/turn/item identities and ordering already needed to derive a source watermark. Memory candidates, entry bodies, conflicts, revocations, and extraction jobs do not belong in rollout JSONL.
+These links are not client-managed transcript items and are not part of the routine client projection.
 
-Conceptual source fields:
+Conceptual memory link fields:
 
+- `memory_id`
 - `source_session_id`
 - `source_turn_id`
 - `source_item_id`
+- `derivation_event`
 - `source_availability`
-- `external_context_used`
-- `source_watermark`
 
-When a session is deleted, the server removes its memory candidates and evidence through L2-DES-MEM-001's deterministic policy. Session deletion does not require per-memory prompts. Source facts are internal replay data; the separate Native `MemoryRecall` item/event provides bounded user-visible recall provenance without exposing raw links or transcripts.
+When a session is deleted, the core may update, unlink, retain, or remove internal memory links according to internal memory policy. Session replay must not require clients to make per-memory decisions, and ordinary client projections should not expose memory-link records.
 
 ## Active Context
 
@@ -691,7 +691,7 @@ Client projections should receive only the data needed for display and interacti
 
 Clients do not need full active-context internals unless they are explicitly showing context diagnostics.
 
-Clients do not receive memory-store internals or raw source links. The canonical Native surface may expose safe entry projections, management results, and one bounded `MemoryRecall` item/event per recalled turn as defined by L2-DES-MEM-001.
+Clients also do not need persistent-memory internals. Persistent memory may affect model-visible context assembled by the core, but routine client projections should not expose memory records, memory-link records, or memory-change events.
 
 ## Traceability
 
@@ -712,7 +712,7 @@ Clients do not receive memory-store internals or raw source links. The canonical
 | related-to | L1-REQ-TOOL-002 | 1 | specs/L1/L1-REQ-TOOL-002-tools.md | Durable records preserve built-in tool calls, results, and plan state. |
 | related-to | L1-REQ-APP-002 | 1 | specs/L1/L1-REQ-APP-002-persistence.md | Defines JSONL replay and recovery records for durable conversation history. |
 | related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | Defines privacy handling for model-visible user data. |
-| related-to | L1-REQ-MEM-001 | 2 | specs/L1/L1-REQ-MEM-001-persistent-memory.md | Defines General Persistent Memory and the session facts needed for eligibility and evidence. |
+| related-to | L1-REQ-MEM-001 | 1 | specs/L1/L1-REQ-MEM-001-persistent-memory.md | Defines persistent memory as core-maintained internal state. |
 | related-to | L1-REQ-CONTEXT-001 | 1 | specs/L1/L1-REQ-CONTEXT-001-management.md | Defines active context as references into transcript and metadata. |
 | related-to | L1-REQ-CONTEXT-003 | 1 | specs/L1/L1-REQ-CONTEXT-003-compress.md | Defines compaction output as durable summary records referenced by active context. |
 | related-to | L1-REQ-INPUT-001 | 1 | specs/L1/L1-REQ-INPUT-001-attachments-and-multimodal.md | Defines content parts and mentions for attachments and multimodal input. |
@@ -738,7 +738,6 @@ Clients do not receive memory-store internals or raw source links. The canonical
 | 1 | 2026-05-22 | Human | Refinement | Clarified that fork origin keys may become non-dereferenceable after parent deletion and cannot be the fork's only inherited content pointer. |
 | 1 | 2026-05-22 | Human | Refinement | Added turn workspace checkpoints and restore result records for superseded-turn file restoration. |
 | 1 | 2026-05-22 | Human | Refinement | Reframed persistent memory links as internal core provenance outside routine client projections. |
-| 1 | 2026-08-25 | Human + Assistant | Refinement | Replaced generic memory links with source-eligibility facts and aligned deletion and recall visibility with L2-DES-MEM-001 revision 2. |
 | 1 | 2026-05-22 | Human | Refinement | Clarified that per-turn workspace change sets are core-owned restore data, while client-visible diffs are display projections. |
 | 1 | 2026-05-22 | Human | Refinement | Added durable interrupt and resume records for execution engine recovery. |
 | 1 | 2026-05-22 | Human | Refinement | Added durable plan records for plan-tool state and replay. |

@@ -6,7 +6,7 @@ active_baseline: no
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-08-25
+last_updated: 2026-05-25
 ---
 
 # L2-DES-APP-003 — Client Server Protocol
@@ -48,7 +48,7 @@ If every client launches its own private server process over stdio, those client
 - `L1-REQ-CLIENT-004` requires `@` prefixed input to open fuzzy search.
 - `L1-REQ-TOOL-001` requires tool output safety and redaction visibility.
 - `L1-REQ-TOOL-002` requires baseline built-in tools, including planning, approval, questions, search, command execution, web, and delegation tools.
-- `L1-REQ-MEM-001` defines optional General Persistent Memory with Native inspection, control, and recall visibility; L2-DES-MEM-001 owns the exact surface.
+- `L1-REQ-MEM-001` defines persistent memory as core-maintained internal state outside the routine client-server protocol surface.
 - `L2-DES-TOOL-001` defines the built-in tool system and plan tool.
 - `L2-DES-GOAL-001` defines Ralph Loop goal state, continuation, and budget behavior.
 - `L2-DES-APP-006` defines fuzzy-search providers and project file search.
@@ -446,7 +446,7 @@ Rules:
 - Fork indicators should show parent deleted or unavailable when navigation to the parent can no longer work, while keeping origin metadata visible.
 - Hard deletion of records still referenced by surviving forks must be blocked unless those forks first receive replayable inherited-history segments or the user explicitly requests cascade deletion of the dependent forks where supported.
 
-General Persistent Memory is server-owned state. Per L2-DES-APP-008 and L2-DES-MEM-001, its management methods and recall item/event exist on the canonical Native surface only; clients may expose those capabilities progressively. Session deletion invokes the server's deterministic evidence policy without forcing a per-memory prompt, while explicit related-memory deletion remains a separate user choice.
+Persistent memory is core-maintained internal state. Session deletion may cause core memory maintenance internally, but the client-server protocol must not expose per-memory deletion decisions, linked memory lists, or memory-management prompts.
 
 ## Provider Event Boundary
 
@@ -512,7 +512,7 @@ If a client disconnects, the server continues owning active work subject to user
 | related-to | L1-REQ-TOOL-001 | 1 | specs/L1/L1-REQ-TOOL-001-safety.md | Defines redaction and safety fields in tool events. |
 | related-to | L1-REQ-TOOL-002 | 1 | specs/L1/L1-REQ-TOOL-002-tools.md | Exposes built-in tool lifecycle and plan tool updates to clients. |
 | related-to | L1-REQ-TOOL-005 | 1 | specs/L1/L1-REQ-TOOL-005-background-process-management.md | Exposes tracked background process state and stop requests. |
-| related-to | L1-REQ-MEM-001 | 2 | specs/L1/L1-REQ-MEM-001-persistent-memory.md | General Persistent Memory exposes Native management and bounded recall visibility while remaining server-owned. |
+| related-to | L1-REQ-MEM-001 | 1 | specs/L1/L1-REQ-MEM-001-persistent-memory.md | Excludes persistent memory from routine client-server protocol methods and notifications. |
 | related-to | L2-DES-AGENT-001 | 1 | specs/L2/agent/L2-DES-AGENT-001-execution-engine.md | The protocol exposes execution engine state to clients. |
 | related-to | L2-DES-AGENT-002 | 1 | specs/L2/agent/L2-DES-AGENT-002-interrupt-resume-control.md | The protocol exposes interrupt and resume control actions. |
 | related-to | L2-DES-TOOL-001 | 1 | specs/L2/tool/L2-DES-TOOL-001-built-in-tool-system.md | The protocol exposes tool and plan state from the built-in tool system. |
@@ -561,4 +561,3 @@ If a client disconnects, the server continues owning active work subject to user
 | 1 | 2026-05-26 | Assistant | Refinement | Added parallel tool parent/child event identity fields for `multi_tool_use`. |
 | 2 | 2026-05-27 | Human | Refinement | Changed JSON-RPC method names from dot separators to slash separators and aligned server notification method names with existing protocol event names where available. |
 | 2 | 2026-06-08 | Assistant | Refinement | Added `collaboration_mode` to `turn/start`, defined `command/exec` dynamic PTY process control for Shell Mode, allowed sessionless startup shell commands with explicit `cwd`, and retained `turn/shell_command` as a legacy compatibility path. |
-| 2 | 2026-08-25 | Human + Assistant | Refinement | Replaced the draft's memory-protocol exclusion with the approved Native-only management and recall-visibility direction from L2-DES-MEM-001. |
