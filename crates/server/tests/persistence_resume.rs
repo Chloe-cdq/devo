@@ -50,7 +50,6 @@ use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::TurnStatus;
 use devo_protocol::Usage;
-use devo_protocol::native::session::MemorySetting;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
@@ -624,98 +623,6 @@ async fn resume_restores_session_permission_preset_and_plan_mode_without_turn() 
     assert_eq!(
         resume_result.session.permission_preset,
         Some(devo_protocol::PermissionPreset::FullAccess)
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn ephemeral_memory_settings_survive_metadata_updates() -> Result<()> {
-    let data_root = TempDir::new()?;
-    let runtime = build_runtime(data_root.path())?;
-    let (connection_id, _notifications_rx) = initialize_connection(&runtime).await?;
-
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 100,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": true,
-                    "title": "Ephemeral memory settings",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("ephemeral session/start response")?;
-    let start_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result;
-    let session_id = start_result.session.session_id;
-
-    let recall_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 101,
-                "method": "session/metadata/update",
-                "params": {
-                    "sessionId": session_id,
-                    "expectedVersion": 0,
-                    "settings": { "memoryRecall": "off" }
-                }
-            }),
-        )
-        .await
-        .context("ephemeral memory recall update response")?;
-    let recall_result = serde_json::from_value::<
-        devo_server::SuccessResponse<
-            devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
-        >,
-    >(recall_response)?
-    .result;
-    assert_eq!(recall_result.session.version, 2);
-    assert_eq!(
-        recall_result.session.settings.memory_recall,
-        MemorySetting::Off
-    );
-    assert_eq!(
-        recall_result.session.settings.memory_contribution,
-        MemorySetting::Inherit
-    );
-
-    let contribution_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 102,
-                "method": "session/metadata/update",
-                "params": {
-                    "sessionId": session_id,
-                    "expectedVersion": 2,
-                    "settings": { "memoryContribution": "off" }
-                }
-            }),
-        )
-        .await
-        .context("ephemeral memory contribution update response")?;
-    let contribution_result = serde_json::from_value::<
-        devo_server::SuccessResponse<
-            devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
-        >,
-    >(contribution_response)?
-    .result;
-    assert_eq!(contribution_result.session.version, 3);
-    assert_eq!(
-        contribution_result.session.settings.memory_recall,
-        MemorySetting::Off
-    );
-    assert_eq!(
-        contribution_result.session.settings.memory_contribution,
-        MemorySetting::Off
     );
     Ok(())
 }

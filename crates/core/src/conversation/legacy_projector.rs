@@ -429,8 +429,6 @@ impl LegacyProjector {
                 sandbox_profile: (!record.sandbox_policy.is_empty())
                     .then(|| record.sandbox_policy.clone()),
                 effective_context_window: record.effective_context_window,
-                memory_recall: Default::default(),
-                memory_contribution: Default::default(),
             },
             git_info,
             preview: record.first_user_message.clone().unwrap_or_default(),

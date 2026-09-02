@@ -318,10 +318,6 @@ pub(crate) struct RuntimeSession {
     pub(crate) summary: SessionMetadata,
     /// Lock-free snapshot of the session configuration for server coordination paths.
     pub(crate) config: SessionConfig,
-    /// Per-session memory behavior, independent from the legacy session summary.
-    pub(crate) memory_settings: crate::memory::SessionMemorySettings,
-    /// Monotonic version for ephemeral metadata updates.
-    pub(crate) memory_settings_version: u64,
     /// Canonical core session state used by the query loop.
     pub(crate) core_session: Arc<Mutex<SessionState>>,
     /// Currently active turn, if any.

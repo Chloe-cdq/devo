@@ -210,32 +210,18 @@ impl RolloutStore {
         field: SessionSettingsField,
         value: serde_json::Value,
     ) -> Result<()> {
-        self.append_session_settings_batch_at(rollout_path, session_id, &[(field, value)])
-    }
-
-    /// Appends several field-level settings lines under one file lock and one
-    /// fsync, so a related patch cannot be durably split across writes.
-    pub(crate) fn append_session_settings_batch_at(
-        &self,
-        rollout_path: &Path,
-        session_id: SessionId,
-        settings: &[(SessionSettingsField, serde_json::Value)],
-    ) -> Result<()> {
-        let lines = settings
-            .iter()
-            .map(|(field, value)| {
-                RolloutLine::SessionSettings(SessionSettingsLine {
-                    timestamp: Utc::now(),
-                    session_id,
-                    field: *field,
-                    value: value.clone(),
-                    // Placeholder: the per-file projector assigns the
-                    // authoritative epoch at write time.
-                    epoch: 0,
-                })
-            })
-            .collect::<Vec<_>>();
-        self.append_lines(rollout_path, &lines)
+        self.append_line(
+            rollout_path,
+            &RolloutLine::SessionSettings(SessionSettingsLine {
+                timestamp: Utc::now(),
+                session_id,
+                field,
+                value,
+                // Placeholder: the per-file projector assigns the
+                // authoritative epoch at write time.
+                epoch: 0,
+            }),
+        )
     }
 
     /// Appends one turn line to the durable rollout journal.
@@ -793,13 +779,6 @@ impl RolloutStore {
     }
 
     fn append_line(&self, rollout_path: &Path, line: &RolloutLine) -> Result<()> {
-        self.append_lines(rollout_path, std::slice::from_ref(line))
-    }
-
-    fn append_lines(&self, rollout_path: &Path, lines: &[RolloutLine]) -> Result<()> {
-        if lines.is_empty() {
-            return Ok(());
-        }
         if let Some(parent) = rollout_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create rollout directory {}", parent.display()))?;
@@ -831,14 +810,10 @@ impl RolloutStore {
                     .or_insert(state)
             }
         };
-        let mut v2_lines = Vec::new();
-        for line in lines {
-            v2_lines.extend(
-                state.projector.project_line(line).with_context(|| {
-                    format!("project rollout line for {}", rollout_path.display())
-                })?,
-            );
-        }
+        let v2_lines = state
+            .projector
+            .project_line(line)
+            .with_context(|| format!("project rollout line for {}", rollout_path.display()))?;
         self.write_v2_lines(rollout_path, state, &v2_lines)
     }
 
@@ -1424,11 +1399,6 @@ impl ReplayState {
                 SessionSettingsField::SandboxProfile => {
                     self.session_settings.insert(field, value);
                 }
-                SessionSettingsField::MemoryRecall | SessionSettingsField::MemoryContribution => {
-                    // Memory settings belong to the canonical Native
-                    // session snapshot, not the legacy SessionRecord.
-                    self.session_settings.insert(field, value);
-                }
             }
         }
     }
@@ -1447,19 +1417,6 @@ impl ReplayState {
                     }
                 },
             )
-    }
-
-    fn memory_settings(&self) -> crate::memory::SessionMemorySettings {
-        let setting = |field: SessionSettingsField| {
-            self.session_settings
-                .get(&field)
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-                .unwrap_or_default()
-        };
-        crate::memory::SessionMemorySettings {
-            recall: setting(SessionSettingsField::MemoryRecall),
-            contribution: setting(SessionSettingsField::MemoryContribution),
-        }
     }
 
     async fn into_runtime_session(
@@ -1483,7 +1440,6 @@ impl ReplayState {
         // Field-level settings lines win over the whole-record SessionMeta
         // values (L2-DES-CONV-002 Phase 1); apply before the derivations below.
         self.apply_session_settings(&mut record);
-        let memory_settings = self.memory_settings();
         let sandbox_profile_override = self.sandbox_profile_override();
         let runtime_context = deps.context_for_workspace(&record.cwd).await?;
         let mut core_session = runtime_context.new_session_state(
@@ -1713,8 +1669,6 @@ impl ReplayState {
             record: Some(record),
             summary,
             config,
-            memory_settings,
-            memory_settings_version: 1,
             core_session: std::sync::Arc::new(Mutex::new(core_session)),
             active_turn: None,
             latest_turn: self.latest_turn_metadata,
@@ -2640,7 +2594,6 @@ mod tests {
     use super::parse_rollout_line;
     use crate::execution::PersistedTurnItem;
     use crate::execution::ServerRuntimeDependencies;
-    use crate::memory::SessionMemorySettings;
     use crate::persistence::apply_turn_item;
     use devo_core::CompactionSnapshotLine;
     use devo_core::ContentPart;
@@ -4993,101 +4946,5 @@ mod tests {
         assert_eq!(line.session_id, record.id);
         assert_eq!(line.field, devo_core::SessionSettingsField::SandboxProfile);
         assert_eq!(line.value, serde_json::Value::String("workspace".into()));
-    }
-
-    #[test]
-    fn session_settings_batch_is_written_as_one_projected_append() {
-        let (_dir, store, record) = settings_test_record();
-        store.append_session_meta(&record).expect("append meta");
-        store
-            .append_session_settings_batch_at(
-                &record.rollout_path,
-                record.id,
-                &[
-                    (
-                        devo_core::SessionSettingsField::MemoryRecall,
-                        serde_json::to_value(devo_protocol::native::session::MemorySetting::Off)
-                            .expect("serialize recall"),
-                    ),
-                    (
-                        devo_core::SessionSettingsField::MemoryContribution,
-                        serde_json::to_value(devo_protocol::native::session::MemorySetting::On)
-                            .expect("serialize contribution"),
-                    ),
-                ],
-            )
-            .expect("append settings batch");
-
-        let raw_lines = std::fs::read_to_string(&record.rollout_path)
-            .expect("read rollout")
-            .lines()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        assert_eq!(raw_lines.len(), 3);
-        let entries = raw_lines
-            .iter()
-            .skip(1)
-            .map(|raw| {
-                let ParsedRolloutLine::V2(v2) = parse_rollout_line(raw).expect("parse") else {
-                    panic!("settings line must parse as v2");
-                };
-                let devo_core::rollout_v2::RolloutLineV2::Internal { entry, .. } = *v2 else {
-                    panic!("settings line must be a v2 Internal record");
-                };
-                entry
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            entries,
-            vec![
-                devo_core::InternalRecordV2::SessionSettings {
-                    schema_version: 1,
-                    field: devo_core::SessionSettingsField::MemoryRecall,
-                    value:
-                        serde_json::to_value(devo_protocol::native::session::MemorySetting::Off,)
-                            .expect("serialize recall"),
-                    epoch: 1,
-                },
-                devo_core::InternalRecordV2::SessionSettings {
-                    schema_version: 1,
-                    field: devo_core::SessionSettingsField::MemoryContribution,
-                    value: serde_json::to_value(devo_protocol::native::session::MemorySetting::On,)
-                        .expect("serialize contribution"),
-                    epoch: 2,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn replay_memory_settings_are_exposed_for_runtime_session() {
-        let (_dir, _store, record) = settings_test_record();
-        let mut replay = ReplayState::default();
-        replay
-            .apply_line(settings_line(
-                &record,
-                devo_core::SessionSettingsField::MemoryRecall,
-                serde_json::to_value(devo_protocol::native::session::MemorySetting::Off)
-                    .expect("serialize recall"),
-            ))
-            .expect("apply recall line");
-        replay
-            .apply_line(settings_line(
-                &record,
-                devo_core::SessionSettingsField::MemoryContribution,
-                serde_json::to_value(devo_protocol::native::session::MemorySetting::On)
-                    .expect("serialize contribution"),
-            ))
-            .expect("apply contribution line");
-
-        let mut replayed = record;
-        replay.apply_session_settings(&mut replayed);
-        assert_eq!(
-            replay.memory_settings(),
-            SessionMemorySettings {
-                recall: devo_protocol::native::session::MemorySetting::Off,
-                contribution: devo_protocol::native::session::MemorySetting::On,
-            }
-        );
     }
 }

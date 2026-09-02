@@ -22,7 +22,6 @@ use super::model::PermissionProfile;
 use super::page::Page;
 use super::page::PageParams;
 use super::patch::PatchField;
-use super::session::MemorySetting;
 use super::session::Session;
 
 // ── session/interrupt ──
@@ -255,14 +254,6 @@ pub struct SessionSettingsPatch {
     /// applied per session clamped to the model's context window).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_context_window: Option<u64>,
-    /// Per-session recall preference; omitted fields retain their current
-    /// values.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_recall: Option<MemorySetting>,
-    /// Per-session contribution preference; omitted fields retain their
-    /// current values.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_contribution: Option<MemorySetting>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]

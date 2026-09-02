@@ -18,7 +18,6 @@ pub mod page;
 pub mod patch;
 pub mod queue;
 pub mod rpc_admin;
-pub mod rpc_memory;
 pub mod rpc_search;
 pub mod rpc_session;
 pub mod rpc_turn;

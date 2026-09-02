@@ -20,7 +20,6 @@ use super::item::Item;
 use super::item::ItemEnvelope;
 use super::page::Page;
 use super::rpc_admin::*;
-use super::rpc_memory::*;
 use super::rpc_search::*;
 use super::rpc_session::*;
 use super::rpc_turn::*;
@@ -97,14 +96,6 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
         name: "runtime/ping",
         params_schema: schema_of::<RuntimePingParams>,
         result_schema: schema_of::<RuntimePingResult>,
-        error_codes: &[],
-        required_capability: None,
-        idempotency: Idempotency::None,
-    },
-    MethodSpec {
-        name: "memory/status",
-        params_schema: schema_of::<MemoryStatusParams>,
-        result_schema: schema_of::<MemoryStatus>,
         error_codes: &[],
         required_capability: None,
         idempotency: Idempotency::None,

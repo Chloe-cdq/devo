@@ -65,8 +65,6 @@ impl ServerRuntime {
         let parent_latest_turn = parent_snapshot.parent_latest_turn;
         let parent_active_turn_id = parent_snapshot.parent_active_turn_id;
         let parent_tool_registry = parent_snapshot.parent_tool_registry;
-        let parent_memory_settings = parent_snapshot.memory_settings;
-        let parent_memory_settings_version = parent_snapshot.memory_settings_version;
         let runtime_context = parent_snapshot.runtime_context;
         let parent_usage_turn_id =
             parent_active_turn_id.or_else(|| parent_latest_turn.as_ref().map(|turn| turn.turn_id));
@@ -184,8 +182,6 @@ impl ServerRuntime {
             record,
             summary: summary.clone(),
             config: parent_config,
-            memory_settings: parent_memory_settings,
-            memory_settings_version: parent_memory_settings_version,
             core_session: Arc::new(Mutex::new(core_session)),
             active_turn: None,
             latest_turn,

@@ -5,7 +5,6 @@ mod acp_slash_commands;
 mod compaction;
 pub mod goal;
 mod history;
-mod memory;
 mod message_edit;
 mod message_edit_restore;
 mod queue;
