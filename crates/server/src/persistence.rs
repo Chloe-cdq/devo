@@ -1,3 +1,5 @@
+mod memory_settings;
+
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufRead;
@@ -36,7 +38,6 @@ use devo_core::SessionMetaLine;
 use devo_core::SessionRecord;
 use devo_core::SessionRollbackLine;
 use devo_core::SessionSettingsField;
-use devo_core::SessionSettingsLine;
 use devo_core::SessionTitleFinalSource;
 use devo_core::SessionTitleState;
 use devo_core::SessionTitleUpdatedLine;
@@ -198,44 +199,6 @@ impl RolloutStore {
                 session: record.clone(),
             })),
         )
-    }
-
-    /// Appends one field-level session settings line without requiring the
-    /// actor-owned session record (L2-DES-CONV-002 Phase 2 persist-first
-    /// path: the handler must not wait on the actor mailbox to persist).
-    pub(crate) fn append_session_settings_at(
-        &self,
-        rollout_path: &Path,
-        session_id: SessionId,
-        field: SessionSettingsField,
-        value: serde_json::Value,
-    ) -> Result<()> {
-        self.append_session_settings_batch_at(rollout_path, session_id, &[(field, value)])
-    }
-
-    /// Appends several field-level settings lines under one file lock and one
-    /// fsync, so a related patch cannot be durably split across writes.
-    pub(crate) fn append_session_settings_batch_at(
-        &self,
-        rollout_path: &Path,
-        session_id: SessionId,
-        settings: &[(SessionSettingsField, serde_json::Value)],
-    ) -> Result<()> {
-        let lines = settings
-            .iter()
-            .map(|(field, value)| {
-                RolloutLine::SessionSettings(SessionSettingsLine {
-                    timestamp: Utc::now(),
-                    session_id,
-                    field: *field,
-                    value: value.clone(),
-                    // Placeholder: the per-file projector assigns the
-                    // authoritative epoch at write time.
-                    epoch: 0,
-                })
-            })
-            .collect::<Vec<_>>();
-        self.append_lines(rollout_path, &lines)
     }
 
     /// Appends one turn line to the durable rollout journal.
@@ -1447,19 +1410,6 @@ impl ReplayState {
                     }
                 },
             )
-    }
-
-    fn memory_settings(&self) -> crate::memory::SessionMemorySettings {
-        let setting = |field: SessionSettingsField| {
-            self.session_settings
-                .get(&field)
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-                .unwrap_or_default()
-        };
-        crate::memory::SessionMemorySettings {
-            recall: setting(SessionSettingsField::MemoryRecall),
-            contribution: setting(SessionSettingsField::MemoryContribution),
-        }
     }
 
     async fn into_runtime_session(

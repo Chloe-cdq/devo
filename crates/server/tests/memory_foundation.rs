@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use chrono::TimeZone;
+use chrono::Utc;
 use devo_core::AgentsMdConfig;
 use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
@@ -29,8 +31,8 @@ use devo_server::ClientTransportKind;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
 use devo_server::memory::{
-    EnqueueOutcome, MemoryCommand, MemoryCommandResult, MemoryRuntime, PreparedMemory,
-    SessionMemorySource,
+    EnqueueOutcome, MemoryCommand, MemoryCommandResult, MemoryRuntime, PrepareMemoryRequest,
+    PreparedMemory, SessionMemorySource,
 };
 use futures::Stream;
 use futures::stream;
@@ -116,11 +118,15 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             pending_job_count: 0,
             retrying_job_count: 0,
             error_job_count: 0,
+            last_successful_scan_at: None,
+            error_classes: Vec::new(),
         })
     );
     assert_eq!(
         runtime
-            .prepare_turn(Default::default())
+            .prepare_turn(PrepareMemoryRequest {
+                workspace_root: data_root.path().to_path_buf(),
+            })
             .await
             .expect("prepare disabled memory"),
         PreparedMemory::default()
@@ -176,7 +182,7 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             |row| row.get(0),
         )
         .expect("read memory schema version");
-    assert_eq!(schema_version, "2");
+    assert_eq!(schema_version, "3");
 }
 
 #[test]
@@ -236,7 +242,123 @@ fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(schema_version, "2");
+    assert_eq!(schema_version, "3");
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 DD-9
+/// Verifies: v2 duplicate tombstones retain the latest revoke and later restore event.
+#[test]
+fn revocation_migration_preserves_latest_lifecycle_event() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let memory_root = data_root.path().join("memory");
+    std::fs::create_dir_all(&memory_root)?;
+    let database_path = memory_root.join("memory.sqlite3");
+    let connection = Connection::open(&database_path)?;
+    create_v2_revocation_schema(&connection)?;
+    connection.execute_batch(
+        "
+        INSERT INTO memory_revocations (
+            revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
+        ) VALUES
+            ('revocation-1', 'project', 'project-1', 'formatting',
+             '2026-09-01T10:00:00Z', '2026-09-01T15:00:00Z'),
+            ('revocation-2', 'project', 'project-1', 'formatting',
+             '2026-09-01T12:00:00Z', NULL);
+        ",
+    )?;
+    drop(connection);
+
+    drop(MemoryRuntime::open(
+        memory_root.clone(),
+        MemoryConfig::default(),
+    )?);
+    drop(MemoryRuntime::open(memory_root, MemoryConfig::default())?);
+
+    let connection = Connection::open(database_path)?;
+    let revocations = connection
+        .prepare(
+            "SELECT revocation_id, revoked_at, restored_at
+             FROM memory_revocations
+             WHERE scope_type = 'project'
+               AND scope_id = 'project-1'
+               AND normalized_key = 'formatting'",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        revocations,
+        vec![(
+            "revocation-2".to_string(),
+            "2026-09-01T12:00:00Z".to_string(),
+            Some("2026-09-01T15:00:00Z".to_string()),
+        )]
+    );
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 DD-9
+/// Verifies: a failed v3 index creation rolls back tombstone consolidation and versioning.
+#[test]
+fn revocation_migration_failure_rolls_back() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let memory_root = data_root.path().join("memory");
+    std::fs::create_dir_all(&memory_root)?;
+    let database_path = memory_root.join("memory.sqlite3");
+    let connection = Connection::open(&database_path)?;
+    create_v2_revocation_schema(&connection)?;
+    connection.execute_batch(
+        "
+        INSERT INTO memory_revocations (
+            revocation_id, scope_type, scope_id, normalized_key, revoked_at
+        ) VALUES
+            ('revocation-1', 'project', 'project-1', 'formatting', '2026-09-01T10:00:00Z'),
+            ('revocation-2', 'project', 'project-1', 'formatting', '2026-09-01T12:00:00Z');
+        CREATE VIEW memory_revocations_scope_identity AS SELECT 1 AS value;
+        ",
+    )?;
+    drop(connection);
+
+    assert!(MemoryRuntime::open(memory_root, MemoryConfig::default()).is_err());
+
+    let connection = Connection::open(database_path)?;
+    let revocation_count: u64 =
+        connection.query_row("SELECT COUNT(*) FROM memory_revocations", [], |row| {
+            row.get(0)
+        })?;
+    let schema_version: String = connection.query_row(
+        "SELECT value FROM memory_schema_meta WHERE key = 'schema_version'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!((revocation_count, schema_version), (2, "2".to_string()));
+    Ok(())
+}
+
+fn create_v2_revocation_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "
+        CREATE TABLE memory_schema_meta (
+            key TEXT PRIMARY KEY NOT NULL,
+            value TEXT NOT NULL
+        );
+        INSERT INTO memory_schema_meta (key, value) VALUES ('schema_version', '2');
+        CREATE TABLE memory_revocations (
+            revocation_id TEXT PRIMARY KEY NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            normalized_key TEXT NOT NULL,
+            revoked_at TEXT NOT NULL,
+            restored_at TEXT
+        );
+        ",
+    )?;
     Ok(())
 }
 
@@ -315,8 +437,94 @@ async fn native_memory_status_reports_disabled_runtime() -> Result<()> {
             "candidateCount": 0,
             "pendingJobCount": 0,
             "retryingJobCount": 0,
-            "errorJobCount": 0
+            "errorJobCount": 0,
+            "lastSuccessfulScanAt": null,
+            "errorClasses": []
         })
     );
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 Failure/Observability
+/// Verifies: status exposes the latest completed scan and distinct redacted error classes.
+#[tokio::test]
+async fn memory_status_reports_last_successful_scan_and_error_classes() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let memory_root = data_root.path().join("memory");
+    let runtime = MemoryRuntime::open(memory_root.clone(), MemoryConfig::default())?;
+    drop(runtime);
+
+    let connection = Connection::open(memory_root.join("memory.sqlite3"))?;
+    connection.execute_batch(
+        "
+        INSERT INTO memory_jobs (
+            job_id, job_kind, job_key, source_session_id, source_watermark,
+            state, error_class, created_at, updated_at
+        ) VALUES
+            ('completed-1', 'source_scan', 'completed-1', 'session-1', 'watermark-1',
+             'completed', NULL, '2026-09-01T10:00:00Z', '2026-09-01T12:00:00Z'),
+            ('maintenance-1', 'projection_rebuild', 'maintenance-1', 'session-1', 'watermark-4',
+             'completed', NULL, '2026-09-01T13:00:00Z', '2026-09-01T14:00:00Z'),
+            ('error-1', 'source_scan', 'error-1', 'session-2', 'watermark-2',
+             'error', 'provider_unavailable', '2026-09-01T11:00:00Z', '2026-09-01T13:00:00Z'),
+            ('error-2', 'source_scan', 'error-2', 'session-3', 'watermark-3',
+             'error', 'provider_unavailable', '2026-09-01T11:30:00Z', '2026-09-01T13:30:00Z'),
+            ('error-3', 'source_scan', 'error-3', 'session-4', 'watermark-5',
+             'error', 'credential failed: sk-sensitive',
+             '2026-09-01T11:45:00Z', '2026-09-01T13:45:00Z'),
+            ('error-4', 'source_scan', 'error-4', 'session-5', 'watermark-6',
+             'error', 'sk_sensitive', '2026-09-01T11:50:00Z', '2026-09-01T13:50:00Z');
+        ",
+    )?;
+    drop(connection);
+
+    let runtime = MemoryRuntime::open(memory_root, MemoryConfig::default())?;
+    let MemoryCommandResult::Status(status) =
+        runtime.execute_command(MemoryCommand::Status).await?;
+    assert_eq!(
+        status,
+        MemoryStatus {
+            enabled: false,
+            storage_health: "healthy".to_string(),
+            entry_count: 0,
+            candidate_count: 0,
+            pending_job_count: 0,
+            retrying_job_count: 0,
+            error_job_count: 4,
+            last_successful_scan_at: Some(
+                Utc.with_ymd_and_hms(2026, 9, 1, 12, 0, 0)
+                    .single()
+                    .expect("timestamp")
+            ),
+            error_classes: vec!["provider_unavailable".to_string(), "unknown".to_string()],
+        }
+    );
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 DD-9
+/// Verifies: one scope and normalized identity can own only one revocation tombstone.
+#[test]
+fn revocation_identity_is_unique() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let memory_root = data_root.path().join("memory");
+    let runtime = MemoryRuntime::open(memory_root.clone(), MemoryConfig::default())?;
+    drop(runtime);
+    let connection = Connection::open(memory_root.join("memory.sqlite3"))?;
+
+    connection.execute(
+        "INSERT INTO memory_revocations (
+            revocation_id, scope_type, scope_id, normalized_key, revoked_at
+         ) VALUES ('revocation-1', 'project', 'project-1', 'formatting', '2026-09-01T12:00:00Z')",
+        [],
+    )?;
+    let duplicate = connection.execute(
+        "INSERT INTO memory_revocations (
+            revocation_id, scope_type, scope_id, normalized_key, revoked_at
+         ) VALUES ('revocation-2', 'project', 'project-1', 'formatting', '2026-09-01T13:00:00Z')",
+        [],
+    );
+
+    assert!(duplicate.is_err());
     Ok(())
 }

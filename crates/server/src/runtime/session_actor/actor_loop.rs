@@ -7,6 +7,7 @@ use devo_core::SessionTitleState;
 use devo_core::TurnConfig;
 use devo_core::TurnStatus;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use super::approval_scope::{
     apply_approval_scope_to_state, apply_path_scope_to_permission_profile,
@@ -26,9 +27,11 @@ use crate::runtime::session_model_selection;
 pub(super) async fn run_session_actor(
     mut state: SessionActorState,
     mut mailbox: mpsc::Receiver<SessionCommand>,
+    mut memory_settings: watch::Receiver<crate::memory::SessionMemorySettingsSnapshot>,
     _runtime: Arc<crate::runtime::ServerRuntime>,
 ) {
     while let Some(command) = mailbox.recv().await {
+        synchronize_memory_settings(&mut state, *memory_settings.borrow_and_update());
         match command {
             SessionCommand::ExecuteTurn {
                 runtime: turn_runtime,
@@ -76,12 +79,6 @@ pub(super) async fn run_session_actor(
             }
             SessionCommand::GetSummary { reply } => {
                 let _ = reply.send(state.summary.clone());
-            }
-            SessionCommand::GetMemorySettings { reply } => {
-                let _ = reply.send(crate::memory::SessionMemorySettingsSnapshot {
-                    settings: state.memory_settings,
-                    version: state.memory_settings_version,
-                });
             }
             SessionCommand::GetSpawnSnapshot { reply } => {
                 let snapshot = state.spawn_snapshot();
@@ -401,37 +398,6 @@ pub(super) async fn run_session_actor(
                 }
                 let _ = reply.send(state.summary.clone());
             }
-            SessionCommand::UpdateMemorySettings {
-                recall,
-                contribution,
-                reply,
-            } => {
-                let mut changed = false;
-                if let Some(recall) = recall
-                    && state.memory_settings.recall != recall
-                {
-                    state.memory_settings.recall = recall;
-                    changed = true;
-                }
-                if let Some(contribution) = contribution
-                    && state.memory_settings.contribution != contribution
-                {
-                    state.memory_settings.contribution = contribution;
-                    changed = true;
-                }
-                if changed {
-                    state.memory_settings_version = state.memory_settings_version.saturating_add(1);
-                    let updated_at = Utc::now();
-                    state.summary.updated_at = updated_at;
-                    if let Some(record) = state.record.as_mut() {
-                        record.updated_at = updated_at;
-                    }
-                }
-                let _ = reply.send(crate::memory::SessionMemorySettingsSnapshot {
-                    settings: state.memory_settings,
-                    version: state.memory_settings_version,
-                });
-            }
             SessionCommand::ApplyPermissionProfile { profile, reply } => {
                 let sandbox = Some(profile.implied_sandbox_profile().to_string());
                 state.core.config.permission_mode = profile.permission_mode();
@@ -587,6 +553,22 @@ pub(super) async fn run_session_actor(
                 break;
             }
         }
+    }
+}
+
+fn synchronize_memory_settings(
+    state: &mut SessionActorState,
+    snapshot: crate::memory::SessionMemorySettingsSnapshot,
+) {
+    if snapshot.version <= state.memory_settings_version {
+        return;
+    }
+    state.memory_settings = snapshot.settings;
+    state.memory_settings_version = snapshot.version;
+    let updated_at = Utc::now();
+    state.summary.updated_at = updated_at;
+    if let Some(record) = state.record.as_mut() {
+        record.updated_at = updated_at;
     }
 }
 

@@ -107,8 +107,9 @@ progress through server notifications.
 
 - `initialize`: negotiate the Native connection and capabilities.
 - `runtime/ping`: return the server time.
-- `memory/status`: return the effective global memory state and safe aggregate
-  storage/job counts.
+- `memory/status`: return the effective global memory state, safe aggregate
+  storage/job counts, the latest successful source-scan time, and redacted
+  error classifications.
 - `subscription/create`, `subscription/update`, `subscription/ack`, and
   `subscription/unsubscribe`: create, manage, acknowledge, and stop durable
   event subscriptions.

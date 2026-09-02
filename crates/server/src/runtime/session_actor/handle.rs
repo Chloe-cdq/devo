@@ -9,6 +9,7 @@ use devo_protocol::SessionId;
 use devo_protocol::ThreadGoal;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 use devo_safety::PermissionMode;
 
@@ -39,6 +40,7 @@ pub(crate) struct SessionHandle {
     max_turns: Option<u32>,
     state_change_gate: Arc<tokio::sync::Mutex<()>>,
     metadata_update_gate: Arc<tokio::sync::Mutex<()>>,
+    memory_settings_tx: watch::Sender<crate::memory::SessionMemorySettingsSnapshot>,
 }
 
 impl SessionHandle {
@@ -62,15 +64,26 @@ impl SessionHandle {
         runtime: Arc<crate::runtime::ServerRuntime>,
     ) -> Self {
         let max_turns = state.max_turns;
+        let initial_memory_settings = crate::memory::SessionMemorySettingsSnapshot {
+            settings: state.memory_settings,
+            version: state.memory_settings_version,
+        };
         let (tx, rx) = mpsc::channel(SESSION_MAILBOX_CAPACITY);
+        let (memory_settings_tx, memory_settings_rx) = watch::channel(initial_memory_settings);
         let handle = Self {
             session_id,
             tx,
             max_turns,
             state_change_gate: Arc::new(tokio::sync::Mutex::new(())),
             metadata_update_gate: Arc::new(tokio::sync::Mutex::new(())),
+            memory_settings_tx,
         };
-        tokio::spawn(super::actor_loop::run_session_actor(state, rx, runtime));
+        tokio::spawn(super::actor_loop::run_session_actor(
+            state,
+            rx,
+            memory_settings_rx,
+            runtime,
+        ));
         handle
     }
 
@@ -128,14 +141,7 @@ impl SessionHandle {
     pub(crate) async fn memory_settings(
         &self,
     ) -> Option<crate::memory::SessionMemorySettingsSnapshot> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if !self
-            .send(SessionCommand::GetMemorySettings { reply: reply_tx })
-            .await
-        {
-            return None;
-        }
-        reply_rx.await.ok()
+        (!self.tx.is_closed()).then(|| *self.memory_settings_tx.borrow())
     }
 
     pub(crate) async fn update_memory_settings(
@@ -143,18 +149,7 @@ impl SessionHandle {
         recall: Option<devo_protocol::native::session::MemorySetting>,
         contribution: Option<devo_protocol::native::session::MemorySetting>,
     ) -> Option<crate::memory::SessionMemorySettingsSnapshot> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if !self
-            .send(SessionCommand::UpdateMemorySettings {
-                recall,
-                contribution,
-                reply: reply_tx,
-            })
-            .await
-        {
-            return None;
-        }
-        reply_rx.await.ok()
+        (!self.tx.is_closed()).then(|| self.apply_memory_settings(recall, contribution))
     }
 
     pub(crate) fn notify_memory_settings(
@@ -162,11 +157,37 @@ impl SessionHandle {
         recall: Option<devo_protocol::native::session::MemorySetting>,
         contribution: Option<devo_protocol::native::session::MemorySetting>,
     ) -> bool {
-        self.try_send(SessionCommand::UpdateMemorySettings {
-            recall,
-            contribution,
-            reply: oneshot::channel().0,
-        })
+        if self.tx.is_closed() {
+            return false;
+        }
+        self.apply_memory_settings(recall, contribution);
+        true
+    }
+
+    fn apply_memory_settings(
+        &self,
+        recall: Option<devo_protocol::native::session::MemorySetting>,
+        contribution: Option<devo_protocol::native::session::MemorySetting>,
+    ) -> crate::memory::SessionMemorySettingsSnapshot {
+        self.memory_settings_tx.send_modify(|snapshot| {
+            let mut changed = false;
+            if let Some(recall) = recall
+                && snapshot.settings.recall != recall
+            {
+                snapshot.settings.recall = recall;
+                changed = true;
+            }
+            if let Some(contribution) = contribution
+                && snapshot.settings.contribution != contribution
+            {
+                snapshot.settings.contribution = contribution;
+                changed = true;
+            }
+            if changed {
+                snapshot.version = snapshot.version.saturating_add(1);
+            }
+        });
+        *self.memory_settings_tx.borrow()
     }
 
     pub(crate) async fn spawn_snapshot(&self) -> Option<SpawnSnapshot> {
@@ -773,3 +794,6 @@ impl SessionHandle {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

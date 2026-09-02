@@ -3,10 +3,15 @@
 //! This module deliberately exposes one high-level command surface. SQLite
 //! tables are an implementation detail and are never returned to callers.
 
+mod identity;
+
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use chrono::DateTime;
+use chrono::Utc;
 use devo_core::MemoryConfig;
 use devo_protocol::native::rpc_memory::MemoryStatus;
 use devo_protocol::native::session::MemorySetting;
@@ -15,7 +20,7 @@ use rusqlite::OptionalExtension;
 use thiserror::Error;
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "2";
+const MEMORY_SCHEMA_VERSION: &str = "3";
 
 /// Per-session memory behavior kept by the server runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +56,10 @@ pub enum MemoryError {
     LockPoisoned,
     #[error("memory database returned an invalid count: {0}")]
     InvalidCount(i64),
+    #[error("memory database returned an invalid timestamp: {0}")]
+    InvalidTimestamp(String),
+    #[error("failed to resolve memory project identity: {0}")]
+    ProjectIdentity(String),
 }
 
 /// Server-owned runtime for General Persistent Memory.
@@ -76,9 +85,16 @@ impl MemoryRuntime {
     /// empty preparation while preserving the disabled-mode contract.
     pub async fn prepare_turn(
         &self,
-        _request: PrepareMemoryRequest,
+        request: PrepareMemoryRequest,
     ) -> Result<PreparedMemory, MemoryError> {
-        Ok(PreparedMemory::default())
+        if !self.config.enabled {
+            return Ok(PreparedMemory::default());
+        }
+        let identity = identity::resolve_project_memory_identity(&request.workspace_root)
+            .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
+        Ok(PreparedMemory {
+            project_scope_id: Some(identity.scope_id),
+        })
     }
 
     /// Accepts a session source for later extraction work. Disabled memory
@@ -124,6 +140,8 @@ impl MemoryRuntime {
                 &connection,
                 "SELECT COUNT(*) FROM memory_jobs WHERE state = 'error'",
             )?,
+            last_successful_scan_at: last_successful_scan_at(&connection)?,
+            error_classes: error_classes(&connection)?,
         })
     }
 }
@@ -143,12 +161,16 @@ pub enum MemoryCommandResult {
 }
 
 /// Input for turn preparation.
-#[derive(Debug, Clone, Default)]
-pub struct PrepareMemoryRequest {}
+#[derive(Debug, Clone)]
+pub struct PrepareMemoryRequest {
+    pub workspace_root: PathBuf,
+}
 
 /// Prepared memory context for a turn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PreparedMemory {}
+pub struct PreparedMemory {
+    pub project_scope_id: Option<String>,
+}
 
 /// A completed session source eligible for future memory extraction.
 #[derive(Debug, Clone, Default)]
@@ -164,6 +186,54 @@ pub struct EnqueueOutcome {
 fn count_rows(connection: &Connection, sql: &str) -> Result<u64, MemoryError> {
     let count: i64 = connection.query_row(sql, [], |row| row.get(0))?;
     u64::try_from(count).map_err(|_| MemoryError::InvalidCount(count))
+}
+
+fn last_successful_scan_at(connection: &Connection) -> Result<Option<DateTime<Utc>>, MemoryError> {
+    let timestamp = connection.query_row(
+        "SELECT MAX(updated_at)
+         FROM memory_jobs
+         WHERE state = 'completed' AND job_kind = 'source_scan'",
+        [],
+        |row| row.get::<_, Option<String>>(0),
+    )?;
+    timestamp
+        .map(|timestamp| {
+            DateTime::parse_from_rfc3339(&timestamp)
+                .map(|timestamp| timestamp.with_timezone(&Utc))
+                .map_err(|_| MemoryError::InvalidTimestamp(timestamp))
+        })
+        .transpose()
+}
+
+fn error_classes(connection: &Connection) -> Result<Vec<String>, MemoryError> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT error_class
+         FROM memory_jobs
+         WHERE state = 'error' AND error_class IS NOT NULL
+         ORDER BY error_class",
+    )?;
+    let classes = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(MemoryError::from)?;
+    Ok(classes
+        .into_iter()
+        .map(redact_error_class)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
+}
+
+fn redact_error_class(error_class: String) -> String {
+    match error_class.as_str() {
+        "credentials_unavailable"
+        | "invalid_structured_output"
+        | "permanent_provider_error"
+        | "provider_unavailable"
+        | "quota_unavailable"
+        | "transient_provider_error" => error_class,
+        _ => "unknown".to_string(),
+    }
 }
 
 fn create_schema(connection: &Connection) -> Result<(), MemoryError> {
@@ -269,37 +339,81 @@ fn create_schema(connection: &Connection) -> Result<(), MemoryError> {
 }
 
 fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
+    let transaction = connection.unchecked_transaction()?;
     ensure_column(
-        connection,
+        &transaction,
         "memory_jobs",
         "job_kind",
         "TEXT NOT NULL DEFAULT 'source_scan'",
     )?;
     ensure_column(
-        connection,
+        &transaction,
         "memory_jobs",
         "job_key",
         "TEXT NOT NULL DEFAULT ''",
     )?;
-    ensure_column(connection, "memory_jobs", "lease_owner", "TEXT")?;
-    ensure_column(connection, "memory_jobs", "claimed_at", "TEXT")?;
-    connection.execute(
+    ensure_column(&transaction, "memory_jobs", "lease_owner", "TEXT")?;
+    ensure_column(&transaction, "memory_jobs", "claimed_at", "TEXT")?;
+    transaction.execute(
         "UPDATE memory_jobs
          SET job_key = source_session_id || ':' || source_watermark
          WHERE job_key = ''",
         [],
     )?;
-    connection.execute(
+    transaction.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS memory_jobs_kind_key
          ON memory_jobs (job_kind, job_key)",
         [],
     )?;
-    connection.execute(
+    transaction.execute_batch(
+        "UPDATE memory_revocations AS kept
+         SET revoked_at = (
+                 SELECT MAX(all_rows.revoked_at)
+                 FROM memory_revocations AS all_rows
+                 WHERE all_rows.scope_type = kept.scope_type
+                   AND all_rows.scope_id = kept.scope_id
+                   AND all_rows.normalized_key = kept.normalized_key
+             ),
+             restored_at = (
+                 SELECT CASE
+                     WHEN MAX(all_rows.restored_at) >= MAX(all_rows.revoked_at)
+                     THEN MAX(all_rows.restored_at)
+                     ELSE NULL
+                 END
+                 FROM memory_revocations AS all_rows
+                 WHERE all_rows.scope_type = kept.scope_type
+                   AND all_rows.scope_id = kept.scope_id
+                   AND all_rows.normalized_key = kept.normalized_key
+             )
+         WHERE kept.revocation_id = (
+             SELECT MAX(candidate.revocation_id)
+             FROM memory_revocations AS candidate
+             WHERE candidate.scope_type = kept.scope_type
+               AND candidate.scope_id = kept.scope_id
+               AND candidate.normalized_key = kept.normalized_key
+         );
+
+         DELETE FROM memory_revocations
+         WHERE revocation_id != (
+             SELECT MAX(candidate.revocation_id)
+             FROM memory_revocations AS candidate
+             WHERE candidate.scope_type = memory_revocations.scope_type
+               AND candidate.scope_id = memory_revocations.scope_id
+               AND candidate.normalized_key = memory_revocations.normalized_key
+         );",
+    )?;
+    transaction.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS memory_revocations_scope_identity
+         ON memory_revocations (scope_type, scope_id, normalized_key)",
+        [],
+    )?;
+    transaction.execute(
         "INSERT INTO memory_schema_meta (key, value)
          VALUES ('schema_version', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [MEMORY_SCHEMA_VERSION],
     )?;
+    transaction.commit()?;
     Ok(())
 }
 

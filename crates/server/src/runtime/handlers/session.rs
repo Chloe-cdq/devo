@@ -1,5 +1,6 @@
 use super::super::*;
-
+use super::session_memory::MemorySettingsPatchPlan;
+use super::session_memory::PersistMemorySettingsError;
 use devo_core::SessionSettingsField;
 use devo_protocol::native::rpc_session::RollbackMode;
 
@@ -583,11 +584,8 @@ impl ServerRuntime {
         let mut overlay_model: Option<String> = None;
         let mut overlay_compact_limit: Option<usize> = None;
         let mut overlay_mode: Option<devo_protocol::CollaborationMode> = None;
-        let mut overlay_memory_recall: Option<devo_protocol::native::session::MemorySetting> = None;
-        let mut overlay_memory_contribution: Option<devo_protocol::native::session::MemorySetting> =
-            None;
-        let mut memory_updates = Vec::new();
-        let mut applied_memory_settings = None;
+        let memory_settings_patch =
+            MemorySettingsPatchPlan::new(&current, params.settings.as_ref());
         let mut applied_window: Option<u64> = None;
         if let Some(settings) = &params.settings {
             if let Some(profile) = settings.permission_profile
@@ -763,60 +761,32 @@ impl ServerRuntime {
                     applied_window = Some(applied);
                 }
             }
-            if let Some(memory_recall) = settings.memory_recall
-                && memory_recall != current.memory_recall
-            {
-                memory_updates.push((
-                    SessionSettingsField::MemoryRecall,
-                    serde_json::to_value(memory_recall).expect("serialize memory recall setting"),
-                ));
-                overlay_memory_recall = Some(memory_recall);
-            }
-            if let Some(memory_contribution) = settings.memory_contribution
-                && memory_contribution != current.memory_contribution
-            {
-                memory_updates.push((
-                    SessionSettingsField::MemoryContribution,
-                    serde_json::to_value(memory_contribution)
-                        .expect("serialize memory contribution setting"),
-                ));
-                overlay_memory_contribution = Some(memory_contribution);
-            }
         }
-        if !memory_updates.is_empty() {
-            if let Some(path) = &rollout_path {
-                if let Err(error) = self.rollout_store.append_session_settings_batch_at(
-                    path,
-                    legacy_session_id,
-                    &memory_updates,
-                ) {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        format!("failed to persist memory settings lines: {error}"),
-                    );
-                }
-                if !session_handle
-                    .notify_memory_settings(overlay_memory_recall, overlay_memory_contribution)
-                {
-                    tracing::warn!(
-                        session_id = %legacy_session_id,
-                        "failed to notify session actor of persisted memory settings"
-                    );
-                }
-            } else {
-                applied_memory_settings = session_handle
-                    .update_memory_settings(overlay_memory_recall, overlay_memory_contribution)
-                    .await;
-                if applied_memory_settings.is_none() {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::SessionNotFound,
-                        "session actor is no longer available",
-                    );
-                }
+        let applied_memory_settings = match memory_settings_patch
+            .persist(
+                &self.rollout_store,
+                &session_handle,
+                rollout_path.as_deref(),
+                legacy_session_id,
+            )
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(PersistMemorySettingsError::Persistence(error)) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to persist memory settings lines: {error}"),
+                );
             }
-        }
+            Err(PersistMemorySettingsError::SessionUnavailable) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::SessionNotFound,
+                    "session actor is no longer available",
+                );
+            }
+        };
         if let Some(binding) = &params.model
             && binding.model != session_model_slug
         {
@@ -1040,12 +1010,7 @@ impl ServerRuntime {
         } else if rollout_path.is_none() {
             session.version = session_version;
         }
-        if let Some(memory_recall) = overlay_memory_recall {
-            session.settings.memory_recall = memory_recall;
-        }
-        if let Some(memory_contribution) = overlay_memory_contribution {
-            session.settings.memory_contribution = memory_contribution;
-        }
+        memory_settings_patch.apply_to(&mut session.settings);
         // Compaction settings are global, so update loaded sibling sessions
         // after the addressed session has been persisted. This keeps the
         // canonical settings patch behavior identical for every session
@@ -1845,6 +1810,17 @@ impl ServerRuntime {
                     request_id,
                     ProtocolErrorCode::InternalError,
                     format!("failed to persist forked session metadata: {error}"),
+                );
+            }
+            if let Err(error) = self.rollout_store.append_inherited_memory_settings_at(
+                &record.rollout_path,
+                forked_id,
+                forked_runtime.memory_settings,
+            ) {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to persist forked memory settings: {error}"),
                 );
             }
             forked_runtime.record = Some(record);

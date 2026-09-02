@@ -1,5 +1,7 @@
 //! Params and result types for the General Persistent Memory API.
 
+use chrono::DateTime;
+use chrono::Utc;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -27,4 +29,8 @@ pub struct MemoryStatus {
     pub pending_job_count: u64,
     pub retrying_job_count: u64,
     pub error_job_count: u64,
+    /// Completion time of the most recent successful source scan.
+    pub last_successful_scan_at: Option<DateTime<Utc>>,
+    /// Distinct redacted failure classifications for current error jobs.
+    pub error_classes: Vec<String>,
 }

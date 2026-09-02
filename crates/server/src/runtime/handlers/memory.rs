@@ -55,5 +55,7 @@ fn unavailable_memory_status(enabled: bool) -> devo_protocol::native::rpc_memory
         pending_job_count: 0,
         retrying_job_count: 0,
         error_job_count: 0,
+        last_successful_scan_at: None,
+        error_classes: Vec::new(),
     }
 }
