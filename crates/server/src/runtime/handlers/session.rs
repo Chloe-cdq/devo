@@ -1,5 +1,6 @@
 use super::super::*;
-
+use super::session_memory::MemorySettingsPatchPlan;
+use super::session_memory::PersistMemorySettingsError;
 use devo_core::SessionSettingsField;
 use devo_protocol::native::rpc_session::RollbackMode;
 
@@ -196,6 +197,8 @@ impl ServerRuntime {
             record,
             summary: summary.clone(),
             config,
+            memory_settings: Default::default(),
+            memory_settings_version: 1,
             core: core_session,
             stream: Arc::new(tokio::sync::Mutex::new(
                 crate::runtime::session_actor::state::SessionStreamState::default(),
@@ -434,11 +437,11 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _metadata_update_guard = session_handle.lock_metadata_update().await;
         // Persist-first: never wait on the session actor, and never take
-        // the state-change gate for a settings patch. Title generation and
-        // finalize hold that gate across mailbox waits; taking it here
-        // stalls the TUI's pre-turn `session/metadata/update` until the
-        // 10s client timeout, after which `turn/start` hits the same gate.
+        // the state-change gate for a settings patch. The metadata gate only
+        // serializes concurrent read/modify/write patches for this session;
+        // turn admission remains independent.
         // Mailbox-free rollout resolution: SQLite index first, rollout scan
         // fallback (same sources as the subscription snapshot path). The
         // index metadata also supplies the current model/binding/effort
@@ -521,13 +524,22 @@ impl ServerRuntime {
                         "session is not durable and has no index metadata",
                     );
                 };
-                if params.expected_version > 1 {
+                let Some(memory_snapshot) = session_handle.memory_settings().await else {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::SessionNotFound,
+                        "session actor is no longer available",
+                    );
+                };
+                if params.expected_version != 0
+                    && params.expected_version != memory_snapshot.version
+                {
                     return self.error_response(
                         request_id,
                         ProtocolErrorCode::WorkspaceVersionConflict,
                         format!(
-                            "session version drift: expected {}, current 1",
-                            params.expected_version
+                            "session version drift: expected {}, current {}",
+                            params.expected_version, memory_snapshot.version
                         ),
                     );
                 }
@@ -555,22 +567,25 @@ impl ServerRuntime {
                     ),
                     sandbox_profile: None,
                     effective_context_window: None,
+                    memory_recall: memory_snapshot.settings.recall,
+                    memory_contribution: memory_snapshot.settings.contribution,
                 };
                 (
-                    1,
+                    memory_snapshot.version,
                     index_metadata.model.clone().unwrap_or_default(),
                     index_metadata.cwd.clone(),
                     index_metadata.additional_directories.clone(),
                     settings,
                 )
             };
-        let _ = session_version;
         let mut overlay_profile: Option<devo_safety::RuntimePermissionProfile> = None;
         let mut overlay_sandbox: Option<String> = None;
         let mut overlay_effort: Option<String> = None;
         let mut overlay_model: Option<String> = None;
         let mut overlay_compact_limit: Option<usize> = None;
         let mut overlay_mode: Option<devo_protocol::CollaborationMode> = None;
+        let memory_settings_patch =
+            MemorySettingsPatchPlan::new(&current, params.settings.as_ref());
         let mut applied_window: Option<u64> = None;
         if let Some(settings) = &params.settings {
             if let Some(profile) = settings.permission_profile
@@ -747,6 +762,31 @@ impl ServerRuntime {
                 }
             }
         }
+        let applied_memory_settings = match memory_settings_patch
+            .persist(
+                &self.rollout_store,
+                &session_handle,
+                rollout_path.as_deref(),
+                legacy_session_id,
+            )
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(PersistMemorySettingsError::Persistence(error)) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to persist memory settings lines: {error}"),
+                );
+            }
+            Err(PersistMemorySettingsError::SessionUnavailable) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::SessionNotFound,
+                    "session actor is no longer available",
+                );
+            }
+        };
         if let Some(binding) = &params.model
             && binding.model != session_model_slug
         {
@@ -963,6 +1003,14 @@ impl ServerRuntime {
         if let Some(applied) = applied_window {
             session.settings.effective_context_window = Some(applied);
         }
+        if let Some(snapshot) = applied_memory_settings {
+            session.version = snapshot.version;
+            session.settings.memory_recall = snapshot.settings.recall;
+            session.settings.memory_contribution = snapshot.settings.contribution;
+        } else if rollout_path.is_none() {
+            session.version = session_version;
+        }
+        memory_settings_patch.apply_to(&mut session.settings);
         // Compaction settings are global, so update loaded sibling sessions
         // after the addressed session has been persisted. This keeps the
         // canonical settings patch behavior identical for every session
@@ -1076,6 +1124,8 @@ impl ServerRuntime {
                 ),
                 sandbox_profile: None,
                 effective_context_window: None,
+                memory_recall: Default::default(),
+                memory_contribution: Default::default(),
             },
             git_info: None,
             preview: String::new(),
@@ -1762,6 +1812,17 @@ impl ServerRuntime {
                     format!("failed to persist forked session metadata: {error}"),
                 );
             }
+            if let Err(error) = self.rollout_store.append_inherited_memory_settings_at(
+                &record.rollout_path,
+                forked_id,
+                forked_runtime.memory_settings,
+            ) {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to persist forked memory settings: {error}"),
+                );
+            }
             forked_runtime.record = Some(record);
         }
         let summary = forked_runtime.summary.clone();
@@ -2034,6 +2095,8 @@ impl ServerRuntime {
             record: None,
             summary,
             config,
+            memory_settings: source.memory_settings,
+            memory_settings_version: source.memory_settings_version,
             core_session: Arc::new(Mutex::new(core_session)),
             active_turn: None,
             latest_turn,

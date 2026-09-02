@@ -472,6 +472,11 @@ pub enum SessionSettingsField {
     ReasoningEffortSelection,
     /// Session collaboration mode (`SessionRecord::collaboration_mode`).
     CollaborationMode,
+    /// Per-session memory recall setting, stored as a Native `MemorySetting`.
+    MemoryRecall,
+    /// Per-session memory contribution setting, stored as a Native
+    /// `MemorySetting`.
+    MemoryContribution,
 }
 
 /// Stores one field-level session settings change in the rollout file.

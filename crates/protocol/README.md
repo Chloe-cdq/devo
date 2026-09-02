@@ -107,6 +107,9 @@ progress through server notifications.
 
 - `initialize`: negotiate the Native connection and capabilities.
 - `runtime/ping`: return the server time.
+- `memory/status`: return the effective global memory state, safe aggregate
+  storage/job counts, the latest successful source-scan time, and redacted
+  error classifications.
 - `subscription/create`, `subscription/update`, `subscription/ack`, and
   `subscription/unsubscribe`: create, manage, acknowledge, and stop durable
   event subscriptions.
@@ -117,7 +120,8 @@ progress through server notifications.
   list, read, and resume Native sessions.
 - `session/metadata/update`: update session metadata and settings with the
   Native patch shape, including title, model, reasoning effort, permission
-  preset, sandbox profile, and compaction threshold.
+  preset, sandbox profile, memory recall/contribution settings, and compaction
+  threshold.
 - `session/compact/start`: start a manual compaction turn; keep emitting
   `session/compaction/*` for UI.
 - `session/fork`: fork a new session from an existing turn.
