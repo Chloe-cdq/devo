@@ -175,9 +175,6 @@ pub struct ServerRuntime {
     rollout_store: RolloutStore,
     goal_durable_store: GoalDurableStore,
     usage_ledger: UsageLedger,
-    /// Optional memory runtime; initialization failure is isolated from
-    /// ordinary session operation and reported through `memory/status`.
-    memory: Option<Arc<crate::memory::MemoryRuntime>>,
     /// Per-session actor handles; map lock must not be held across await.
     sessions: Mutex<HashMap<SessionId, SessionHandle>>,
     /// Interactive approval and user-input waits outside session actors.
@@ -337,21 +334,6 @@ impl ServerRuntime {
             Arc::clone(&deps.db),
         );
         let usage_ledger = UsageLedger::new(rollout_store.clone(), Arc::clone(&deps.db));
-        let memory_config = deps
-            .config_store
-            .lock()
-            .expect("app config store mutex should not be poisoned")
-            .effective_config()
-            .memory
-            .clone();
-        let memory =
-            match crate::memory::MemoryRuntime::open(server_home.join("memory"), memory_config) {
-                Ok(runtime) => Some(Arc::new(runtime)),
-                Err(error) => {
-                    tracing::warn!(%error, "failed to initialize persistent memory runtime");
-                    None
-                }
-            };
         let sandbox_network_proxy = std::sync::Arc::new(std::sync::Mutex::new(None));
         // Proxy startup is async; ports are published via the thread-safe
         // `set_sandbox_proxy_ports` store (not process-wide `env::set_var`).
@@ -393,7 +375,6 @@ impl ServerRuntime {
             rollout_store,
             goal_durable_store,
             usage_ledger,
-            memory,
             sessions: Mutex::new(HashMap::new()),
             session_interactive: SessionInteractiveLanes::default(),
             event_subscriptions: Mutex::new(HashMap::new()),

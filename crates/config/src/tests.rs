@@ -149,7 +149,6 @@ check_interval_hours = 48
             mcp_runtime: super::McpConfig::default(),
             tools: ToolsConfig::default(),
             hooks: HooksConfig::default(),
-            memory: super::MemoryConfig::default(),
             permission: PermissionConfig::default(),
             provider: ProviderConfigSection::default(),
             provider_http: super::ProviderHttpConfig::default(),

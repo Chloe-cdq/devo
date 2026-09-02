@@ -10,7 +10,6 @@ mod exec_policy_store;
 mod execution;
 pub mod goal;
 mod goal_durable;
-pub mod memory;
 mod persistence;
 mod projection;
 mod protocol;

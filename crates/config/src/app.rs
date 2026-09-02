@@ -27,7 +27,6 @@ use crate::McpConfig;
 use crate::McpHostConfig;
 use crate::McpServerId;
 use crate::McpServerRecordToml;
-use crate::MemoryConfig;
 use crate::ModelBindingConfig;
 use crate::OAuthCredentialsStoreMode;
 use crate::PermissionConfig;
@@ -87,9 +86,6 @@ pub struct AppConfig {
     /// External lifecycle hooks keyed by event name.
     #[serde(default, skip_serializing_if = "HooksConfig::is_empty")]
     pub hooks: HooksConfig,
-    /// Global General Persistent Memory settings.
-    #[serde(default)]
-    pub memory: MemoryConfig,
     /// Configured rules and default behavior for tool permission requests.
     #[serde(default)]
     pub permission: PermissionConfig,
@@ -199,7 +195,6 @@ impl Default for AppConfig {
             mcp_runtime: McpConfig::default(),
             tools: ToolsConfig::default(),
             hooks: HooksConfig::default(),
-            memory: MemoryConfig::default(),
             permission: PermissionConfig::default(),
             provider: ProviderConfigSection::default(),
             provider_http: ProviderHttpConfig::default(),
@@ -860,65 +855,6 @@ fn validate_app_config(config: &AppConfig) -> Result<(), AppConfigError> {
     if config.updates.check_interval_hours < 1 {
         return Err(AppConfigError::Validation {
             message: "updates.check_interval_hours must be at least 1".into(),
-        });
-    }
-
-    if matches!(
-        config.memory.default_recall,
-        devo_protocol::native::session::MemorySetting::Inherit
-    ) {
-        return Err(AppConfigError::Validation {
-            message: "memory.default_recall must be on or off".into(),
-        });
-    }
-
-    if matches!(
-        config.memory.default_contribution,
-        devo_protocol::native::session::MemorySetting::Inherit
-    ) {
-        return Err(AppConfigError::Validation {
-            message: "memory.default_contribution must be on or off".into(),
-        });
-    }
-
-    if config.memory.min_source_idle_hours == 0 {
-        return Err(AppConfigError::Validation {
-            message: "memory.min_source_idle_hours must be at least 1".into(),
-        });
-    }
-    if config.memory.source_window_days == 0 {
-        return Err(AppConfigError::Validation {
-            message: "memory.source_window_days must be at least 1".into(),
-        });
-    }
-    if config.memory.inferred_stale_after_days == 0 {
-        return Err(AppConfigError::Validation {
-            message: "memory.inferred_stale_after_days must be at least 1".into(),
-        });
-    }
-    if config.memory.candidate_and_job_retention_days == 0 {
-        return Err(AppConfigError::Validation {
-            message: "memory.candidate_and_job_retention_days must be at least 1".into(),
-        });
-    }
-    if config.memory.max_sources_per_scan == 0 {
-        return Err(AppConfigError::Validation {
-            message: "memory.max_sources_per_scan must be at least 1".into(),
-        });
-    }
-    if config.memory.max_entries_per_turn == 0 {
-        return Err(AppConfigError::Validation {
-            message: "memory.max_entries_per_turn must be at least 1".into(),
-        });
-    }
-    if config.memory.max_prompt_tokens == 0 {
-        return Err(AppConfigError::Validation {
-            message: "memory.max_prompt_tokens must be at least 1".into(),
-        });
-    }
-    if config.memory.min_rate_limit_remaining_percent > 100 {
-        return Err(AppConfigError::Validation {
-            message: "memory.min_rate_limit_remaining_percent must be at most 100".into(),
         });
     }
 

@@ -153,36 +153,6 @@ pub struct SessionSettings {
     /// automatic-compaction boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_context_window: Option<u64>,
-    /// Per-session recall preference for General Persistent Memory.
-    #[serde(default, skip_serializing_if = "MemorySetting::is_inherit")]
-    pub memory_recall: MemorySetting,
-    /// Per-session contribution preference for General Persistent Memory.
-    #[serde(default, skip_serializing_if = "MemorySetting::is_inherit")]
-    pub memory_contribution: MemorySetting,
-}
-
-/// Selects whether a session may use one side of General Persistent Memory.
-///
-/// `Inherit` delegates to the configured global default. A globally disabled
-/// memory runtime always resolves both sides to `Off`, regardless of this
-/// session-level setting.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum MemorySetting {
-    /// Use the global memory default.
-    #[default]
-    Inherit,
-    /// Enable this memory capability for the session.
-    On,
-    /// Disable this memory capability for the session.
-    Off,
-}
-
-impl MemorySetting {
-    /// Returns whether the setting is omitted from full session snapshots.
-    pub fn is_inherit(&self) -> bool {
-        matches!(self, Self::Inherit)
-    }
 }
 
 /// Snapshot semantics: the current value is *copied* into the record at

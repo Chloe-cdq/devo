@@ -204,20 +204,6 @@ fn apply_settings_to_canonical_session(
             }
         }
         SessionSettingsField::ModelBindingId => {}
-        SessionSettingsField::MemoryRecall => {
-            if let Ok(setting) =
-                serde_json::from_value::<devo_protocol::native::session::MemorySetting>(value)
-            {
-                session.settings.memory_recall = setting;
-            }
-        }
-        SessionSettingsField::MemoryContribution => {
-            if let Ok(setting) =
-                serde_json::from_value::<devo_protocol::native::session::MemorySetting>(value)
-            {
-                session.settings.memory_contribution = setting;
-            }
-        }
     }
 }
 
@@ -416,20 +402,6 @@ mod tests {
                         .expect("serialize effort"),
                     epoch: 0,
                 }),
-                RolloutLine::SessionSettings(crate::conversation::SessionSettingsLine {
-                    timestamp: now,
-                    session_id,
-                    field: crate::conversation::SessionSettingsField::MemoryRecall,
-                    value: serde_json::json!("off"),
-                    epoch: 0,
-                }),
-                RolloutLine::SessionSettings(crate::conversation::SessionSettingsLine {
-                    timestamp: now,
-                    session_id,
-                    field: crate::conversation::SessionSettingsField::MemoryContribution,
-                    value: serde_json::json!("on"),
-                    epoch: 0,
-                }),
             ],
         );
 
@@ -444,15 +416,8 @@ mod tests {
             session.settings.reasoning_effort,
             Some(devo_protocol::ReasoningEffort::High)
         );
-        assert_eq!(
-            session.settings.memory_recall,
-            devo_protocol::native::session::MemorySetting::Off
-        );
-        assert_eq!(
-            session.settings.memory_contribution,
-            devo_protocol::native::session::MemorySetting::On
-        );
-        // Five settings epochs raise the SessionMeta version (1) to 6.
-        assert_eq!(session.version, 6);
+        // Three settings epochs (1, 2, 3) raise the SessionMeta version (1)
+        // to 4.
+        assert_eq!(session.version, 4);
     }
 }
