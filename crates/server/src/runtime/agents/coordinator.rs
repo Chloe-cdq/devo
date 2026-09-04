@@ -367,4 +367,177 @@ impl AgentToolCoordinator for ServerRuntime {
             "time_used_seconds": thread_goal.time_used_seconds,
         }))
     }
+
+    async fn memory_remember(
+        self: Arc<Self>,
+        session_id: String,
+        turn_id: String,
+        params: devo_protocol::native::rpc_memory::MemoryRememberParams,
+    ) -> Result<devo_protocol::native::rpc_memory::MemoryEntry, ToolCallError> {
+        if params.scope != devo_protocol::native::rpc_memory::MemoryScope::User {
+            return Err(ToolCallError::InvalidInput(
+                "memory_remember only accepts User scope".to_string(),
+            ));
+        }
+        let session_id = SessionId::try_from(session_id.as_str())
+            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+        let turn_id = TurnId::try_from(turn_id.as_str())
+            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+        let source_item_id = params.source_user_item_id.to_string();
+        let current_user_message_matches =
+            if let Some(stream) = self.active_stream_state(session_id).await {
+                let stream = stream.lock().await;
+                stream.turn_inline.as_ref().is_some_and(|inline| {
+                    inline.turn_id == turn_id
+                        && inline.persisted_turn_items.iter().any(|item| {
+                            item.turn_id == turn_id
+                                && item.item_id.to_string() == source_item_id
+                                && matches!(
+                                    &item.turn_item,
+                                    devo_core::TurnItem::UserMessage(text)
+                                        if has_explicit_memory_intent(&text.text)
+                                )
+                        })
+                })
+            } else {
+                false
+            };
+        if !current_user_message_matches {
+            return Err(ToolCallError::InvalidInput(
+                "memory_remember requires explicit intent in the current user message".to_string(),
+            ));
+        }
+        let memory = self.memory.as_ref().ok_or_else(|| {
+            ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
+        })?;
+        let summary = self
+            .session_summary_snapshot(session_id)
+            .await
+            .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
+        let result = memory
+            .execute_command(crate::memory::MemoryCommand::Remember(
+                crate::memory::MemoryRememberRequest {
+                    text: params.text,
+                    scope: params.scope,
+                    kind: params.kind,
+                    source_user_item_id: source_item_id,
+                    source_session_id: session_id.to_string(),
+                    source_turn_id: Some(turn_id.to_string()),
+                    workspace_root: summary.cwd,
+                },
+            ))
+            .await
+            .map_err(memory_tool_error)?;
+        match result {
+            crate::memory::MemoryCommandResult::Remember(entry) => Ok(entry),
+            _ => Err(ToolCallError::InternalError(
+                "memory_remember returned an unexpected result".to_string(),
+            )),
+        }
+    }
+}
+
+fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
+    match error {
+        crate::memory::MemoryError::InvalidRequest(message) => ToolCallError::InvalidInput(message),
+        crate::memory::MemoryError::SecretContentRejected => {
+            ToolCallError::Denied("memory content was rejected for safety".to_string())
+        }
+        crate::memory::MemoryError::Disabled => {
+            ToolCallError::NeedsConfiguration("memory is disabled".to_string())
+        }
+        _ => ToolCallError::InternalError("memory operation is unavailable".to_string()),
+    }
+}
+
+fn has_explicit_memory_intent(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    let english_requests = [
+        "please remember",
+        "can you remember",
+        "could you remember",
+        "would you remember",
+        "remember this",
+        "remember that",
+        "remember my",
+        "remember i ",
+        "memorize this",
+        "memorize that",
+        "keep in mind",
+        "save this",
+        "save that",
+        "store this",
+        "store that",
+    ];
+    english_requests
+        .iter()
+        .any(|phrase| unnegated_command_phrase(&text, phrase))
+        || text.contains("don't forget")
+        || text.contains("do not forget")
+        || [
+            "请记住",
+            "请记一下",
+            "请记下来",
+            "帮我记住",
+            "记住这",
+            "记住我",
+            "记一下",
+            "记下来",
+            "请保存",
+            "帮我保存",
+            "保存这",
+            "保存一下",
+            "存一下",
+        ]
+        .iter()
+        .any(|phrase| unnegated_command_phrase(text.as_str(), phrase))
+        || text.contains("别忘了")
+        || text.contains("不要忘记")
+}
+
+fn unnegated_command_phrase(text: &str, phrase: &str) -> bool {
+    text.match_indices(phrase).any(|(start, _)| {
+        let before = text[..start].trim_end();
+        ![
+            "don't", "do not", "not", "never", "i", "we", "you", "he", "she", "they", "我", "我们",
+            "你", "他", "她", "他们", "已", "已经", "不要", "请勿", "不用", "不必", "无需",
+        ]
+        .iter()
+        .any(|prefix| before.ends_with(prefix))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::has_explicit_memory_intent;
+
+    #[test]
+    fn explicit_memory_intent_accepts_english_and_chinese_requests() {
+        assert_eq!(
+            has_explicit_memory_intent("Please remember that I prefer tabs"),
+            true
+        );
+        assert_eq!(has_explicit_memory_intent("请记住我喜欢深色模式"), true);
+        assert_eq!(
+            has_explicit_memory_intent("Can you remember my timezone?"),
+            true
+        );
+        assert_eq!(has_explicit_memory_intent("别忘了我不喝咖啡"), true);
+        assert_eq!(has_explicit_memory_intent("I prefer tabs"), false);
+    }
+
+    #[test]
+    fn explicit_memory_intent_rejects_negation_and_description() {
+        assert_eq!(
+            has_explicit_memory_intent("Don't remember my birthday"),
+            false
+        );
+        assert_eq!(has_explicit_memory_intent("Do not save this"), false);
+        assert_eq!(has_explicit_memory_intent("不要保存我的生日"), false);
+        assert_eq!(has_explicit_memory_intent("请勿记住这件事"), false);
+        assert_eq!(has_explicit_memory_intent("I remember my birthday"), false);
+        assert_eq!(has_explicit_memory_intent("我保存过这个"), false);
+    }
 }

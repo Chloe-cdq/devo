@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Page<T> {
     pub data: Vec<T>,

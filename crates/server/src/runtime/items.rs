@@ -308,7 +308,7 @@ impl ServerRuntime {
         item_kind: ItemKind,
         turn_item: TurnItem,
         payload: serde_json::Value,
-    ) {
+    ) -> (ItemId, u64) {
         let (item_id, item_seq) = self
             .start_item(session_id, turn_id, item_kind.clone(), payload.clone())
             .await;
@@ -322,6 +322,7 @@ impl ServerRuntime {
             payload.clone(),
         )
         .await;
+        (item_id, item_seq)
     }
 
     pub(super) async fn start_item(

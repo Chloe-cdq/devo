@@ -329,6 +329,11 @@ impl ServerRuntime {
                 .expect("serialize runtime/ping response"),
             ),
             "memory/status" => Some(self.handle_native_memory_status(id?, params).await),
+            "memory/remember" => Some(
+                self.handle_native_memory_remember(connection_id, id?, params)
+                    .await,
+            ),
+            "memory/list" => Some(self.handle_native_memory_list(id?, params).await),
             "model/list" => Some(self.handle_native_model_list(id?, params).await),
             "model/preferences/read" => {
                 Some(self.handle_native_model_preferences_read(id?, params).await)
@@ -569,6 +574,20 @@ impl ServerRuntime {
                 include_child_agents,
             });
         }
+    }
+
+    pub(super) async fn subscribed_session_for_connection(
+        &self,
+        connection_id: u64,
+    ) -> Option<SessionId> {
+        let connections = self.connections.lock().await;
+        let connection = connections.get(&connection_id)?;
+        let mut session_ids = connection
+            .subscriptions
+            .iter()
+            .filter_map(|subscription| subscription.session_id);
+        let session_id = session_ids.next()?;
+        (!session_ids.any(|other| other != session_id)).then_some(session_id)
     }
 
     pub(super) async fn connection_ready(&self, connection_id: u64) -> bool {

@@ -79,6 +79,22 @@ impl ActiveTurnRegistry {
             .collect()
     }
 
+    pub(crate) async fn session_for_connection(
+        &self,
+        connection_id: u64,
+    ) -> Option<(SessionId, TurnMetadata)> {
+        self.turns
+            .lock()
+            .await
+            .iter()
+            .find_map(|(session_id, execution)| {
+                (execution.connection_id == Some(connection_id))
+                    .then(|| execution.turn.clone())
+                    .flatten()
+                    .map(|turn| (*session_id, turn))
+            })
+    }
+
     pub(crate) async fn cancel_token(&self, session_id: SessionId) -> Option<CancellationToken> {
         self.turns
             .lock()

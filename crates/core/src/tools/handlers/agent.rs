@@ -914,6 +914,7 @@ mod tests {
             tool_call_id: crate::invocation::ToolCallId("tool-call".to_string()),
             session_id: session_id.to_string(),
             turn_id: None,
+            current_user_item_id: None,
             workspace_root: ".".into(),
             budgets: ToolBudgets {
                 output_limit_bytes: 1024,

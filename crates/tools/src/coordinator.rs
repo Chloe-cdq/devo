@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use devo_protocol::native::rpc_memory::MemoryEntry;
+use devo_protocol::native::rpc_memory::MemoryRememberParams;
 use devo_protocol::{
     AgentInfo, AgentListParams, AgentMessageParams, AgentMessageResult, AwaitTaskParams,
     AwaitTaskResult, CancelTaskParams, CancelTaskResult, CloseAgentParams, CloseAgentResult,
@@ -89,6 +91,19 @@ pub trait AgentToolCoordinator: Send + Sync {
     ) -> Result<Value, ToolCallError> {
         Err(ToolCallError::ExecutionFailed(
             "update_goal is unavailable in this runtime".to_string(),
+        ))
+    }
+
+    /// Commits one root-agent memory request after the runtime validates that
+    /// its source item is the current user message.
+    async fn memory_remember(
+        self: Arc<Self>,
+        _session_id: String,
+        _turn_id: String,
+        _params: MemoryRememberParams,
+    ) -> Result<MemoryEntry, ToolCallError> {
+        Err(ToolCallError::ExecutionFailed(
+            "memory_remember is unavailable in this runtime".to_string(),
         ))
     }
 }

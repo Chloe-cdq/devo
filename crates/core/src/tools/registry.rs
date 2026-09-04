@@ -492,6 +492,7 @@ mod tests {
             tool_call_id: devo_tools::ToolCallId("test-id".to_string()),
             session_id: "test-session".to_string(),
             turn_id: Some("test-turn".to_string()),
+            current_user_item_id: None,
             workspace_root: PathBuf::from("~/user/devo"),
             budgets: ToolBudgets {
                 wall_time_limit_ms: Some(6_000),

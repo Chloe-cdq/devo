@@ -118,6 +118,10 @@ pub enum QueryProviderRetryPhase {
 #[derive(Clone, Default)]
 pub struct QueryOptions {
     pub cancel_token: Option<CancellationToken>,
+    /// Immutable User-memory context prepared before the turn's first model
+    /// request. It is carried through the query loop so later model retries
+    /// observe the same turn-start snapshot.
+    pub memory_context: Option<String>,
     /// Optional provider used only for compaction summaries. Servers use this
     /// seam to attach Compaction metering without misclassifying the main
     /// streaming query as compaction overhead.
@@ -160,6 +164,10 @@ impl std::fmt::Debug for QueryOptions {
         formatter
             .debug_struct("QueryOptions")
             .field("cancel_token", &self.cancel_token)
+            .field(
+                "memory_context",
+                &self.memory_context.as_ref().map(|_| "<snapshot>"),
+            )
             .field(
                 "compaction_provider",
                 &self

@@ -21,6 +21,7 @@ pub(crate) struct TurnModelQueryParams<'a> {
     pub input_messages: &'a [String],
     pub collaboration_mode: devo_protocol::CollaborationMode,
     pub input_mode: super::super::TurnInputMode,
+    pub current_user_item_id: Option<devo_core::ItemId>,
     pub usage_parent_session_id: Option<devo_core::SessionId>,
     pub event_tx: mpsc::Sender<QueryEvent>,
 }
@@ -38,6 +39,7 @@ impl ServerRuntime {
             input_messages,
             collaboration_mode,
             input_mode,
+            current_user_item_id,
             usage_parent_session_id,
             event_tx,
         } = params;
@@ -46,6 +48,30 @@ impl ServerRuntime {
             ToolAgentScope::Subagent
         } else {
             ToolAgentScope::Parent
+        };
+        let memory_context = if agent_scope == ToolAgentScope::Parent
+            && self
+                .memory
+                .as_ref()
+                .is_some_and(|memory| memory.recall_enabled(state.memory_settings.recall))
+        {
+            match self.memory.as_ref() {
+                Some(memory) => match memory
+                    .prepare_turn_context(crate::memory::PrepareMemoryRequest {
+                        workspace_root: state.core.cwd.clone(),
+                    })
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to prepare User memory context");
+                        None
+                    }
+                },
+                None => None,
+            }
+        } else {
+            None
         };
         let agent_tool_policy = state.agent_tool_policy;
         let session_tool_registry = self.tool_registry_for_actor_state(state);
@@ -156,6 +182,7 @@ impl ServerRuntime {
             ToolRuntimeContext {
                 session_id: session_id.to_string(),
                 turn_id: Some(turn_id.to_string()),
+                current_user_item_id: current_user_item_id.map(|item_id| item_id.to_string()),
                 cwd: state.core.cwd.clone(),
                 agent_scope,
                 collaboration_mode,
@@ -223,6 +250,7 @@ impl ServerRuntime {
                 Some(callback),
                 QueryOptions {
                     cancel_token: Some(query_cancel_token.clone()),
+                    memory_context,
                     compaction_provider: Some(compaction_provider),
                     live_settings: live_turn_settings.clone(),
                     last_model_request,

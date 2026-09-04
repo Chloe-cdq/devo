@@ -280,6 +280,7 @@ const AGENT_COORDINATION_TOOL_NAMES: &[&str] = &[
     "wait_agent",
     "list_agents",
     "close_agent",
+    "memory_remember",
 ];
 
 pub(super) fn without_agent_coordination_tools(

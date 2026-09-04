@@ -562,6 +562,14 @@ pub async fn query(
         // Build model request from the session-locked prefix.
         let request_system = {
             let mut system = session_context.build_system_prompt();
+            if let Some(memory_context) = options.memory_context.as_deref()
+                && !memory_context.trim().is_empty()
+            {
+                if !system.trim().is_empty() {
+                    system.push_str("\n\n");
+                }
+                system.push_str(memory_context);
+            }
             if !matches!(
                 &turn_config.web_search,
                 devo_config::ResolvedWebSearchConfig::Disabled
