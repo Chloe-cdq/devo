@@ -87,6 +87,80 @@ impl MemoryConfig {
             MemorySetting::Off
         }
     }
+
+    /// Resolves a session's recall override against the global memory policy.
+    /// The global feature gate always wins over an explicit session `on` value.
+    pub fn resolve_recall(&self, session_setting: MemorySetting) -> MemorySetting {
+        self.resolve_session_setting(session_setting, self.default_recall)
+    }
+
+    /// Resolves a session's contribution override against the global memory
+    /// policy. The global feature gate always wins over an explicit session
+    /// `on` value.
+    pub fn resolve_contribution(&self, session_setting: MemorySetting) -> MemorySetting {
+        self.resolve_session_setting(session_setting, self.default_contribution)
+    }
+
+    fn resolve_session_setting(
+        &self,
+        session_setting: MemorySetting,
+        global_default: MemorySetting,
+    ) -> MemorySetting {
+        if !self.enabled {
+            return MemorySetting::Off;
+        }
+        match session_setting {
+            MemorySetting::Inherit => global_default,
+            MemorySetting::On => MemorySetting::On,
+            MemorySetting::Off => MemorySetting::Off,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_memory_settings_resolve_against_independent_global_defaults() {
+        let config = MemoryConfig {
+            enabled: true,
+            default_recall: MemorySetting::Off,
+            default_contribution: MemorySetting::On,
+            ..MemoryConfig::default()
+        };
+
+        assert_eq!(
+            config.resolve_recall(MemorySetting::Inherit),
+            MemorySetting::Off
+        );
+        assert_eq!(
+            config.resolve_recall(MemorySetting::On),
+            MemorySetting::On
+        );
+        assert_eq!(
+            config.resolve_contribution(MemorySetting::Inherit),
+            MemorySetting::On
+        );
+        assert_eq!(
+            config.resolve_contribution(MemorySetting::Off),
+            MemorySetting::Off
+        );
+    }
+
+    #[test]
+    fn disabled_memory_forces_explicit_session_settings_off() {
+        let config = MemoryConfig {
+            enabled: false,
+            ..MemoryConfig::default()
+        };
+
+        assert_eq!(config.resolve_recall(MemorySetting::On), MemorySetting::Off);
+        assert_eq!(
+            config.resolve_contribution(MemorySetting::On),
+            MemorySetting::Off
+        );
+    }
 }
 
 const fn default_memory_setting_on() -> MemorySetting {
