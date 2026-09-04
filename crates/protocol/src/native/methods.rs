@@ -110,6 +110,22 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
         idempotency: Idempotency::None,
     },
     MethodSpec {
+        name: "memory/remember",
+        params_schema: schema_of::<MemoryRememberParams>,
+        result_schema: schema_of::<MemoryEntry>,
+        error_codes: &[],
+        required_capability: None,
+        idempotency: Idempotency::None,
+    },
+    MethodSpec {
+        name: "memory/list",
+        params_schema: schema_of::<MemoryListParams>,
+        result_schema: schema_of::<MemoryListResult>,
+        error_codes: &[],
+        required_capability: None,
+        idempotency: Idempotency::None,
+    },
+    MethodSpec {
         name: "subscription/create",
         params_schema: schema_of::<SubscriptionCreateParams>,
         result_schema: schema_of::<SubscriptionCreateResult>,

@@ -479,8 +479,10 @@ async fn memory_status_reports_last_successful_scan_and_error_classes() -> Resul
     drop(connection);
 
     let runtime = MemoryRuntime::open(memory_root, MemoryConfig::default())?;
-    let MemoryCommandResult::Status(status) =
-        runtime.execute_command(MemoryCommand::Status).await?;
+    let status = match runtime.execute_command(MemoryCommand::Status).await? {
+        MemoryCommandResult::Status(status) => status,
+        other => panic!("unexpected memory status result: {other:?}"),
+    };
     assert_eq!(
         status,
         MemoryStatus {

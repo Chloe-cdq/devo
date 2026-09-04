@@ -1849,6 +1849,45 @@ async fn query_exposes_stable_tools_and_appends_subagent_warning() {
 }
 
 #[tokio::test]
+async fn query_appends_immutable_memory_context_to_system_prompt() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+        requests: Arc::clone(&requests),
+    });
+    let registry = Arc::new(ToolRegistry::new());
+    let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
+    let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+    session.push_message(Message::user("hello"));
+    let turn_config = TurnConfig::new(
+        Model {
+            base_instructions: "base system".to_string(),
+            ..Model::default()
+        },
+        None,
+    );
+
+    query(
+        &mut session,
+        &turn_config,
+        provider,
+        registry,
+        &runtime,
+        None,
+        QueryOptions {
+            memory_context: Some("## User memory\n- [preference] I prefer tabs".into()),
+            ..QueryOptions::default()
+        },
+    )
+    .await
+    .expect("query should complete");
+
+    let captured = requests.lock().expect("lock requests");
+    let system = captured[0].system.as_deref().expect("system prompt");
+    assert!(system.contains("base system"));
+    assert!(system.contains("I prefer tabs"));
+}
+
+#[tokio::test]
 async fn query_adds_web_search_prompt_for_provider_hosted_search() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {

@@ -50,7 +50,7 @@ impl ServerRuntime {
         turn: &crate::TurnMetadata,
         display_input: &str,
         emits_user_message: bool,
-    ) {
+    ) -> Option<devo_core::ItemId> {
         self.capture_turn_workspace_baseline(
             state.session_id(),
             turn.turn_id,
@@ -59,17 +59,20 @@ impl ServerRuntime {
         .await;
         state.turn_approval_cache = crate::execution::ApprovalGrantCache::default();
         if emits_user_message {
-            self.emit_turn_item(
-                state.session_id(),
-                turn.turn_id,
-                crate::ItemKind::UserMessage,
-                devo_core::TurnItem::UserMessage(devo_core::TextItem {
-                    text: display_input.to_string(),
-                }),
-                serde_json::json!({ "title": "You", "text": display_input }),
-            )
-            .await;
+            let (item_id, _) = self
+                .emit_turn_item(
+                    state.session_id(),
+                    turn.turn_id,
+                    crate::ItemKind::UserMessage,
+                    devo_core::TurnItem::UserMessage(devo_core::TextItem {
+                        text: display_input.to_string(),
+                    }),
+                    serde_json::json!({ "title": "You", "text": display_input }),
+                )
+                .await;
+            return Some(item_id);
         }
+        None
     }
 
     pub(in crate::runtime) fn tool_registry_for_actor_state(

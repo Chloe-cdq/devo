@@ -10,6 +10,7 @@ mod grep;
 mod invalid;
 mod lsp;
 mod mcp;
+mod memory;
 mod plan;
 mod question;
 mod read;
@@ -31,6 +32,7 @@ pub use grep::GrepHandler;
 pub use invalid::InvalidHandler;
 pub use lsp::LspHandler;
 pub use mcp::{McpToolHandler, mcp_search_text, mcp_tool_spec};
+pub use memory::{MemoryRememberHandler, memory_remember_spec};
 pub use plan::PlanHandler;
 pub use question::QuestionHandler;
 pub use read::ReadHandler;
@@ -135,6 +137,7 @@ fn build_registry_from_builder(
         Arc::clone(&process_store),
     ));
     register_agent_tools(&mut builder, Arc::clone(&background_tasks));
+    builder.push_spec(memory_remember_spec());
     builder.push_spec(goal_update_spec());
     builder.push_spec(tool_search_spec());
 
@@ -144,6 +147,7 @@ fn build_registry_from_builder(
     builder.set_unified_exec_store(Arc::clone(&process_store));
     builder.set_loaded_deferred_tools(Arc::clone(&loaded_deferred_tools));
     builder.register_handler("update_goal", Arc::new(GoalUpdateHandler::new()));
+    builder.register_handler("memory_remember", Arc::new(MemoryRememberHandler::new()));
     for (kind, name) in handlers {
         let handler: Arc<dyn ToolHandler> = match kind {
             ToolHandlerKind::ShellCommand => Arc::new(ShellCommandHandler::new()),

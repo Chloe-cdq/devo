@@ -347,6 +347,7 @@ impl ToolRuntime {
             tool_call_id: crate::invocation::ToolCallId(call.id.clone()),
             session_id: self.context.session_id.clone(),
             turn_id: self.context.turn_id.clone(),
+            current_user_item_id: self.context.current_user_item_id.clone(),
             workspace_root: self.context.cwd.clone(),
             budgets: self.execution_options.budgets,
             cancel_token: self.execution_options.cancel_token.clone(),
@@ -663,6 +664,9 @@ impl PermissionChecker {
 pub struct ToolRuntimeContext {
     pub session_id: String,
     pub turn_id: Option<String>,
+    /// Exact User item that initiated the current turn, if this is a visible
+    /// user turn. Built-in handlers must treat it as server-owned context.
+    pub current_user_item_id: Option<String>,
     pub cwd: PathBuf,
     pub agent_scope: ToolAgentScope,
     pub collaboration_mode: devo_protocol::CollaborationMode,
@@ -688,6 +692,7 @@ impl Default for ToolRuntimeContext {
         Self {
             session_id: String::new(),
             turn_id: None,
+            current_user_item_id: None,
             cwd: PathBuf::new(),
             agent_scope: ToolAgentScope::default(),
             collaboration_mode: devo_protocol::CollaborationMode::default(),
@@ -709,6 +714,10 @@ impl std::fmt::Debug for ToolRuntimeContext {
         f.debug_struct("ToolRuntimeContext")
             .field("session_id", &self.session_id)
             .field("turn_id", &self.turn_id)
+            .field(
+                "current_user_item_id",
+                &self.current_user_item_id.as_ref().map(|_| "<current>"),
+            )
             .field("cwd", &self.cwd)
             .field("agent_scope", &self.agent_scope)
             .field("collaboration_mode", &self.collaboration_mode)
@@ -1815,6 +1824,7 @@ mod tests {
             ToolRuntimeContext {
                 session_id: "session-1".into(),
                 turn_id: Some("turn-1".into()),
+                current_user_item_id: None,
                 cwd: PathBuf::from("C:/workspace"),
                 agent_scope: ToolAgentScope::Parent,
                 collaboration_mode: devo_protocol::CollaborationMode::Build,
