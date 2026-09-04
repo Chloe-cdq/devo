@@ -87,7 +87,7 @@ impl MemoryRuntime {
         &self,
         request: PrepareMemoryRequest,
     ) -> Result<PreparedMemory, MemoryError> {
-        if !self.config.enabled {
+        if self.config.resolve_recall(request.session_recall) != MemorySetting::On {
             return Ok(PreparedMemory::default());
         }
         let identity = identity::resolve_project_memory_identity(&request.workspace_root)
@@ -101,10 +101,11 @@ impl MemoryRuntime {
     /// never queues a source.
     pub async fn enqueue_source(
         &self,
-        _source: SessionMemorySource,
+        source: SessionMemorySource,
     ) -> Result<EnqueueOutcome, MemoryError> {
         Ok(EnqueueOutcome {
-            accepted: self.config.enabled,
+            accepted: self.config.resolve_contribution(source.session_contribution)
+                == MemorySetting::On,
         })
     }
 
@@ -164,6 +165,9 @@ pub enum MemoryCommandResult {
 #[derive(Debug, Clone)]
 pub struct PrepareMemoryRequest {
     pub workspace_root: PathBuf,
+    /// Raw per-session recall preference. The runtime resolves `inherit` using
+    /// its configured global default before preparing a snapshot.
+    pub session_recall: MemorySetting,
 }
 
 /// Prepared memory context for a turn.
@@ -174,7 +178,11 @@ pub struct PreparedMemory {
 
 /// A completed session source eligible for future memory extraction.
 #[derive(Debug, Clone, Default)]
-pub struct SessionMemorySource {}
+pub struct SessionMemorySource {
+    /// Raw per-session contribution preference read when a background scan
+    /// evaluates this source session.
+    pub session_contribution: MemorySetting,
+}
 
 /// Outcome of attempting to enqueue a session source.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
