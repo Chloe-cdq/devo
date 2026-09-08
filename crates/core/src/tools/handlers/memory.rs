@@ -71,7 +71,7 @@ pub fn memory_remember_spec() -> ToolSpec {
                 ),
             ]),
             Some(vec!["text".to_string()]),
-            Some(false),
+            Some(/*additional_properties*/ false),
         ),
         output_mode: ToolOutputMode::StructuredJson,
         execution_mode: ToolExecutionMode::Mutating,
@@ -132,16 +132,20 @@ fn parse_memory_remember_input(
         .get("text")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| ToolCallError::InvalidInput("missing 'text' field".to_string()))?;
-    let source_user_item_id = input
+    let input_source_user_item_id = input
         .get("source_user_item_id")
         .or_else(|| input.get("sourceUserItemId"))
-        .and_then(serde_json::Value::as_str)
-        .or(fallback_source_user_item_id)
-        .ok_or_else(|| {
-            ToolCallError::InvalidInput(
-                "memory_remember requires the current user message context".to_string(),
-            )
-        })?;
+        .and_then(serde_json::Value::as_str);
+    let source_user_item_id = fallback_source_user_item_id.ok_or_else(|| {
+        ToolCallError::InvalidInput(
+            "memory_remember requires the current user message context".to_string(),
+        )
+    })?;
+    if input_source_user_item_id.is_some_and(|source| source != source_user_item_id) {
+        return Err(ToolCallError::InvalidInput(
+            "memory_remember source must match the current user message context".to_string(),
+        ));
+    }
     let scope = match input
         .get("scope")
         .and_then(serde_json::Value::as_str)
@@ -170,14 +174,18 @@ fn parse_memory_remember_input(
         text: text.to_string(),
         scope,
         kind,
-        source_user_item_id: ItemId::from_string(source_user_item_id.to_string()),
+        source_user_item_id: Some(ItemId::from_string(source_user_item_id.to_string())),
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
+    /// Trace: L2-DES-MEM-001
+    /// Verifies: the root-agent schema lets the server supply the current user item binding.
     #[test]
     fn schema_binds_to_current_user_item_id_without_model_required_field() {
         let schema = memory_remember_spec().input_schema;
@@ -187,11 +195,23 @@ mod tests {
             Some("item-current"),
         )
         .expect("server context supplies source item");
-        assert_eq!(parsed.source_user_item_id.to_string(), "item-current");
         assert_eq!(
-            devo_protocol::native::rpc_memory::MemoryScope::default(),
-            devo_protocol::native::rpc_memory::MemoryScope::User
+            parsed.source_user_item_id.as_ref().map(ToString::to_string),
+            Some("item-current".to_string())
         );
-        let _ = devo_protocol::native::rpc_memory::MemoryKind::Fact;
+        assert_eq!(parsed.scope, MemoryScope::User);
+        assert_eq!(parsed.kind, None);
+        let error = parse_memory_remember_input(
+            &serde_json::json!({
+                "text": "I prefer tabs",
+                "sourceUserItemId": "item-other"
+            }),
+            Some("item-current"),
+        )
+        .expect_err("the model cannot override the server-bound source item");
+        assert_eq!(
+            error.to_string(),
+            "invalid input: memory_remember source must match the current user message context"
+        );
     }
 }

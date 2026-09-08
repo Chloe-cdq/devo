@@ -110,8 +110,10 @@ progress through server notifications.
 - `memory/status`: return the effective global memory state, safe aggregate
   storage/job counts, the latest successful source-scan time, and redacted
   error classifications.
-- `memory/remember`: commit an explicit User-scope memory tied to the source
-  user-message item and return its canonical entry projection.
+- `memory/remember`: commit an explicit User-scope memory and return its
+  canonical entry projection. Active-turn requests must identify the current
+  user-message item; direct session-bound requests may omit that optional
+  provenance field.
 - `memory/list`: inspect canonical User-scope entries with safe filters and
   bounded pagination.
 - `subscription/create`, `subscription/update`, `subscription/ack`, and

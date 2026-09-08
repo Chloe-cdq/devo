@@ -49,30 +49,6 @@ impl ServerRuntime {
         } else {
             ToolAgentScope::Parent
         };
-        let memory_context = if agent_scope == ToolAgentScope::Parent
-            && self
-                .memory
-                .as_ref()
-                .is_some_and(|memory| memory.recall_enabled(state.memory_settings.recall))
-        {
-            match self.memory.as_ref() {
-                Some(memory) => match memory
-                    .prepare_turn_context(crate::memory::PrepareMemoryRequest {
-                        workspace_root: state.core.cwd.clone(),
-                    })
-                    .await
-                {
-                    Ok(context) => context,
-                    Err(error) => {
-                        tracing::warn!(%error, "failed to prepare User memory context");
-                        None
-                    }
-                },
-                None => None,
-            }
-        } else {
-            None
-        };
         let agent_tool_policy = state.agent_tool_policy;
         let session_tool_registry = self.tool_registry_for_actor_state(state);
         let runtime_context = Arc::clone(&state.runtime_context);
@@ -250,7 +226,6 @@ impl ServerRuntime {
                 Some(callback),
                 QueryOptions {
                     cancel_token: Some(query_cancel_token.clone()),
-                    memory_context,
                     compaction_provider: Some(compaction_provider),
                     live_settings: live_turn_settings.clone(),
                     last_model_request,

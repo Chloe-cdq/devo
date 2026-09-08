@@ -14,7 +14,7 @@ use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
 use super::{
     DEFAULT_LIST_LIMIT, ListMemoryRequest, MAX_LIST_LIMIT, MemoryError, MemoryRememberRequest,
-    MemoryRuntime, USER_SCOPE_ID,
+    MemoryRuntime, USER_SCOPE_ID, kind_name, origin_name, scope_name, state_name,
 };
 
 impl MemoryRuntime {
@@ -25,11 +25,6 @@ impl MemoryRuntime {
         let body = normalize_body(&request.text)?;
         if contains_secret(&body) {
             return Err(MemoryError::SecretContentRejected);
-        }
-        if request.source_user_item_id.trim().is_empty() {
-            return Err(MemoryError::InvalidRequest(
-                "source_user_item_id must not be empty".into(),
-            ));
         }
         let kind = request.kind.unwrap_or_else(|| classify_kind(&body));
         let normalized_key = normalize_key(&body);
@@ -219,7 +214,13 @@ fn normalize_body(text: &str) -> Result<String, MemoryError> {
 }
 
 fn normalize_key(body: &str) -> String {
-    body.to_ascii_lowercase()
+    body.chars()
+        .filter(|character| character.is_alphanumeric() || character.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 fn classify_kind(body: &str) -> MemoryKind {
@@ -256,38 +257,6 @@ fn contains_secret(body: &str) -> bool {
             .all()
             .into_iter()
             .any(|detector| !detector.detect(body).is_empty())
-}
-
-fn scope_name(scope: MemoryScope) -> &'static str {
-    match scope {
-        MemoryScope::User => "user",
-        MemoryScope::Project => "project",
-    }
-}
-
-fn kind_name(kind: MemoryKind) -> &'static str {
-    match kind {
-        MemoryKind::Preference => "preference",
-        MemoryKind::Feedback => "feedback",
-        MemoryKind::Fact => "fact",
-        MemoryKind::Reference => "reference",
-    }
-}
-
-fn state_name(state: MemoryState) -> &'static str {
-    match state {
-        MemoryState::Active => "active",
-        MemoryState::Stale => "stale",
-        MemoryState::Conflicted => "conflicted",
-        MemoryState::Retired => "retired",
-    }
-}
-
-fn origin_name(origin: MemoryOrigin) -> &'static str {
-    match origin {
-        MemoryOrigin::ExplicitUser => "explicit_user",
-        MemoryOrigin::InferredSession => "inferred_session",
-    }
 }
 
 fn parse_cursor(cursor: Option<&str>) -> Result<usize, MemoryError> {

@@ -15,6 +15,7 @@ use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
+use devo_protocol::ProtocolErrorCode;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
 use devo_protocol::StopReason;
@@ -72,13 +73,15 @@ fn remember_request(
         text: text.to_string(),
         scope: MemoryScope::User,
         kind: None,
-        source_user_item_id: source_user_item_id.to_string(),
+        source_user_item_id: Some(source_user_item_id.to_string()),
         source_session_id: "ses-1".to_string(),
         source_turn_id: Some("turn-1".to_string()),
         workspace_root: workspace_root.to_path_buf(),
     }
 }
 
+/// Trace: L2-DES-MEM-001
+/// Verifies: explicit User memory is committed and canonical duplicates are merged.
 #[tokio::test]
 async fn explicit_user_memory_is_committed_and_deduplicated() {
     let data_root = TempDir::new().expect("memory data root");
@@ -101,23 +104,27 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("commit explicit memory");
     let first = match first {
         MemoryCommandResult::Remember(entry) => entry,
-        other => panic!("unexpected remember result: {other:?}"),
+        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+            panic!("unexpected remember result")
+        }
     };
 
     let second = runtime
         .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
-            text: "  I prefer   dark mode ".to_string(),
+            text: "I prefer dark mode.".to_string(),
             ..request
         }))
         .await
         .expect("deduplicate explicit memory");
     let second = match second {
         MemoryCommandResult::Remember(entry) => entry,
-        other => panic!("unexpected remember result: {other:?}"),
+        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+            panic!("unexpected remember result")
+        }
     };
 
     assert_eq!(second.entry_id, first.entry_id);
-    assert_eq!(second.body, first.body);
+    assert_eq!(second.body, "I prefer dark mode.");
 
     let listed = runtime
         .execute_command(MemoryCommand::List(ListMemoryRequest {
@@ -129,13 +136,15 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("list explicit memory");
     let listed: Page<_> = match listed {
         MemoryCommandResult::List(page) => page,
-        other => panic!("unexpected list result: {other:?}"),
+        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+            panic!("unexpected list result")
+        }
     };
 
     assert_eq!(listed.data, vec![second]);
     assert_eq!(listed.next_cursor, None);
 
-    let connection = Connection::open(data_root.path().join("memory/memory.sqlite3"))
+    let connection = Connection::open(data_root.path().join("memory").join("memory.sqlite3"))
         .expect("open memory database");
     let evidence_count: i64 = connection
         .query_row("SELECT COUNT(*) FROM memory_evidence", [], |row| row.get(0))
@@ -143,6 +152,8 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     assert_eq!(evidence_count, 1);
 }
 
+/// Trace: L2-DES-MEM-001
+/// Verifies: secret-bearing memory is rejected before SQLite, FTS, or projection writes.
 #[tokio::test]
 async fn secret_memory_is_rejected_before_sqlite_fts_and_projection() {
     let data_root = TempDir::new().expect("memory data root");
@@ -200,6 +211,8 @@ async fn secret_memory_is_rejected_before_sqlite_fts_and_projection() {
     assert!(!memory_root.join("user").join("MEMORY.md").exists());
 }
 
+/// Trace: L2-DES-MEM-001
+/// Verifies: User listing pagination and atomic projection regeneration expose canonical entries.
 #[tokio::test]
 async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     let data_root = TempDir::new().expect("memory data root");
@@ -241,6 +254,10 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     assert!(projection.contains("delta fact"));
     assert!(!projection.contains("manual content"));
     assert!(projection.contains("Read-only"));
+    assert!(projection.contains("state: active"));
+    assert!(projection.contains("origin: explicit_user"));
+    assert!(projection.contains("created_at:"));
+    assert!(projection.contains("source_session_id: ses-1"));
 
     let first_page = runtime
         .execute_command(MemoryCommand::List(ListMemoryRequest {
@@ -253,7 +270,9 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         .expect("list first page");
     let first_page: Page<_> = match first_page {
         MemoryCommandResult::List(page) => page,
-        other => panic!("unexpected list result: {other:?}"),
+        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+            panic!("unexpected list result")
+        }
     };
     assert_eq!(first_page.data.len(), 2);
     assert!(first_page.next_cursor.is_some());
@@ -270,23 +289,27 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         .expect("list second page");
     let second_page: Page<_> = match second_page {
         MemoryCommandResult::List(page) => page,
-        other => panic!("unexpected list result: {other:?}"),
+        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+            panic!("unexpected list result")
+        }
     };
     assert_eq!(second_page.data.len(), 2);
     assert_eq!(second_page.next_cursor, None);
 }
 
+/// Trace: L2-DES-MEM-001
+/// Verifies: Native remember/list use User scope, reject unbound source IDs, and expose safe provenance.
 #[tokio::test]
 async fn native_memory_remember_and_list_use_the_user_scope() -> Result<()> {
     let data_root = TempDir::new()?;
     fs::create_dir_all(data_root.path().join(".devo"))?;
     fs::write(
-        data_root.path().join(".devo/config.toml"),
+        data_root.path().join(".devo").join("config.toml"),
         "[memory]\nenabled = true\n",
     )?;
     let config_store = Arc::new(std::sync::Mutex::new(AppConfigStore::load(
         data_root.path().to_path_buf(),
-        Some(data_root.path()),
+        /*workspace_root*/ Some(data_root.path()),
     )?));
     let provider: Arc<dyn ModelProviderSDK> = Arc::new(NoopProvider);
     let db = Arc::new(devo_server::db::Database::open(
@@ -358,7 +381,7 @@ async fn native_memory_remember_and_list_use_the_user_scope() -> Result<()> {
     .session_id
     .to_string();
 
-    let remembered = runtime
+    let rejected = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
@@ -366,7 +389,27 @@ async fn native_memory_remember_and_list_use_the_user_scope() -> Result<()> {
                 "method": "memory/remember",
                 "params": {
                     "text": "I prefer dark mode",
-                    "sourceUserItemId": "item-user-1"
+                    "sourceUserItemId": "item-from-another-turn"
+                }
+            }),
+        )
+        .await
+        .expect("memory/remember must reject an unbound source item");
+    let rejected: devo_protocol::ErrorResponse = serde_json::from_value(rejected)?;
+    assert_eq!(rejected.error.code, ProtocolErrorCode::InvalidParams);
+    assert_eq!(
+        rejected.error.message,
+        "direct memory/remember commands must omit sourceUserItemId"
+    );
+
+    let remembered = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 4,
+                "method": "memory/remember",
+                "params": {
+                    "text": "I prefer dark mode"
                 }
             }),
         )
@@ -388,12 +431,19 @@ async fn native_memory_remember_and_list_use_the_user_scope() -> Result<()> {
             .and_then(|provenance| provenance.source_session_id.as_deref()),
         Some(session_id.as_str())
     );
+    assert_eq!(
+        remembered
+            .provenance
+            .first()
+            .and_then(|provenance| provenance.source_user_item_id.as_ref()),
+        None
+    );
 
     let listed = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
-                "id": 4,
+                "id": 5,
                 "method": "memory/list",
                 "params": { "scope": "user" }
             }),
@@ -406,6 +456,8 @@ async fn native_memory_remember_and_list_use_the_user_scope() -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-MEM-001
+/// Verifies: a committed entry appears only in a newly prepared memory snapshot.
 #[tokio::test]
 async fn committed_memory_only_enters_a_new_prepared_turn_snapshot() {
     let data_root = TempDir::new().expect("memory data root");

@@ -383,7 +383,12 @@ impl AgentToolCoordinator for ServerRuntime {
             .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
         let turn_id = TurnId::try_from(turn_id.as_str())
             .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-        let source_item_id = params.source_user_item_id.to_string();
+        let source_item_id = params.source_user_item_id.clone().ok_or_else(|| {
+            ToolCallError::InvalidInput(
+                "memory_remember requires the current user message context".to_string(),
+            )
+        })?;
+        let source_item_id_string = source_item_id.to_string();
         let current_user_message_matches =
             if let Some(stream) = self.active_stream_state(session_id).await {
                 let stream = stream.lock().await;
@@ -391,7 +396,7 @@ impl AgentToolCoordinator for ServerRuntime {
                     inline.turn_id == turn_id
                         && inline.persisted_turn_items.iter().any(|item| {
                             item.turn_id == turn_id
-                                && item.item_id.to_string() == source_item_id
+                                && item.item_id.to_string() == source_item_id_string
                                 && matches!(
                                     &item.turn_item,
                                     devo_core::TurnItem::UserMessage(text)
@@ -420,7 +425,7 @@ impl AgentToolCoordinator for ServerRuntime {
                     text: params.text,
                     scope: params.scope,
                     kind: params.kind,
-                    source_user_item_id: source_item_id,
+                    source_user_item_id: Some(source_item_id_string),
                     source_session_id: session_id.to_string(),
                     source_turn_id: Some(turn_id.to_string()),
                     workspace_root: summary.cwd,
@@ -430,7 +435,8 @@ impl AgentToolCoordinator for ServerRuntime {
             .map_err(memory_tool_error)?;
         match result {
             crate::memory::MemoryCommandResult::Remember(entry) => Ok(entry),
-            _ => Err(ToolCallError::InternalError(
+            crate::memory::MemoryCommandResult::Status(_)
+            | crate::memory::MemoryCommandResult::List(_) => Err(ToolCallError::InternalError(
                 "memory_remember returned an unexpected result".to_string(),
             )),
         }
@@ -446,21 +452,42 @@ fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
         crate::memory::MemoryError::Disabled => {
             ToolCallError::NeedsConfiguration("memory is disabled".to_string())
         }
-        _ => ToolCallError::InternalError("memory operation is unavailable".to_string()),
+        crate::memory::MemoryError::Directory(_)
+        | crate::memory::MemoryError::Database(_)
+        | crate::memory::MemoryError::LockPoisoned
+        | crate::memory::MemoryError::InvalidCount(_)
+        | crate::memory::MemoryError::InvalidTimestamp(_)
+        | crate::memory::MemoryError::ProjectIdentity(_)
+        | crate::memory::MemoryError::InvalidStoredValue(_) => {
+            ToolCallError::InternalError("memory operation is unavailable".to_string())
+        }
     }
 }
 
 fn has_explicit_memory_intent(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    let english_requests = [
+    let text = text.trim_start().to_ascii_lowercase();
+    if text.starts_with("don't remember")
+        || text.starts_with("do not remember")
+        || text.starts_with("i remember")
+        || text.starts_with("we remember")
+        || text.starts_with("不要保存")
+        || text.starts_with("不要记")
+        || text.starts_with("请勿记")
+    {
+        return false;
+    }
+    [
         "please remember",
         "can you remember",
         "could you remember",
         "would you remember",
+        "i want you to remember",
+        "i'd like you to remember",
+        "remember:",
         "remember this",
         "remember that",
         "remember my",
-        "remember i ",
+        "remember i",
         "memorize this",
         "memorize that",
         "keep in mind",
@@ -468,76 +495,75 @@ fn has_explicit_memory_intent(text: &str) -> bool {
         "save that",
         "store this",
         "store that",
-    ];
-    english_requests
-        .iter()
-        .any(|phrase| unnegated_command_phrase(&text, phrase))
-        || text.contains("don't forget")
-        || text.contains("do not forget")
-        || [
-            "请记住",
-            "请记一下",
-            "请记下来",
-            "帮我记住",
-            "记住这",
-            "记住我",
-            "记一下",
-            "记下来",
-            "请保存",
-            "帮我保存",
-            "保存这",
-            "保存一下",
-            "存一下",
-        ]
-        .iter()
-        .any(|phrase| unnegated_command_phrase(text.as_str(), phrase))
-        || text.contains("别忘了")
-        || text.contains("不要忘记")
+        "don't forget",
+        "do not forget",
+        "请记住",
+        "请记一下",
+        "请记下来",
+        "帮我记住",
+        "记住这",
+        "记住我",
+        "记一下",
+        "记下来",
+        "请保存",
+        "帮我保存",
+        "保存这",
+        "保存一下",
+        "存一下",
+        "别忘了",
+        "不要忘记",
+    ]
+    .iter()
+    .any(|phrase| memory_command_has_payload(&text, phrase))
 }
 
-fn unnegated_command_phrase(text: &str, phrase: &str) -> bool {
-    text.match_indices(phrase).any(|(start, _)| {
-        let before = text[..start].trim_end();
-        ![
-            "don't", "do not", "not", "never", "i", "we", "you", "he", "she", "they", "我", "我们",
-            "你", "他", "她", "他们", "已", "已经", "不要", "请勿", "不用", "不必", "无需",
-        ]
-        .iter()
-        .any(|prefix| before.ends_with(prefix))
-    })
+fn memory_command_has_payload(text: &str, phrase: &str) -> bool {
+    let Some(remainder) = text.strip_prefix(phrase) else {
+        return false;
+    };
+    let boundary_is_valid = !phrase
+        .chars()
+        .last()
+        .is_some_and(|character| character.is_ascii_alphanumeric())
+        || remainder
+            .chars()
+            .next()
+            .is_none_or(|character| !character.is_ascii_alphanumeric());
+    boundary_is_valid && remainder.chars().any(char::is_alphanumeric)
 }
 
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
-
     use super::has_explicit_memory_intent;
 
+    /// Trace: L2-DES-MEM-001
+    /// Verifies: supported explicit memory requests are recognized in English and Chinese.
     #[test]
     fn explicit_memory_intent_accepts_english_and_chinese_requests() {
-        assert_eq!(
-            has_explicit_memory_intent("Please remember that I prefer tabs"),
-            true
-        );
-        assert_eq!(has_explicit_memory_intent("请记住我喜欢深色模式"), true);
-        assert_eq!(
-            has_explicit_memory_intent("Can you remember my timezone?"),
-            true
-        );
-        assert_eq!(has_explicit_memory_intent("别忘了我不喝咖啡"), true);
-        assert_eq!(has_explicit_memory_intent("I prefer tabs"), false);
+        assert!(has_explicit_memory_intent(
+            "Please remember that I prefer tabs"
+        ));
+        assert!(has_explicit_memory_intent("Remember: I prefer tabs"));
+        assert!(has_explicit_memory_intent("请记住我喜欢深色模式"));
+        assert!(has_explicit_memory_intent("Can you remember my timezone?"));
+        assert!(has_explicit_memory_intent("别忘了我不喝咖啡"));
+        assert!(!has_explicit_memory_intent("I prefer tabs"));
+        assert!(!has_explicit_memory_intent("Please remember"));
+        assert!(!has_explicit_memory_intent("Please rememberable tabs"));
     }
 
+    /// Trace: L2-DES-MEM-001
+    /// Verifies: negated or descriptive memory phrases are rejected.
     #[test]
     fn explicit_memory_intent_rejects_negation_and_description() {
-        assert_eq!(
-            has_explicit_memory_intent("Don't remember my birthday"),
-            false
-        );
-        assert_eq!(has_explicit_memory_intent("Do not save this"), false);
-        assert_eq!(has_explicit_memory_intent("不要保存我的生日"), false);
-        assert_eq!(has_explicit_memory_intent("请勿记住这件事"), false);
-        assert_eq!(has_explicit_memory_intent("I remember my birthday"), false);
-        assert_eq!(has_explicit_memory_intent("我保存过这个"), false);
+        assert!(!has_explicit_memory_intent("Don't remember my birthday"));
+        assert!(!has_explicit_memory_intent("Do not save this"));
+        assert!(!has_explicit_memory_intent("不要保存我的生日"));
+        assert!(!has_explicit_memory_intent(
+            "Explain 'please remember'; do not save anything"
+        ));
+        assert!(!has_explicit_memory_intent("请勿记住这件事"));
+        assert!(!has_explicit_memory_intent("I remember my birthday"));
+        assert!(!has_explicit_memory_intent("我保存过这个"));
     }
 }

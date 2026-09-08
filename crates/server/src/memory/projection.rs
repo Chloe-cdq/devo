@@ -1,12 +1,12 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
 use devo_protocol::native::rpc_memory::MemoryEntry;
-use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryScope;
 
-use super::MemoryError;
+use super::{MemoryError, kind_name, origin_name, state_name};
 
 pub(super) fn render_projection(scope: MemoryScope, entries: &[MemoryEntry]) -> String {
     let title = match scope {
@@ -20,17 +20,41 @@ pub(super) fn render_projection(scope: MemoryScope, entries: &[MemoryEntry]) -> 
         projection.push_str("\n_No memory entries._\n");
         return projection;
     }
-    projection.push('\n');
+    let mut entries_by_kind = BTreeMap::<&str, Vec<&MemoryEntry>>::new();
     for entry in entries {
-        let kind = match entry.kind {
-            MemoryKind::Preference => "preference",
-            MemoryKind::Feedback => "feedback",
-            MemoryKind::Fact => "fact",
-            MemoryKind::Reference => "reference",
-        };
-        let entry_id = entry.entry_id.to_string();
-        let body = &entry.body;
-        projection.push_str(&format!("\n- **{kind}** `{entry_id}` — {body}\n"));
+        entries_by_kind
+            .entry(kind_name(entry.kind))
+            .or_default()
+            .push(entry);
+    }
+    for (kind, entries) in entries_by_kind {
+        projection.push_str(&format!("\n## {kind}\n"));
+        for entry in entries {
+            projection.push_str(&format!(
+                "\n- `{}` — {}\n  - state: {}\n  - origin: {}\n  - created_at: {}\n  - updated_at: {}\n",
+                entry.entry_id,
+                entry.body,
+                state_name(entry.state),
+                origin_name(entry.origin),
+                entry.created_at.to_rfc3339(),
+                entry.updated_at.to_rfc3339(),
+            ));
+            if !entry.provenance.is_empty() {
+                projection.push_str("  - sources:\n");
+                for source in &entry.provenance {
+                    let source_user_item_id = source
+                        .source_user_item_id
+                        .as_ref()
+                        .map_or_else(|| "<none>".to_string(), ToString::to_string);
+                    projection.push_str(&format!(
+                        "    - source_session_id: {}\n      source_turn_id: {}\n      source_user_item_id: {}\n",
+                        source.source_session_id.as_deref().unwrap_or("<none>"),
+                        source.source_turn_id.as_deref().unwrap_or("<none>"),
+                        source_user_item_id,
+                    ));
+                }
+            }
+        }
     }
     projection
 }

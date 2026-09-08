@@ -90,7 +90,10 @@ pub struct MemoryRememberParams {
     pub scope: MemoryScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<MemoryKind>,
-    pub source_user_item_id: ItemId,
+    /// Optional when the request is a direct Native command rather than a
+    /// root-agent action bound to the current user item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_user_item_id: Option<ItemId>,
 }
 
 /// Parameters for safe memory inspection.
