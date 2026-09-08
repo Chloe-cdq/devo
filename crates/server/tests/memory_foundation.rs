@@ -97,6 +97,86 @@ fn memory_config_defaults_are_disabled_and_global_gate_wins() {
     assert_eq!(enabled.effective_contribution(), MemorySetting::On);
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001
+/// Verifies: independent per-session recall and contribution controls resolve at the runtime seam.
+#[tokio::test]
+async fn enabled_memory_runtime_resolves_each_session_control_independently() {
+    let data_root = TempDir::new().expect("memory data root");
+    let memory_root = data_root.path().join("memory");
+    let config = MemoryConfig {
+        enabled: true,
+        default_recall: MemorySetting::Off,
+        default_contribution: MemorySetting::Off,
+        ..MemoryConfig::default()
+    };
+    let runtime = MemoryRuntime::open(memory_root, config).expect("open memory runtime");
+
+    assert_eq!(
+        runtime
+            .prepare_turn(PrepareMemoryRequest {
+                workspace_root: data_root.path().to_path_buf(),
+                session_recall: MemorySetting::Inherit,
+            })
+            .await
+            .expect("prepare inherited recall"),
+        PreparedMemory::default()
+    );
+    let prepared_enabled = runtime
+        .prepare_turn(PrepareMemoryRequest {
+            workspace_root: data_root.path().to_path_buf(),
+            session_recall: MemorySetting::On,
+        })
+        .await
+        .expect("prepare enabled recall");
+    let prepared_enabled_again = runtime
+        .prepare_turn(PrepareMemoryRequest {
+            workspace_root: data_root.path().to_path_buf(),
+            session_recall: MemorySetting::On,
+        })
+        .await
+        .expect("prepare enabled recall again");
+    assert_eq!(prepared_enabled, prepared_enabled_again);
+    assert_ne!(prepared_enabled, PreparedMemory::default());
+    assert_eq!(
+        runtime
+            .prepare_turn(PrepareMemoryRequest {
+                workspace_root: data_root.path().to_path_buf(),
+                session_recall: MemorySetting::Off,
+            })
+            .await
+            .expect("prepare disabled recall"),
+        PreparedMemory::default()
+    );
+
+    assert_eq!(
+        runtime
+            .enqueue_source(SessionMemorySource {
+                session_contribution: MemorySetting::Inherit,
+            })
+            .await
+            .expect("enqueue inherited contribution"),
+        EnqueueOutcome { accepted: false }
+    );
+    assert_eq!(
+        runtime
+            .enqueue_source(SessionMemorySource {
+                session_contribution: MemorySetting::On,
+            })
+            .await
+            .expect("enqueue enabled contribution"),
+        EnqueueOutcome { accepted: true }
+    );
+    assert_eq!(
+        runtime
+            .enqueue_source(SessionMemorySource {
+                session_contribution: MemorySetting::Off,
+            })
+            .await
+            .expect("enqueue disabled contribution"),
+        EnqueueOutcome { accepted: false }
+    );
+}
+
 #[tokio::test]
 async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
     let data_root = TempDir::new().expect("memory data root");
@@ -126,6 +206,7 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
         runtime
             .prepare_turn(PrepareMemoryRequest {
                 workspace_root: data_root.path().to_path_buf(),
+                session_recall: MemorySetting::Inherit,
             })
             .await
             .expect("prepare disabled memory"),
