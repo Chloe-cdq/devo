@@ -17,7 +17,7 @@ use crate::tool_spec::ToolOutputMode;
 use crate::tool_spec::ToolPreparationFeedback;
 use crate::tool_spec::ToolSpec;
 
-/// Built-in root-agent action for explicitly persisting a user memory.
+/// Built-in root-agent action for explicitly persisting User or Project memory.
 pub struct MemoryRememberHandler {
     spec: ToolSpec,
 }
@@ -39,7 +39,7 @@ impl MemoryRememberHandler {
 pub fn memory_remember_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_remember".to_string(),
-        description: "Remember an explicit user preference, fact, feedback, or reference. Only call this when the current user message clearly asks you to remember something; the server binds it to that message.".to_string(),
+        description: "Remember an explicit user or project preference, fact, feedback, or reference. Only call this when the current user message clearly asks you to remember something; the server binds it to that message.".to_string(),
         input_schema: JsonSchema::object(
             BTreeMap::from([
                 (
@@ -53,8 +53,8 @@ pub fn memory_remember_spec() -> ToolSpec {
                 (
                     "scope".to_string(),
                     JsonSchema {
-                        enum_values: Some(vec![json!("user")]),
-                        ..JsonSchema::string(Some("Memory scope. Only user is accepted."))
+                        enum_values: Some(vec![json!("user"), json!("project")]),
+                        ..JsonSchema::string(Some("Memory scope: user or project."))
                     },
                 ),
                 (
@@ -119,7 +119,7 @@ impl ToolHandler for MemoryRememberHandler {
             .map_err(|error| ToolCallError::InternalError(error.to_string()))?;
         Ok(ToolResult::success(
             ToolResultContent::Json(value),
-            "User memory remembered",
+            "Memory remembered",
         ))
     }
 }
@@ -152,9 +152,10 @@ fn parse_memory_remember_input(
         .unwrap_or("user")
     {
         "user" => MemoryScope::User,
+        "project" => MemoryScope::Project,
         _ => {
             return Err(ToolCallError::InvalidInput(
-                "memory_remember only accepts User scope".to_string(),
+                "memory_remember received an unsupported scope".to_string(),
             ));
         }
     };
@@ -213,5 +214,30 @@ mod tests {
             error.to_string(),
             "invalid input: memory_remember source must match the current user message context"
         );
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-12
+    /// Verifies: the root-agent memory tool exposes and preserves Project scope.
+    #[test]
+    fn project_memory_tool_input_preserves_project_scope() {
+        let schema = memory_remember_spec().input_schema;
+        assert_eq!(
+            schema
+                .properties
+                .as_ref()
+                .and_then(|properties| properties.get("scope"))
+                .and_then(|scope| scope.enum_values.clone()),
+            Some(vec![json!("user"), json!("project")])
+        );
+
+        let parsed = parse_memory_remember_input(
+            &serde_json::json!({
+                "text": "the repository uses Rust",
+                "scope": "project"
+            }),
+            Some("item-current"),
+        )
+        .expect("project scope is valid for explicit memory");
+        assert_eq!(parsed.scope, MemoryScope::Project);
     }
 }

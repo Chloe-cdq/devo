@@ -81,7 +81,7 @@ pub enum MemoryOrigin {
     InferredSession,
 }
 
-/// Parameters for an explicit user memory write.
+/// Parameters for an explicit User- or Project-scope memory write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryRememberParams {

@@ -374,11 +374,6 @@ impl AgentToolCoordinator for ServerRuntime {
         turn_id: String,
         params: devo_protocol::native::rpc_memory::MemoryRememberParams,
     ) -> Result<devo_protocol::native::rpc_memory::MemoryEntry, ToolCallError> {
-        if params.scope != devo_protocol::native::rpc_memory::MemoryScope::User {
-            return Err(ToolCallError::InvalidInput(
-                "memory_remember only accepts User scope".to_string(),
-            ));
-        }
         let session_id = SessionId::try_from(session_id.as_str())
             .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
         let turn_id = TurnId::try_from(turn_id.as_str())

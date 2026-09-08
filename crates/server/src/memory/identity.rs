@@ -184,13 +184,30 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("create workspace");
 
         let identity = resolve_project_memory_identity(&workspace).expect("workspace identity");
+        let canonical_workspace = std::fs::canonicalize(&workspace).expect("canonical workspace");
+        let canonical_identity =
+            resolve_project_memory_identity(&canonical_workspace).expect("canonical identity");
 
+        assert_eq!(identity, canonical_identity);
         assert_eq!(identity.source, ProjectIdentitySource::WorkspaceRoot);
-        assert_eq!(
-            identity.canonical_source,
-            std::fs::canonicalize(workspace).expect("canonical workspace")
-        );
+        assert_eq!(identity.canonical_source, canonical_workspace);
         assert_eq!(identity.scope_id.len(), 64);
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-3
+    /// Verifies: a moved Git workspace intentionally receives a new project namespace.
+    #[test]
+    fn moved_git_workspace_uses_a_new_project_identity() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let original_root = temp.path().join("original");
+        let moved_root = temp.path().join("moved");
+        std::fs::create_dir_all(original_root.join(".git")).expect("create original repository");
+        std::fs::create_dir_all(moved_root.join(".git")).expect("create moved repository");
+
+        let original = resolve_project_memory_identity(&original_root).expect("original identity");
+        let moved = resolve_project_memory_identity(&moved_root).expect("moved identity");
+
+        assert_ne!(original, moved);
     }
 
     /// Verifies: distinct Windows-native path values never collapse through lossy UTF-8 conversion.

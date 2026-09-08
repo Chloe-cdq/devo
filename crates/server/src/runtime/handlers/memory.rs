@@ -52,7 +52,7 @@ impl ServerRuntime {
         .expect("serialize memory/status response")
     }
 
-    /// Native `memory/remember`: commits an explicit User-scope memory and
+    /// Native `memory/remember`: commits an explicit User- or Project-scope memory and
     /// returns the canonical entry projection.
     pub(crate) async fn handle_native_memory_remember(
         self: &Arc<Self>,
@@ -71,13 +71,6 @@ impl ServerRuntime {
                     );
                 }
             };
-        if params.scope != devo_protocol::native::rpc_memory::MemoryScope::User {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::InvalidParams,
-                "memory/remember currently accepts only User scope",
-            );
-        }
         let Some(memory) = self.memory.as_ref() else {
             return self.error_response(
                 request_id,
@@ -123,7 +116,7 @@ impl ServerRuntime {
                     );
                 }
                 (
-                    session_id.to_string(),
+                    session_id,
                     Some(turn.turn_id.to_string()),
                     Some(source_user_item_id.to_string()),
                 )
@@ -137,7 +130,7 @@ impl ServerRuntime {
                         "direct memory/remember commands must omit sourceUserItemId",
                     );
                 }
-                (session_id.to_string(), None, None)
+                (session_id, None, None)
             } else {
                 return self.error_response(
                     request_id,
@@ -145,15 +138,26 @@ impl ServerRuntime {
                     "memory/remember requires a session-bound connection",
                 );
             };
+        let Some(workspace_root) = self
+            .session_summary_snapshot(source_session_id)
+            .await
+            .map(|summary| summary.cwd)
+        else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                "memory/remember requires a session with a workspace root",
+            );
+        };
         let result = memory
             .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
                 text: params.text,
                 scope: params.scope,
                 kind: params.kind,
                 source_user_item_id,
-                source_session_id,
+                source_session_id: source_session_id.to_string(),
                 source_turn_id,
-                workspace_root: std::path::PathBuf::new(),
+                workspace_root,
             }))
             .await;
         match result {
@@ -172,10 +176,11 @@ impl ServerRuntime {
         }
     }
 
-    /// Native `memory/list`: exposes only canonical User-scope entries with
+    /// Native `memory/list`: exposes canonical User- or Project-scope entries with
     /// bounded offset pagination and safe provenance fields.
     pub(crate) async fn handle_native_memory_list(
         self: &Arc<Self>,
+        connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
@@ -190,15 +195,6 @@ impl ServerRuntime {
                     );
                 }
             };
-        if let Some(scope) = params.scope
-            && scope != devo_protocol::native::rpc_memory::MemoryScope::User
-        {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::InvalidParams,
-                "memory/list currently accepts only User scope",
-            );
-        }
         let Some(memory) = self.memory.as_ref() else {
             return self.error_response(
                 request_id,
@@ -206,16 +202,37 @@ impl ServerRuntime {
                 "memory runtime is unavailable",
             );
         };
+        let scope = params.scope.unwrap_or_default();
+        let workspace_root = if scope == devo_protocol::native::rpc_memory::MemoryScope::Project {
+            let Some(session_id) = self.subscribed_session_for_connection(connection_id).await
+            else {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    "memory/list Project scope requires a session-bound connection",
+                );
+            };
+            let Some(summary) = self.session_summary_snapshot(session_id).await else {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    "memory/list requires a session with a workspace root",
+                );
+            };
+            summary.cwd
+        } else {
+            std::path::PathBuf::new()
+        };
         let result = memory
             .execute_command(MemoryCommand::List(ListMemoryRequest {
-                scope: Some(devo_protocol::native::rpc_memory::MemoryScope::User),
+                scope: Some(scope),
                 kind: params.kind,
                 state: params.state,
                 origin: params.origin,
                 text: params.text,
                 cursor: params.cursor,
                 limit: params.limit,
-                workspace_root: std::path::PathBuf::new(),
+                workspace_root,
             }))
             .await;
         match result {

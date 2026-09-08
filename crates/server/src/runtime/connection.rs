@@ -333,7 +333,10 @@ impl ServerRuntime {
                 self.handle_native_memory_remember(connection_id, id?, params)
                     .await,
             ),
-            "memory/list" => Some(self.handle_native_memory_list(id?, params).await),
+            "memory/list" => Some(
+                self.handle_native_memory_list(connection_id, id?, params)
+                    .await,
+            ),
             "model/list" => Some(self.handle_native_model_list(id?, params).await),
             "model/preferences/read" => {
                 Some(self.handle_native_model_preferences_read(id?, params).await)

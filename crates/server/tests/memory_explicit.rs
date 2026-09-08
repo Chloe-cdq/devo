@@ -80,6 +80,17 @@ fn remember_request(
     }
 }
 
+fn project_remember_request(
+    text: &str,
+    source_user_item_id: &str,
+    workspace_root: &std::path::Path,
+) -> MemoryRememberRequest {
+    MemoryRememberRequest {
+        scope: MemoryScope::Project,
+        ..remember_request(text, source_user_item_id, workspace_root)
+    }
+}
+
 /// Trace: L2-DES-MEM-001
 /// Verifies: explicit User memory is committed and canonical duplicates are merged.
 #[tokio::test]
@@ -298,9 +309,9 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
 }
 
 /// Trace: L2-DES-MEM-001
-/// Verifies: Native remember/list use User scope, reject unbound source IDs, and expose safe provenance.
+/// Verifies: Native remember/list support User and Project scopes and expose safe provenance.
 #[tokio::test]
-async fn native_memory_remember_and_list_use_the_user_scope() -> Result<()> {
+async fn native_memory_remember_and_list_support_user_and_project_scopes() -> Result<()> {
     let data_root = TempDir::new()?;
     fs::create_dir_all(data_root.path().join(".devo"))?;
     fs::write(
@@ -453,6 +464,57 @@ async fn native_memory_remember_and_list_use_the_user_scope() -> Result<()> {
     let listed: Page<devo_protocol::native::rpc_memory::MemoryEntry> =
         serde_json::from_value(listed["result"].clone())?;
     assert_eq!(listed.data, vec![remembered]);
+
+    let project_remembered = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 6,
+                "method": "memory/remember",
+                "params": {
+                    "text": "the repository uses Rust",
+                    "scope": "project"
+                }
+            }),
+        )
+        .await
+        .expect("project memory/remember response");
+    assert!(
+        project_remembered.get("result").is_some(),
+        "project memory/remember failed: {project_remembered}"
+    );
+    let project_remembered: devo_protocol::native::rpc_memory::MemoryEntry =
+        serde_json::from_value(project_remembered["result"].clone())?;
+    assert_eq!(project_remembered.scope, MemoryScope::Project);
+    assert_eq!(project_remembered.body, "the repository uses Rust");
+    assert_eq!(project_remembered.scope_id.len(), 64);
+
+    let project_listed = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 7,
+                "method": "memory/list",
+                "params": { "scope": "project" }
+            }),
+        )
+        .await
+        .expect("project memory/list response");
+    let project_listed: Page<devo_protocol::native::rpc_memory::MemoryEntry> =
+        serde_json::from_value(project_listed["result"].clone())?;
+    assert_eq!(project_listed.data, vec![project_remembered.clone()]);
+    assert_eq!(project_listed.next_cursor, None);
+
+    let project_projection = data_root
+        .path()
+        .join("server")
+        .join("memory")
+        .join("project")
+        .join(&project_remembered.scope_id)
+        .join("MEMORY.md");
+    let projection = fs::read_to_string(project_projection)?;
+    assert!(projection.contains("the repository uses Rust"));
+    assert!(!projection.contains("I prefer dark mode"));
     Ok(())
 }
 
@@ -471,6 +533,7 @@ async fn committed_memory_only_enters_a_new_prepared_turn_snapshot() {
     .expect("open enabled memory runtime");
     let request = PrepareMemoryRequest {
         workspace_root: data_root.path().to_path_buf(),
+        session_recall: devo_protocol::native::session::MemorySetting::Inherit,
     };
 
     let before = runtime
@@ -492,4 +555,121 @@ async fn committed_memory_only_enters_a_new_prepared_turn_snapshot() {
 
     assert!(before.user_entries.is_empty());
     assert_eq!(after.user_entries.len(), 1);
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+/// Verifies: linked worktrees share Project memory while unrelated repositories remain isolated.
+#[tokio::test]
+async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositories() {
+    let data_root = TempDir::new().expect("memory data root");
+    let repository_root = data_root.path().join("repository");
+    let common_git_dir = repository_root.join(".git");
+    let linked_root = data_root.path().join("linked-worktree");
+    let linked_git_dir = common_git_dir.join("worktrees").join("linked");
+    let unrelated_root = data_root.path().join("unrelated-repository");
+
+    fs::create_dir_all(&common_git_dir).expect("create repository git directory");
+    fs::create_dir_all(&linked_git_dir).expect("create linked git directory");
+    fs::create_dir_all(&linked_root).expect("create linked worktree");
+    fs::write(linked_git_dir.join("commondir"), "../..\n").expect("write linked commondir");
+    fs::write(
+        linked_root.join(".git"),
+        format!("gitdir: {}\n", linked_git_dir.display()),
+    )
+    .expect("write linked git file");
+    fs::create_dir_all(unrelated_root.join(".git")).expect("create unrelated git directory");
+
+    let runtime = MemoryRuntime::open(
+        data_root.path().join("memory"),
+        MemoryConfig {
+            enabled: true,
+            ..MemoryConfig::default()
+        },
+    )
+    .expect("open enabled memory runtime");
+
+    let main_entry = match runtime
+        .execute_command(MemoryCommand::Remember(project_remember_request(
+            "the repository uses Rust",
+            "item-main",
+            &repository_root,
+        )))
+        .await
+        .expect("remember project memory from main checkout")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+            panic!("unexpected project remember result")
+        }
+    };
+    let linked_entry = match runtime
+        .execute_command(MemoryCommand::Remember(project_remember_request(
+            "the repository uses Rust",
+            "item-linked",
+            &linked_root,
+        )))
+        .await
+        .expect("remember project memory from linked worktree")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+            panic!("unexpected linked project remember result")
+        }
+    };
+    assert_eq!(
+        (
+            linked_entry.scope,
+            &linked_entry.scope_id,
+            &linked_entry.entry_id
+        ),
+        (main_entry.scope, &main_entry.scope_id, &main_entry.entry_id)
+    );
+
+    let linked_list = match runtime
+        .execute_command(MemoryCommand::List(ListMemoryRequest {
+            scope: Some(MemoryScope::Project),
+            workspace_root: linked_root,
+            ..ListMemoryRequest::default()
+        }))
+        .await
+        .expect("list linked project memory")
+    {
+        MemoryCommandResult::List(page) => page,
+        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+            panic!("unexpected linked project list result")
+        }
+    };
+    assert_eq!(linked_list.data, vec![linked_entry.clone()]);
+
+    let unrelated_entry = match runtime
+        .execute_command(MemoryCommand::Remember(project_remember_request(
+            "the unrelated repository uses Python",
+            "item-unrelated",
+            &unrelated_root,
+        )))
+        .await
+        .expect("remember unrelated project memory")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+            panic!("unexpected unrelated project remember result")
+        }
+    };
+    assert_ne!(unrelated_entry.scope_id, main_entry.scope_id);
+
+    let main_list = match runtime
+        .execute_command(MemoryCommand::List(ListMemoryRequest {
+            scope: Some(MemoryScope::Project),
+            workspace_root: repository_root,
+            ..ListMemoryRequest::default()
+        }))
+        .await
+        .expect("list main project memory")
+    {
+        MemoryCommandResult::List(page) => page,
+        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+            panic!("unexpected main project list result")
+        }
+    };
+    assert_eq!(main_list.data, vec![linked_entry]);
 }
