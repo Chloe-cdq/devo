@@ -104,7 +104,9 @@ impl MemoryRuntime {
         source: SessionMemorySource,
     ) -> Result<EnqueueOutcome, MemoryError> {
         Ok(EnqueueOutcome {
-            accepted: self.config.resolve_contribution(source.session_contribution)
+            accepted: self
+                .config
+                .resolve_contribution(source.session_contribution)
                 == MemorySetting::On,
         })
     }

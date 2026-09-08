@@ -97,6 +97,8 @@ fn memory_config_defaults_are_disabled_and_global_gate_wins() {
     assert_eq!(enabled.effective_contribution(), MemorySetting::On);
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001
+/// Verifies: independent per-session recall and contribution controls resolve at the runtime seam.
 #[tokio::test]
 async fn enabled_memory_runtime_resolves_each_session_control_independently() {
     let data_root = TempDir::new().expect("memory data root");
@@ -119,17 +121,22 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
             .expect("prepare inherited recall"),
         PreparedMemory::default()
     );
-    assert!(
-        runtime
-            .prepare_turn(PrepareMemoryRequest {
-                workspace_root: data_root.path().to_path_buf(),
-                session_recall: MemorySetting::On,
-            })
-            .await
-            .expect("prepare enabled recall")
-            .project_scope_id
-            .is_some()
-    );
+    let prepared_enabled = runtime
+        .prepare_turn(PrepareMemoryRequest {
+            workspace_root: data_root.path().to_path_buf(),
+            session_recall: MemorySetting::On,
+        })
+        .await
+        .expect("prepare enabled recall");
+    let prepared_enabled_again = runtime
+        .prepare_turn(PrepareMemoryRequest {
+            workspace_root: data_root.path().to_path_buf(),
+            session_recall: MemorySetting::On,
+        })
+        .await
+        .expect("prepare enabled recall again");
+    assert_eq!(prepared_enabled, prepared_enabled_again);
+    assert_ne!(prepared_enabled, PreparedMemory::default());
     assert_eq!(
         runtime
             .prepare_turn(PrepareMemoryRequest {

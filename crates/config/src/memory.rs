@@ -120,7 +120,10 @@ impl MemoryConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
+    /// Trace: L2-DES-MEM-001
+    /// Verifies: independent per-session recall and contribution settings resolve against their global defaults.
     #[test]
     fn session_memory_settings_resolve_against_independent_global_defaults() {
         let config = MemoryConfig {
@@ -134,10 +137,7 @@ mod tests {
             config.resolve_recall(MemorySetting::Inherit),
             MemorySetting::Off
         );
-        assert_eq!(
-            config.resolve_recall(MemorySetting::On),
-            MemorySetting::On
-        );
+        assert_eq!(config.resolve_recall(MemorySetting::On), MemorySetting::On);
         assert_eq!(
             config.resolve_contribution(MemorySetting::Inherit),
             MemorySetting::On
@@ -148,6 +148,8 @@ mod tests {
         );
     }
 
+    /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001
+    /// Verifies: the global memory gate forces explicit session overrides off.
     #[test]
     fn disabled_memory_forces_explicit_session_settings_off() {
         let config = MemoryConfig {
