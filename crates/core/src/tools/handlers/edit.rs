@@ -373,6 +373,7 @@ mod tests {
             tool_call_id: ToolCallId("call-1".to_string()),
             session_id: "session-1".to_string(),
             turn_id: Some("turn-1".to_string()),
+            current_user_item_id: None,
             workspace_root: root.to_path_buf(),
             budgets: ToolBudgets {
                 output_limit_bytes: 32_768,

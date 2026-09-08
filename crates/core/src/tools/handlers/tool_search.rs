@@ -445,6 +445,7 @@ mod tests {
                     tool_call_id: crate::invocation::ToolCallId("call".to_string()),
                     session_id: "session-1".to_string(),
                     turn_id: Some("turn-1".to_string()),
+                    current_user_item_id: None,
                     workspace_root: std::path::PathBuf::from("."),
                     budgets: crate::contracts::ToolBudgets {
                         output_limit_bytes: 1024,
@@ -584,6 +585,7 @@ mod tests {
                         tool_call_id: crate::invocation::ToolCallId(format!("call-{requested}")),
                         session_id: "session-1".to_string(),
                         turn_id: Some("turn-1".to_string()),
+                        current_user_item_id: None,
                         workspace_root: std::path::PathBuf::from("."),
                         budgets: crate::contracts::ToolBudgets {
                             output_limit_bytes: 1024,

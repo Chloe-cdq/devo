@@ -138,6 +138,7 @@ mod tests {
             tool_call_id: crate::invocation::ToolCallId("call-1".into()),
             session_id: "session-1".into(),
             turn_id: Some("turn-1".into()),
+            current_user_item_id: None,
             workspace_root: std::env::temp_dir(),
             budgets: crate::contracts::ToolBudgets {
                 output_limit_bytes: 1024,

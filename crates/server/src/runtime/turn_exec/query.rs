@@ -21,6 +21,7 @@ pub(crate) struct TurnModelQueryParams<'a> {
     pub input_messages: &'a [String],
     pub collaboration_mode: devo_protocol::CollaborationMode,
     pub input_mode: super::super::TurnInputMode,
+    pub current_user_item_id: Option<devo_core::ItemId>,
     pub usage_parent_session_id: Option<devo_core::SessionId>,
     pub event_tx: mpsc::Sender<QueryEvent>,
 }
@@ -38,6 +39,7 @@ impl ServerRuntime {
             input_messages,
             collaboration_mode,
             input_mode,
+            current_user_item_id,
             usage_parent_session_id,
             event_tx,
         } = params;
@@ -156,6 +158,7 @@ impl ServerRuntime {
             ToolRuntimeContext {
                 session_id: session_id.to_string(),
                 turn_id: Some(turn_id.to_string()),
+                current_user_item_id: current_user_item_id.map(|item_id| item_id.to_string()),
                 cwd: state.core.cwd.clone(),
                 agent_scope,
                 collaboration_mode,

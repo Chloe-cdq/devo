@@ -104,6 +104,7 @@ pub(crate) async fn run_prompt(
         devo_core::tools::ToolRuntimeContext {
             session_id: session_state.id.clone(),
             turn_id: None,
+            current_user_item_id: None,
             cwd: cwd.clone(),
             agent_scope: devo_core::tools::ToolAgentScope::Parent,
             collaboration_mode: devo_protocol::CollaborationMode::Build,

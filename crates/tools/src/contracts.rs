@@ -62,6 +62,10 @@ pub struct ToolContext {
     pub tool_call_id: ToolCallId,
     pub session_id: String,
     pub turn_id: Option<String>,
+    /// The exact User item that started the current turn, when available.
+    /// Server-owned coordinators use this to bind sensitive actions to the
+    /// current user message instead of trusting model-generated identifiers.
+    pub current_user_item_id: Option<String>,
     pub workspace_root: PathBuf,
     pub budgets: ToolBudgets,
     pub cancel_token: CancellationToken,
@@ -88,6 +92,10 @@ impl std::fmt::Debug for ToolContext {
             .field("tool_call_id", &self.tool_call_id)
             .field("session_id", &self.session_id)
             .field("turn_id", &self.turn_id)
+            .field(
+                "current_user_item_id",
+                &self.current_user_item_id.as_ref().map(|_| "<current>"),
+            )
             .field("workspace_root", &self.workspace_root)
             .field("budgets", &self.budgets)
             .field("cancel_token", &self.cancel_token)

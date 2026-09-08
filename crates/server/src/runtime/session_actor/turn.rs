@@ -45,7 +45,7 @@ pub(super) async fn execute_turn_in_actor(
         .register_active_stream(session_id, Arc::clone(&state.stream))
         .await;
 
-    runtime
+    let current_user_item_id = runtime
         .prepare_turn_execution_for_actor(
             state,
             &turn,
@@ -95,6 +95,7 @@ pub(super) async fn execute_turn_in_actor(
             input_messages: &input_messages,
             collaboration_mode,
             input_mode,
+            current_user_item_id,
             usage_parent_session_id,
             event_tx,
         })

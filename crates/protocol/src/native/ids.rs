@@ -114,6 +114,7 @@ define_opaque_id!(RunId, "run_");
 define_opaque_id!(SubscriptionId, "sub_");
 define_opaque_id!(QueueItemId, "qit_");
 define_opaque_id!(RestorePlanId, "rpl_");
+define_opaque_id!(MemoryEntryId, "mem_");
 
 #[cfg(test)]
 mod tests {
@@ -127,6 +128,7 @@ mod tests {
         assert!(TurnId::new().as_str().starts_with("turn_"));
         assert!(ItemId::new().as_str().starts_with("item_"));
         assert!(GoalId::new().as_str().starts_with("goal_"));
+        assert!(MemoryEntryId::new().as_str().starts_with("mem_"));
     }
 
     #[test]
