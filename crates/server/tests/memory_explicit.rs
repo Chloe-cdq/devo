@@ -184,11 +184,20 @@ async fn start_native_session(
     cwd: &Path,
 ) -> Result<String> {
     initialize_native_connection(runtime, connection_id).await?;
+    start_native_session_after_initialize(runtime, connection_id, cwd, /*request_id*/ 2).await
+}
+
+async fn start_native_session_after_initialize(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    cwd: &Path,
+    request_id: u64,
+) -> Result<String> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
-                "id": 2,
+                "id": request_id,
                 "method": "session/start",
                 "params": {
                     "cwd": cwd,
@@ -1313,6 +1322,142 @@ async fn native_project_memory_rejects_active_turn_selector_conflict() -> Result
     assert_eq!(
         listed.error.message,
         "memory/list Project scope has ambiguous Native Session selectors"
+    );
+    release.notify_waiters();
+    Ok(())
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+/// Verifies: Project remember/list reject multiple active sessions from different projects.
+#[tokio::test]
+async fn native_project_memory_rejects_multiple_active_project_scopes() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let other_root = data_root.path().join("other-project");
+    fs::create_dir_all(data_root.path().join(".devo"))?;
+    fs::create_dir_all(&other_root)?;
+    fs::write(
+        data_root.path().join(".devo").join("config.toml"),
+        "[memory]\nenabled = true\n",
+    )?;
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider: Arc<dyn ModelProviderSDK> = Arc::new(BlockingProvider {
+        release: Arc::clone(&release),
+    });
+    let runtime = build_memory_test_runtime_with_provider(data_root.path(), provider)?;
+    let (active_tx, mut active_notifications) =
+        devo_server::test_outbound_channel(/*capacity*/ 16);
+    let connection_id = runtime
+        .register_connection(ClientTransportKind::Stdio, active_tx)
+        .await;
+    initialize_native_connection(&runtime, connection_id).await?;
+    let session_a = start_native_session_after_initialize(
+        &runtime,
+        connection_id,
+        data_root.path(),
+        /*request_id*/ 2,
+    )
+    .await?;
+    let session_b = start_native_session_after_initialize(
+        &runtime,
+        connection_id,
+        &other_root,
+        /*request_id*/ 3,
+    )
+    .await?;
+
+    for (request_id, session_id, input) in [
+        (4, &session_a, "active project A"),
+        (5, &session_b, "active project B"),
+    ] {
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": request_id,
+                    "method": "turn/start",
+                    "params": {
+                        "sessionId": session_id,
+                        "input": [{ "type": "text", "text": input }],
+                        "idempotencyKey": format!("multi-active-{request_id}")
+                    }
+                }),
+            )
+            .await
+            .expect("active turn/start response");
+        assert!(
+            response.get("result").is_some(),
+            "turn/start failed: {response}"
+        );
+    }
+
+    let mut source_user_item_id = None;
+    let mut started_sessions = 0;
+    while started_sessions < 2 {
+        let notification = tokio::time::timeout(
+            Duration::from_secs(/*seconds*/ 2),
+            active_notifications.recv(),
+        )
+        .await?
+        .context("active turn notification channel closed")?;
+        if notification["method"] != "item/started" {
+            continue;
+        }
+        let session_id = notification["params"]["item"]["sessionId"]
+            .as_str()
+            .context("session id in item/started")?;
+        if session_id != session_a && session_id != session_b {
+            continue;
+        }
+        started_sessions += 1;
+        if session_id == session_a {
+            source_user_item_id = Some(
+                notification["params"]["item"]["id"]
+                    .as_str()
+                    .context("user item id in item/started")?
+                    .to_string(),
+            );
+        }
+    }
+    let source_user_item_id = source_user_item_id.context("session A item/started")?;
+
+    let listed = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 6,
+                "method": "memory/list",
+                "params": { "scope": "project" }
+            }),
+        )
+        .await
+        .expect("ambiguous active Project memory/list response");
+    let listed: devo_protocol::ErrorResponse = serde_json::from_value(listed)?;
+    assert_eq!(listed.error.code, ProtocolErrorCode::InvalidParams);
+    assert_eq!(
+        listed.error.message,
+        "memory/list Project scope has ambiguous Native Session selectors"
+    );
+
+    let remembered = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 7,
+                "method": "memory/remember",
+                "params": {
+                    "text": "ambiguous active project memory",
+                    "scope": "project",
+                    "sourceUserItemId": source_user_item_id
+                }
+            }),
+        )
+        .await
+        .expect("ambiguous active Project memory/remember response");
+    let remembered: devo_protocol::ErrorResponse = serde_json::from_value(remembered)?;
+    assert_eq!(remembered.error.code, ProtocolErrorCode::InvalidParams);
+    assert_eq!(
+        remembered.error.message,
+        "memory/remember Project scope has ambiguous Native Session selectors"
     );
     release.notify_waiters();
     Ok(())

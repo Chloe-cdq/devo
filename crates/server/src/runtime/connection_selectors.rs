@@ -5,17 +5,6 @@ use devo_protocol::native::event::StreamSelector;
 
 use super::ServerRuntime;
 
-fn unique_session<I>(session_ids: I) -> Option<SessionId>
-where
-    I: IntoIterator<Item = Option<SessionId>>,
-{
-    let mut session_ids = session_ids.into_iter().flatten();
-    let session_id = session_ids.next()?;
-    session_ids
-        .all(|other| other == session_id)
-        .then_some(session_id)
-}
-
 impl ServerRuntime {
     pub(super) async fn subscribed_session_for_connection(
         &self,
@@ -23,12 +12,14 @@ impl ServerRuntime {
     ) -> Option<SessionId> {
         let connections = self.connections.lock().await;
         let connection = connections.get(&connection_id)?;
-        unique_session(
-            connection
-                .subscriptions
-                .iter()
-                .map(|subscription| subscription.session_id),
-        )
+        let mut session_ids = connection
+            .subscriptions
+            .iter()
+            .filter_map(|subscription| subscription.session_id);
+        let session_id = session_ids.next()?;
+        session_ids
+            .all(|other| other == session_id)
+            .then_some(session_id)
     }
 
     /// Returns all Session selectors registered through Native

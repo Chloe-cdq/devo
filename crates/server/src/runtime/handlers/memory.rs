@@ -79,11 +79,14 @@ impl ServerRuntime {
                 "memory runtime is unavailable",
             );
         };
-        let active_source = if let Some((session_id, turn)) = self
-            .active_turns
-            .session_for_connection(connection_id)
-            .await
-        {
+        let active_turns = self.active_turns.turns_for_connection(connection_id).await;
+        let active_session_ids = active_turns
+            .iter()
+            .map(|(session_id, _)| *session_id)
+            .collect::<Vec<_>>();
+        let active_source = if active_turns.is_empty() {
+            None
+        } else {
             let Some(source_user_item_id) = params.source_user_item_id.as_ref() else {
                 return self.error_response(
                     request_id,
@@ -91,33 +94,42 @@ impl ServerRuntime {
                     "memory/remember in an active turn requires sourceUserItemId",
                 );
             };
-            let item_matches = if let Some(stream) = self.active_stream_state(session_id).await {
-                let stream = stream.lock().await;
-                stream.turn_inline.as_ref().is_some_and(|inline| {
-                    inline.turn_id == turn.turn_id
-                        && inline.persisted_turn_items.iter().any(|item| {
-                            item.turn_id == turn.turn_id
-                                && item.item_id.to_string() == source_user_item_id.to_string()
-                                && matches!(&item.turn_item, devo_core::TurnItem::UserMessage(_))
-                        })
-                })
-            } else {
-                false
-            };
-            if !item_matches {
+            let mut active_source = None;
+            for (session_id, turn) in &active_turns {
+                let item_matches = if let Some(stream) = self.active_stream_state(*session_id).await
+                {
+                    let stream = stream.lock().await;
+                    stream.turn_inline.as_ref().is_some_and(|inline| {
+                        inline.turn_id == turn.turn_id
+                            && inline.persisted_turn_items.iter().any(|item| {
+                                item.turn_id == turn.turn_id
+                                    && item.item_id.to_string() == source_user_item_id.to_string()
+                                    && matches!(
+                                        &item.turn_item,
+                                        devo_core::TurnItem::UserMessage(_)
+                                    )
+                            })
+                    })
+                } else {
+                    false
+                };
+                if item_matches {
+                    active_source = Some((
+                        *session_id,
+                        Some(turn.turn_id.to_string()),
+                        Some(source_user_item_id.to_string()),
+                    ));
+                    break;
+                }
+            }
+            let Some(active_source) = active_source else {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,
                     "memory/remember source item is not the current user message",
                 );
-            }
-            Some((
-                session_id,
-                Some(turn.turn_id.to_string()),
-                Some(source_user_item_id.to_string()),
-            ))
-        } else {
-            None
+            };
+            Some(active_source)
         };
         let (source_session_id, source_turn_id, source_user_item_id, workspace_root) =
             match params.scope {
@@ -130,10 +142,7 @@ impl ServerRuntime {
                         );
                     }
                     let context = match self
-                        .project_memory_context(
-                            connection_id,
-                            active_source.as_ref().map(|source| source.0),
-                        )
+                        .project_memory_context(connection_id, &active_session_ids)
                         .await
                     {
                         Ok(context) => context,
@@ -149,8 +158,12 @@ impl ServerRuntime {
                         .as_ref()
                         .map(|source| (source.1.clone(), source.2.clone()))
                         .unwrap_or((None, None));
+                    let source_session_id = active_source
+                        .as_ref()
+                        .map(|source| source.0)
+                        .unwrap_or(context.session_id);
                     (
-                        context.session_id,
+                        source_session_id,
                         source_turn_id,
                         source_user_item_id,
                         context.workspace_root,
@@ -252,13 +265,15 @@ impl ServerRuntime {
         };
         let scope = params.scope.unwrap_or_default();
         let workspace_root = if scope == devo_protocol::native::rpc_memory::MemoryScope::Project {
-            let active_session_id = self
+            let active_session_ids = self
                 .active_turns
-                .session_for_connection(connection_id)
+                .turns_for_connection(connection_id)
                 .await
-                .map(|(session_id, _)| session_id);
+                .into_iter()
+                .map(|(session_id, _)| session_id)
+                .collect::<Vec<_>>();
             let context = match self
-                .project_memory_context(connection_id, active_session_id)
+                .project_memory_context(connection_id, &active_session_ids)
                 .await
             {
                 Ok(context) => context,

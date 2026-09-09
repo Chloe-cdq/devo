@@ -15,7 +15,13 @@ pub(super) struct ProjectMemoryContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectMemoryCandidate {
     context: ProjectMemoryContext,
-    active: bool,
+    activity: ProjectMemoryActivity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectMemoryActivity {
+    Active,
+    Inactive,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -39,7 +45,9 @@ fn choose_project_memory_context(
             if current.context.scope_id != candidate.context.scope_id {
                 return Err(ProjectMemoryContextError::Ambiguous);
             }
-            if candidate.active && !current.active {
+            if candidate.activity == ProjectMemoryActivity::Active
+                && current.activity == ProjectMemoryActivity::Inactive
+            {
                 selected = Some(candidate);
             }
         } else {
@@ -55,16 +63,16 @@ impl ServerRuntime {
     pub(super) async fn project_memory_context(
         &self,
         connection_id: u64,
-        active_session_id: Option<SessionId>,
+        active_session_ids: &[SessionId],
     ) -> Result<ProjectMemoryContext, ProjectMemoryContextError> {
         let Some(memory) = self.memory.as_ref() else {
             return Err(ProjectMemoryContextError::NoSession);
         };
         let mut session_ids = self.native_session_ids_for_connection(connection_id).await;
-        if let Some(active_session_id) = active_session_id
-            && !session_ids.contains(&active_session_id)
-        {
-            session_ids.push(active_session_id);
+        for active_session_id in active_session_ids {
+            if !session_ids.contains(active_session_id) {
+                session_ids.push(*active_session_id);
+            }
         }
 
         let mut candidates = Vec::with_capacity(session_ids.len());
@@ -81,7 +89,11 @@ impl ServerRuntime {
                     workspace_root: summary.cwd,
                     scope_id,
                 },
-                active: Some(session_id) == active_session_id,
+                activity: if active_session_ids.contains(&session_id) {
+                    ProjectMemoryActivity::Active
+                } else {
+                    ProjectMemoryActivity::Inactive
+                },
             });
         }
         choose_project_memory_context(candidates)
@@ -94,39 +106,59 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::choose_project_memory_context;
-    use super::{ProjectMemoryCandidate, ProjectMemoryContext, ProjectMemoryContextError};
+    use super::{
+        ProjectMemoryActivity, ProjectMemoryCandidate, ProjectMemoryContext,
+        ProjectMemoryContextError,
+    };
 
-    fn candidate(session_id: SessionId, scope_id: &str, active: bool) -> ProjectMemoryCandidate {
+    fn candidate(
+        session_id: SessionId,
+        scope_id: &str,
+        activity: ProjectMemoryActivity,
+    ) -> ProjectMemoryCandidate {
         ProjectMemoryCandidate {
             context: ProjectMemoryContext {
                 session_id,
                 workspace_root: scope_id.into(),
                 scope_id: scope_id.into(),
             },
-            active,
+            activity,
         }
     }
 
+    /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+    /// Verifies: same-project active sessions select the active context.
     #[test]
     fn same_project_sessions_share_one_context() {
         let active_session = SessionId::new();
         let selected_session = SessionId::new();
-        let expected = candidate(active_session, "project-a", true).context;
+        let expected =
+            candidate(active_session, "project-a", ProjectMemoryActivity::Active).context;
 
         let actual = choose_project_memory_context(vec![
-            candidate(selected_session, "project-a", false),
-            candidate(active_session, "project-a", true),
+            candidate(
+                selected_session,
+                "project-a",
+                ProjectMemoryActivity::Inactive,
+            ),
+            candidate(active_session, "project-a", ProjectMemoryActivity::Active),
         ])
         .expect("same project sessions should be accepted");
 
         assert_eq!(actual, expected);
     }
 
+    /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+    /// Verifies: active sessions from different projects are ambiguous.
     #[test]
     fn different_projects_are_ambiguous() {
         let result = choose_project_memory_context(vec![
-            candidate(SessionId::new(), "project-a", true),
-            candidate(SessionId::new(), "project-b", false),
+            candidate(SessionId::new(), "project-a", ProjectMemoryActivity::Active),
+            candidate(
+                SessionId::new(),
+                "project-b",
+                ProjectMemoryActivity::Inactive,
+            ),
         ]);
 
         assert_eq!(result, Err(ProjectMemoryContextError::Ambiguous));
