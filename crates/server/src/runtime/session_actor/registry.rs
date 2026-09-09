@@ -208,8 +208,10 @@ impl ServerRuntime {
                 return Some(inline.summary.clone());
             }
         }
-        let handle = self.session(session_id).await?;
-        handle.summary().await
+        if let Some(handle) = self.session(session_id).await {
+            return handle.summary().await;
+        }
+        self.deps.db.get_session(&session_id).ok().flatten()
     }
 
     /// Reads the session's collaboration mode, preferring the in-flight turn's

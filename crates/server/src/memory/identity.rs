@@ -158,7 +158,12 @@ mod tests {
         let linked_git_dir = common_dir.join("worktrees").join("linked");
         std::fs::create_dir_all(&linked_git_dir).expect("create linked git dir");
         std::fs::create_dir_all(&linked_root).expect("create linked root");
-        std::fs::write(linked_git_dir.join("commondir"), "../..\n").expect("write commondir");
+        let common_dir = Path::new("..").join("..");
+        std::fs::write(
+            linked_git_dir.join("commondir"),
+            format!("{}\n", common_dir.display()),
+        )
+        .expect("write commondir");
         std::fs::write(
             linked_root.join(".git"),
             format!("gitdir: {}\n", linked_git_dir.display()),
@@ -167,7 +172,8 @@ mod tests {
 
         let main = resolve_project_memory_identity(&main_root).expect("main identity");
         let linked = resolve_project_memory_identity(&linked_root).expect("linked identity");
-        let canonical_common = std::fs::canonicalize(&common_dir).expect("canonical common dir");
+        let canonical_common =
+            std::fs::canonicalize(main_root.join(".git")).expect("canonical common dir");
 
         assert_eq!(main, linked);
         assert_eq!(main.source, ProjectIdentitySource::GitCommonDirectory);
@@ -184,13 +190,30 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("create workspace");
 
         let identity = resolve_project_memory_identity(&workspace).expect("workspace identity");
+        let canonical_workspace = std::fs::canonicalize(&workspace).expect("canonical workspace");
+        let canonical_identity =
+            resolve_project_memory_identity(&canonical_workspace).expect("canonical identity");
 
+        assert_eq!(identity, canonical_identity);
         assert_eq!(identity.source, ProjectIdentitySource::WorkspaceRoot);
-        assert_eq!(
-            identity.canonical_source,
-            std::fs::canonicalize(workspace).expect("canonical workspace")
-        );
+        assert_eq!(identity.canonical_source, canonical_workspace);
         assert_eq!(identity.scope_id.len(), 64);
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-3
+    /// Verifies: a moved Git workspace intentionally receives a new project namespace.
+    #[test]
+    fn moved_git_workspace_uses_a_new_project_identity() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let original_root = temp.path().join("original");
+        let moved_root = temp.path().join("moved");
+        std::fs::create_dir_all(original_root.join(".git")).expect("create original repository");
+
+        let original = resolve_project_memory_identity(&original_root).expect("original identity");
+        std::fs::rename(&original_root, &moved_root).expect("move repository");
+        let moved = resolve_project_memory_identity(&moved_root).expect("moved identity");
+
+        assert_ne!(original, moved);
     }
 
     /// Verifies: distinct Windows-native path values never collapse through lossy UTF-8 conversion.

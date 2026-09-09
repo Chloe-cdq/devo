@@ -109,13 +109,13 @@ impl ServerRuntime {
         // the barrier read and the registration — events with seq ≤ barrier
         // are covered by snapshot+replay, later events arrive live.
         let mut connections = self.connections.lock().await;
-        let Some(connection) = connections.get_mut(&connection_id) else {
+        if !connections.contains_key(&connection_id) {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::NotInitialized,
                 "connection is not registered",
             );
-        };
+        }
         let mut result =
             match self.prepare_subscription(&request_id, &params.selectors, &params.after) {
                 Ok(result) => result,
@@ -149,7 +149,8 @@ impl ServerRuntime {
         // honest `nextChunkIndex` cannot be produced yet; v1 returns none
         // (clients refetch items via session/items/list when in doubt).
 
-        self.event_subscriptions.lock().await.insert(
+        let mut subscriptions = self.event_subscriptions.lock().await;
+        subscriptions.insert(
             subscription_id.as_str().to_owned(),
             EventSubscription {
                 connection_id,
@@ -158,9 +159,13 @@ impl ServerRuntime {
                 last_ack_at: None,
             },
         );
-        connection.event_selectors = params.selectors;
-        self.refresh_cwd_selector_count().await;
+        let selectors = Self::connection_selector_union(&subscriptions, connection_id);
+        drop(subscriptions);
+        if let Some(connection) = connections.get_mut(&connection_id) {
+            connection.event_selectors = selectors;
+        }
         drop(connections);
+        self.refresh_cwd_selector_count().await;
         result.pending_control_requests = self
             .reissue_pending_control_requests(connection_id, result.pending_control_requests)
             .await;
@@ -215,12 +220,13 @@ impl ServerRuntime {
         };
         result.subscription_id = params.subscription_id.clone();
         subscription.selectors = params.selectors.clone();
-        if let Some(connection) = connections.get_mut(&connection_id) {
-            connection.event_selectors = params.selectors;
-        }
+        let selectors = Self::connection_selector_union(&subscriptions, connection_id);
         drop(subscriptions);
-        self.refresh_cwd_selector_count().await;
+        if let Some(connection) = connections.get_mut(&connection_id) {
+            connection.event_selectors = selectors;
+        }
         drop(connections);
+        self.refresh_cwd_selector_count().await;
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
@@ -344,11 +350,13 @@ impl ServerRuntime {
                 );
             }
         }
+        let selectors = Self::connection_selector_union(&subscriptions, connection_id);
         drop(subscriptions);
-        self.refresh_connection_selectors(&mut connections, connection_id)
-            .await;
-        self.refresh_cwd_selector_count().await;
+        if let Some(connection) = connections.get_mut(&connection_id) {
+            connection.event_selectors = selectors;
+        }
         drop(connections);
+        self.refresh_cwd_selector_count().await;
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
@@ -734,24 +742,16 @@ impl ServerRuntime {
         out
     }
 
-    /// Rebuilds one connection's cached selector union from the registry
-    /// (after unsubscribe or connection close of a sibling).
-    async fn refresh_connection_selectors(
-        &self,
-        connections: &mut HashMap<u64, ConnectionRuntime>,
+    /// Computes one connection's cached selector union from the registry.
+    fn connection_selector_union(
+        subscriptions: &HashMap<String, EventSubscription>,
         connection_id: u64,
-    ) {
-        let selectors: Vec<StreamSelector> = self
-            .event_subscriptions
-            .lock()
-            .await
+    ) -> Vec<StreamSelector> {
+        subscriptions
             .values()
             .filter(|subscription| subscription.connection_id == connection_id)
             .flat_map(|subscription| subscription.selectors.clone())
-            .collect();
-        if let Some(connection) = connections.get_mut(&connection_id) {
-            connection.event_selectors = selectors;
-        }
+            .collect()
     }
 
     /// Recomputes the cheap SessionsByCwd gate used by the broadcast path.

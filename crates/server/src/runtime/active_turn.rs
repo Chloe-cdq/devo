@@ -79,20 +79,24 @@ impl ActiveTurnRegistry {
             .collect()
     }
 
-    pub(crate) async fn session_for_connection(
+    /// Returns every active turn owned by one connection in deterministic
+    /// session-id order.
+    pub(crate) async fn turns_for_connection(
         &self,
         connection_id: u64,
-    ) -> Option<(SessionId, TurnMetadata)> {
-        self.turns
-            .lock()
-            .await
+    ) -> Vec<(SessionId, TurnMetadata)> {
+        let turns = self.turns.lock().await;
+        let mut active_turns = turns
             .iter()
-            .find_map(|(session_id, execution)| {
+            .filter_map(|(session_id, execution)| {
                 (execution.connection_id == Some(connection_id))
                     .then(|| execution.turn.clone())
                     .flatten()
                     .map(|turn| (*session_id, turn))
             })
+            .collect::<Vec<_>>();
+        active_turns.sort_unstable_by_key(|(session_id, _)| session_id.to_string());
+        active_turns
     }
 
     pub(crate) async fn cancel_token(&self, session_id: SessionId) -> Option<CancellationToken> {
