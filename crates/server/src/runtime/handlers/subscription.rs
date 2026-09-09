@@ -109,7 +109,7 @@ impl ServerRuntime {
         // the barrier read and the registration — events with seq ≤ barrier
         // are covered by snapshot+replay, later events arrive live.
         let mut connections = self.connections.lock().await;
-        let Some(connection) = connections.get_mut(&connection_id) else {
+        let Some(_connection) = connections.get_mut(&connection_id) else {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::NotInitialized,
@@ -158,7 +158,8 @@ impl ServerRuntime {
                 last_ack_at: None,
             },
         );
-        connection.event_selectors = params.selectors;
+        self.refresh_connection_selectors(&mut connections, connection_id)
+            .await;
         self.refresh_cwd_selector_count().await;
         drop(connections);
         result.pending_control_requests = self
@@ -215,10 +216,9 @@ impl ServerRuntime {
         };
         result.subscription_id = params.subscription_id.clone();
         subscription.selectors = params.selectors.clone();
-        if let Some(connection) = connections.get_mut(&connection_id) {
-            connection.event_selectors = params.selectors;
-        }
         drop(subscriptions);
+        self.refresh_connection_selectors(&mut connections, connection_id)
+            .await;
         self.refresh_cwd_selector_count().await;
         drop(connections);
 

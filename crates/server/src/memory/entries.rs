@@ -174,7 +174,7 @@ impl MemoryRuntime {
         })
     }
 
-    fn scope_id(
+    pub(super) fn scope_id(
         &self,
         scope: MemoryScope,
         workspace_root: &std::path::Path,
@@ -197,7 +197,7 @@ impl MemoryRuntime {
         let projection = render_projection(scope, &entries);
         let directory = match scope {
             MemoryScope::User => self.memory_root.join("user"),
-            MemoryScope::Project => self.memory_root.join("project").join(scope_id),
+            MemoryScope::Project => self.memory_root.join("projects").join(scope_id),
         };
         write_atomic_projection(&directory.join("MEMORY.md"), projection.as_bytes())
     }

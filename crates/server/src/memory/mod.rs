@@ -174,6 +174,15 @@ impl MemoryRuntime {
         })
     }
 
+    /// Resolves the canonical Project scope ID used to bind runtime session
+    /// selectors to the memory projection.
+    pub(crate) fn project_scope_id(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> Result<String, MemoryError> {
+        self.scope_id(MemoryScope::Project, workspace_root)
+    }
+
     /// Executes one memory command through the public runtime seam.
     pub async fn execute_command(
         &self,

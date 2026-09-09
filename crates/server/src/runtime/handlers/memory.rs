@@ -1,5 +1,6 @@
 use super::super::*;
 
+use super::super::memory_scope::ProjectMemoryContextError;
 use crate::memory::ListMemoryRequest;
 use crate::memory::MemoryCommand;
 use crate::memory::MemoryCommandResult;
@@ -78,82 +79,124 @@ impl ServerRuntime {
                 "memory runtime is unavailable",
             );
         };
-        let (source_session_id, source_turn_id, source_user_item_id) =
-            if let Some((session_id, turn)) = self
-                .active_turns
-                .session_for_connection(connection_id)
-                .await
-            {
-                let Some(source_user_item_id) = params.source_user_item_id.as_ref() else {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InvalidParams,
-                        "memory/remember in an active turn requires sourceUserItemId",
-                    );
-                };
-                let item_matches = if let Some(stream) = self.active_stream_state(session_id).await
-                {
-                    let stream = stream.lock().await;
-                    stream.turn_inline.as_ref().is_some_and(|inline| {
-                        inline.turn_id == turn.turn_id
-                            && inline.persisted_turn_items.iter().any(|item| {
-                                item.turn_id == turn.turn_id
-                                    && item.item_id.to_string() == source_user_item_id.to_string()
-                                    && matches!(
-                                        &item.turn_item,
-                                        devo_core::TurnItem::UserMessage(_)
-                                    )
-                            })
-                    })
-                } else {
-                    false
-                };
-                if !item_matches {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InvalidParams,
-                        "memory/remember source item is not the current user message",
-                    );
-                }
-                (
-                    session_id,
-                    Some(turn.turn_id.to_string()),
-                    Some(source_user_item_id.to_string()),
-                )
-            } else if let Some(session_id) = match params.scope {
-                devo_protocol::native::rpc_memory::MemoryScope::User => {
-                    self.subscribed_session_for_connection(connection_id).await
-                }
-                devo_protocol::native::rpc_memory::MemoryScope::Project => {
-                    self.native_session_for_connection(connection_id).await
-                }
-            } {
-                if params.source_user_item_id.is_some() {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InvalidParams,
-                        "direct memory/remember commands must omit sourceUserItemId",
-                    );
-                }
-                (session_id, None, None)
-            } else {
+        let active_source = if let Some((session_id, turn)) = self
+            .active_turns
+            .session_for_connection(connection_id)
+            .await
+        {
+            let Some(source_user_item_id) = params.source_user_item_id.as_ref() else {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,
-                    "memory/remember requires a session-bound connection",
+                    "memory/remember in an active turn requires sourceUserItemId",
                 );
             };
-        let Some(workspace_root) = self
-            .session_summary_snapshot(source_session_id)
-            .await
-            .map(|summary| summary.cwd)
-        else {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::InvalidParams,
-                "memory/remember requires a session with a workspace root",
-            );
+            let item_matches = if let Some(stream) = self.active_stream_state(session_id).await {
+                let stream = stream.lock().await;
+                stream.turn_inline.as_ref().is_some_and(|inline| {
+                    inline.turn_id == turn.turn_id
+                        && inline.persisted_turn_items.iter().any(|item| {
+                            item.turn_id == turn.turn_id
+                                && item.item_id.to_string() == source_user_item_id.to_string()
+                                && matches!(&item.turn_item, devo_core::TurnItem::UserMessage(_))
+                        })
+                })
+            } else {
+                false
+            };
+            if !item_matches {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    "memory/remember source item is not the current user message",
+                );
+            }
+            Some((
+                session_id,
+                Some(turn.turn_id.to_string()),
+                Some(source_user_item_id.to_string()),
+            ))
+        } else {
+            None
         };
+        let (source_session_id, source_turn_id, source_user_item_id, workspace_root) =
+            match params.scope {
+                devo_protocol::native::rpc_memory::MemoryScope::Project => {
+                    if active_source.is_none() && params.source_user_item_id.is_some() {
+                        return self.error_response(
+                            request_id,
+                            ProtocolErrorCode::InvalidParams,
+                            "direct memory/remember commands must omit sourceUserItemId",
+                        );
+                    }
+                    let context = match self
+                        .project_memory_context(
+                            connection_id,
+                            active_source.as_ref().map(|source| source.0),
+                        )
+                        .await
+                    {
+                        Ok(context) => context,
+                        Err(error) => {
+                            return self.project_memory_context_error_response(
+                                request_id,
+                                "memory/remember",
+                                error,
+                            );
+                        }
+                    };
+                    let (source_turn_id, source_user_item_id) = active_source
+                        .as_ref()
+                        .map(|source| (source.1.clone(), source.2.clone()))
+                        .unwrap_or((None, None));
+                    (
+                        context.session_id,
+                        source_turn_id,
+                        source_user_item_id,
+                        context.workspace_root,
+                    )
+                }
+                devo_protocol::native::rpc_memory::MemoryScope::User => {
+                    let (source_session_id, source_turn_id, source_user_item_id) =
+                        if let Some(source) = active_source {
+                            source
+                        } else if let Some(session_id) =
+                            self.subscribed_session_for_connection(connection_id).await
+                        {
+                            if params.source_user_item_id.is_some() {
+                                return self.error_response(
+                                    request_id,
+                                    ProtocolErrorCode::InvalidParams,
+                                    "direct memory/remember commands must omit sourceUserItemId",
+                                );
+                            }
+                            (session_id, None, None)
+                        } else {
+                            return self.error_response(
+                                request_id,
+                                ProtocolErrorCode::InvalidParams,
+                                "memory/remember requires a session-bound connection",
+                            );
+                        };
+                    let Some(workspace_root) = self
+                        .session_summary_snapshot(source_session_id)
+                        .await
+                        .map(|summary| summary.cwd)
+                    else {
+                        return self.error_response(
+                            request_id,
+                            ProtocolErrorCode::InvalidParams,
+                            "memory/remember requires a session with a workspace root",
+                        );
+                    };
+                    (
+                        source_session_id,
+                        source_turn_id,
+                        source_user_item_id,
+                        workspace_root,
+                    )
+                }
+            };
         let result = memory
             .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
                 text: params.text,
@@ -209,21 +252,25 @@ impl ServerRuntime {
         };
         let scope = params.scope.unwrap_or_default();
         let workspace_root = if scope == devo_protocol::native::rpc_memory::MemoryScope::Project {
-            let Some(session_id) = self.native_session_for_connection(connection_id).await else {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    "memory/list Project scope requires a session-bound connection",
-                );
+            let active_session_id = self
+                .active_turns
+                .session_for_connection(connection_id)
+                .await
+                .map(|(session_id, _)| session_id);
+            let context = match self
+                .project_memory_context(connection_id, active_session_id)
+                .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    return self.project_memory_context_error_response(
+                        request_id,
+                        "memory/list",
+                        error,
+                    );
+                }
             };
-            let Some(summary) = self.session_summary_snapshot(session_id).await else {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    "memory/list requires a session with a workspace root",
-                );
-            };
-            summary.cwd
+            context.workspace_root
         } else {
             std::path::PathBuf::new()
         };
@@ -282,6 +329,29 @@ impl ServerRuntime {
             ),
         };
         self.error_response(request_id, code, message)
+    }
+
+    fn project_memory_context_error_response(
+        &self,
+        request_id: serde_json::Value,
+        method: &str,
+        error: ProjectMemoryContextError,
+    ) -> serde_json::Value {
+        let message = match error {
+            ProjectMemoryContextError::NoSession => {
+                format!("{method} Project scope requires a session-bound connection")
+            }
+            ProjectMemoryContextError::Ambiguous => {
+                format!("{method} Project scope has ambiguous Native Session selectors")
+            }
+            ProjectMemoryContextError::SessionUnavailable(_) => {
+                format!("{method} Project scope requires a session with a workspace root")
+            }
+            ProjectMemoryContextError::ProjectIdentity(_) => {
+                format!("{method} Project scope identity is unavailable")
+            }
+        };
+        self.error_response(request_id, ProtocolErrorCode::InvalidParams, message)
     }
 }
 
