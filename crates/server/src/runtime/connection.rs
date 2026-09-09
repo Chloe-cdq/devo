@@ -593,6 +593,30 @@ impl ServerRuntime {
         (!session_ids.any(|other| other != session_id)).then_some(session_id)
     }
 
+    /// Resolves the unique addressable legacy session represented by Native
+    /// Session selectors. Non-session selectors cannot determine a memory
+    /// workspace and are ignored.
+    pub(super) async fn native_session_for_connection(
+        &self,
+        connection_id: u64,
+    ) -> Option<SessionId> {
+        let connections = self.connections.lock().await;
+        let connection = connections.get(&connection_id)?;
+        let mut session_ids =
+            connection
+                .event_selectors
+                .iter()
+                .filter_map(|selector| match selector {
+                    devo_protocol::native::event::StreamSelector::Session { session_id } => {
+                        SessionId::try_from(session_id.as_str()).ok()
+                    }
+                    devo_protocol::native::event::StreamSelector::SessionsByCwd { .. }
+                    | devo_protocol::native::event::StreamSelector::BackgroundTask { .. } => None,
+                });
+        let session_id = session_ids.next()?;
+        (!session_ids.any(|other| other != session_id)).then_some(session_id)
+    }
+
     pub(super) async fn connection_ready(&self, connection_id: u64) -> bool {
         self.connections
             .lock()

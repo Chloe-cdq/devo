@@ -120,9 +120,14 @@ impl ServerRuntime {
                     Some(turn.turn_id.to_string()),
                     Some(source_user_item_id.to_string()),
                 )
-            } else if let Some(session_id) =
-                self.subscribed_session_for_connection(connection_id).await
-            {
+            } else if let Some(session_id) = match params.scope {
+                devo_protocol::native::rpc_memory::MemoryScope::User => {
+                    self.subscribed_session_for_connection(connection_id).await
+                }
+                devo_protocol::native::rpc_memory::MemoryScope::Project => {
+                    self.native_session_for_connection(connection_id).await
+                }
+            } {
                 if params.source_user_item_id.is_some() {
                     return self.error_response(
                         request_id,
@@ -204,8 +209,7 @@ impl ServerRuntime {
         };
         let scope = params.scope.unwrap_or_default();
         let workspace_root = if scope == devo_protocol::native::rpc_memory::MemoryScope::Project {
-            let Some(session_id) = self.subscribed_session_for_connection(connection_id).await
-            else {
+            let Some(session_id) = self.native_session_for_connection(connection_id).await else {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,

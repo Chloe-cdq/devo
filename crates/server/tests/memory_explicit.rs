@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -78,6 +79,81 @@ fn remember_request(
         source_turn_id: Some("turn-1".to_string()),
         workspace_root: workspace_root.to_path_buf(),
     }
+}
+
+async fn start_native_session(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    cwd: &Path,
+) -> Result<String> {
+    runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } }
+                }
+            }),
+        )
+        .await
+        .expect("Native initialize response");
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 2,
+                "method": "session/start",
+                "params": {
+                    "cwd": cwd,
+                    "ephemeral": false,
+                    "title": "memory selector test",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .expect("Native session/start response");
+    Ok(
+        serde_json::from_value::<devo_server::SuccessResponse<devo_server::SessionStartResult>>(
+            response,
+        )?
+        .result
+        .session
+        .session_id
+        .to_string(),
+    )
+}
+
+async fn create_native_session_subscription(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: &str,
+    request_id: u64,
+) -> Result<String> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": request_id,
+                "method": "subscription/create",
+                "params": {
+                    "selectors": [{ "kind": "session", "sessionId": session_id }],
+                    "includeSnapshot": false
+                }
+            }),
+        )
+        .await
+        .expect("Native subscription/create response");
+    Ok(serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::event::SubscriptionCreateResult>,
+    >(response)?
+    .result
+    .subscription_id
+    .to_string())
 }
 
 fn project_remember_request(
@@ -391,6 +467,8 @@ async fn native_memory_remember_and_list_support_user_and_project_scopes() -> Re
     .session
     .session_id
     .to_string();
+    let _subscription =
+        create_native_session_subscription(&runtime, connection_id, &session_id, 6).await?;
 
     let rejected = runtime
         .handle_incoming(
@@ -469,7 +547,7 @@ async fn native_memory_remember_and_list_support_user_and_project_scopes() -> Re
         .handle_incoming(
             connection_id,
             serde_json::json!({
-                "id": 6,
+                "id": 7,
                 "method": "memory/remember",
                 "params": {
                     "text": "the repository uses Rust",
@@ -493,7 +571,7 @@ async fn native_memory_remember_and_list_support_user_and_project_scopes() -> Re
         .handle_incoming(
             connection_id,
             serde_json::json!({
-                "id": 7,
+                "id": 8,
                 "method": "memory/list",
                 "params": { "scope": "project" }
             }),
@@ -672,4 +750,178 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         }
     };
     assert_eq!(main_list.data, vec![linked_entry]);
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+/// Verifies: Project memory follows the Native session selector across create and update.
+#[tokio::test]
+async fn native_project_memory_follows_native_subscription_selector() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let project_a = data_root.path().join("project-a");
+    let project_b = data_root.path().join("project-b");
+    let project_c = data_root.path().join("project-c");
+    fs::create_dir_all(&project_a)?;
+    fs::create_dir_all(&project_b)?;
+    fs::create_dir_all(&project_c)?;
+    fs::create_dir_all(data_root.path().join(".devo"))?;
+    fs::write(
+        data_root.path().join(".devo").join("config.toml"),
+        "[memory]\nenabled = true\n",
+    )?;
+    let config_store = Arc::new(std::sync::Mutex::new(AppConfigStore::load(
+        data_root.path().to_path_buf(),
+        /*workspace_root*/ Some(data_root.path()),
+    )?));
+    let provider: Arc<dyn ModelProviderSDK> = Arc::new(NoopProvider);
+    let db = Arc::new(devo_server::db::Database::open(
+        data_root.path().join("devo.db"),
+    )?);
+    let runtime = ServerRuntime::new(
+        data_root.path().join("server"),
+        ServerRuntimeDependencies::new(
+            Arc::clone(&provider),
+            Arc::new(SingleProviderRouter::new(Arc::clone(&provider))),
+            Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
+            "test-model".into(),
+            Arc::new(PresetModelCatalog::new(vec![Model {
+                slug: "test-model".into(),
+                display_name: "test-model".into(),
+                ..Model::default()
+            }])),
+            Arc::new(ProviderVendorCatalog::default()),
+            Box::new(FileSystemSkillCatalog::new(SkillsConfig {
+                bundled: Some(BundledSkillsConfig { enabled: false }),
+                ..SkillsConfig::default()
+            })),
+            AgentsMdConfig::default(),
+            db,
+            config_store,
+        ),
+    );
+    let (connection_a_tx, _connection_a_rx) = devo_server::test_outbound_channel(8);
+    let connection_a = runtime
+        .register_connection(ClientTransportKind::Stdio, connection_a_tx)
+        .await;
+    let (connection_b_tx, _connection_b_rx) = devo_server::test_outbound_channel(8);
+    let connection_b = runtime
+        .register_connection(ClientTransportKind::Stdio, connection_b_tx)
+        .await;
+    let (connection_c_tx, _connection_c_rx) = devo_server::test_outbound_channel(8);
+    let connection_c = runtime
+        .register_connection(ClientTransportKind::Stdio, connection_c_tx)
+        .await;
+
+    let _session_a = start_native_session(&runtime, connection_a, &project_a).await?;
+    let session_b = start_native_session(&runtime, connection_b, &project_b).await?;
+    let session_c = start_native_session(&runtime, connection_c, &project_c).await?;
+    let subscription_a =
+        create_native_session_subscription(&runtime, connection_a, &session_b, 3).await?;
+    let _subscription_b =
+        create_native_session_subscription(&runtime, connection_b, &session_b, 3).await?;
+    let _subscription_c =
+        create_native_session_subscription(&runtime, connection_c, &session_c, 3).await?;
+
+    let project_b_entry = runtime
+        .handle_incoming(
+            connection_a,
+            serde_json::json!({
+                "id": 4,
+                "method": "memory/remember",
+                "params": {
+                    "text": "project B uses Rust",
+                    "scope": "project"
+                }
+            }),
+        )
+        .await
+        .expect("Project B memory/remember response");
+    let project_b_entry: devo_protocol::native::rpc_memory::MemoryEntry =
+        serde_json::from_value(project_b_entry["result"].clone())?;
+
+    let listed_from_b = runtime
+        .handle_incoming(
+            connection_b,
+            serde_json::json!({
+                "id": 4,
+                "method": "memory/list",
+                "params": { "scope": "project" }
+            }),
+        )
+        .await
+        .expect("Project B memory/list response");
+    let listed_from_b: Page<devo_protocol::native::rpc_memory::MemoryEntry> =
+        serde_json::from_value(listed_from_b["result"].clone())?;
+    assert_eq!(listed_from_b.data, vec![project_b_entry.clone()]);
+
+    let listed_from_native_selector = runtime
+        .handle_incoming(
+            connection_a,
+            serde_json::json!({
+                "id": 5,
+                "method": "memory/list",
+                "params": { "scope": "project" }
+            }),
+        )
+        .await
+        .expect("Project B list through Native selector response");
+    let listed_from_native_selector: Page<devo_protocol::native::rpc_memory::MemoryEntry> =
+        serde_json::from_value(listed_from_native_selector["result"].clone())?;
+    assert_eq!(
+        listed_from_native_selector.data,
+        vec![project_b_entry.clone()]
+    );
+
+    let updated = runtime
+        .handle_incoming(
+            connection_a,
+            serde_json::json!({
+                "id": 6,
+                "method": "subscription/update",
+                "params": {
+                    "subscriptionId": subscription_a,
+                    "selectors": [{ "kind": "session", "sessionId": session_c }]
+                }
+            }),
+        )
+        .await
+        .expect("Native subscription/update response");
+    assert!(
+        updated.get("result").is_some(),
+        "subscription/update failed: {updated}"
+    );
+
+    let project_c_entry = runtime
+        .handle_incoming(
+            connection_a,
+            serde_json::json!({
+                "id": 7,
+                "method": "memory/remember",
+                "params": {
+                    "text": "project C uses Python",
+                    "scope": "project"
+                }
+            }),
+        )
+        .await
+        .expect("Project C memory/remember response");
+    let project_c_entry: devo_protocol::native::rpc_memory::MemoryEntry =
+        serde_json::from_value(project_c_entry["result"].clone())?;
+    assert_ne!(project_c_entry.scope_id, project_b_entry.scope_id);
+
+    let listed_after_update = runtime
+        .handle_incoming(
+            connection_a,
+            serde_json::json!({
+                "id": 8,
+                "method": "memory/list",
+                "params": { "scope": "project" }
+            }),
+        )
+        .await
+        .expect("Project C list after selector update response");
+    let listed_after_update: Page<devo_protocol::native::rpc_memory::MemoryEntry> =
+        serde_json::from_value(listed_after_update["result"].clone())?;
+    assert_eq!(listed_after_update.data, vec![project_c_entry]);
+    Ok(())
 }
