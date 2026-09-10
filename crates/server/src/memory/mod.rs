@@ -7,6 +7,7 @@ mod entries;
 mod forget;
 mod identity;
 mod projection;
+mod queries;
 mod schema;
 
 use std::collections::BTreeSet;

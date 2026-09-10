@@ -312,15 +312,31 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
 
-    let inferred = runtime
+    let inferred = match runtime
         .execute_command(MemoryCommand::RememberInferred(inferred_request(
             "Use tabs!",
             "2026-09-11T00:00:00Z",
         )))
         .await
-        .expect("inferred duplicate");
+        .expect("inferred duplicate")
+    {
+        MemoryCommandResult::RememberInferred(Some(entry)) => entry,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::RememberInferred(None)
+        | MemoryCommandResult::Status(_) => panic!("expected evidence-preserving inference"),
+    };
 
-    assert_eq!(inferred, MemoryCommandResult::RememberInferred(None));
+    assert_eq!(inferred.entry_id, remembered.entry_id);
+    assert_eq!(inferred.body, remembered.body);
+    assert_eq!(
+        inferred.origin,
+        devo_protocol::native::rpc_memory::MemoryOrigin::ExplicitUser
+    );
+    assert_eq!(inferred.state, remembered.state);
+    assert_eq!(inferred.provenance.len(), remembered.provenance.len() + 1);
+    assert!(inferred.updated_at > remembered.updated_at);
     let listed = match runtime
         .execute_command(MemoryCommand::List(
             devo_server::memory::ListMemoryRequest {
@@ -338,7 +354,7 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Status(_) => panic!("expected memory list"),
     };
-    assert_eq!(listed.data, vec![remembered]);
+    assert_eq!(listed.data, vec![inferred]);
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12

@@ -1,9 +1,7 @@
 use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::MemoryEntryId;
-use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryKind;
-use devo_protocol::native::rpc_memory::MemoryListResult;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
@@ -13,9 +11,8 @@ use rusqlite::{Connection, OptionalExtension};
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
 use super::{
-    DEFAULT_LIST_LIMIT, ListMemoryRequest, MAX_LIST_LIMIT, MemoryError,
-    MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime, USER_SCOPE_ID, kind_name,
-    origin_name, scope_name, state_name,
+    MemoryError, MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime,
+    USER_SCOPE_ID, kind_name, origin_name, scope_name, state_name,
 };
 
 enum MemoryWriteMode {
@@ -24,11 +21,6 @@ enum MemoryWriteMode {
         source_observed_at: DateTime<Utc>,
         source_watermark: String,
     },
-}
-
-enum MemoryListMode {
-    Management,
-    Recallable,
 }
 
 impl MemoryRuntime {
@@ -110,6 +102,10 @@ impl MemoryRuntime {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        let existing_origin = existing
+            .as_ref()
+            .map(|(_, origin)| parse_origin(origin))
+            .transpose()?;
         let revocation = transaction
             .query_row(
                 "SELECT revoked_at, restored_at
@@ -132,21 +128,16 @@ impl MemoryRuntime {
             .is_some_and(|(revoked_at, restored_at)| {
                 restored_at.is_none_or(|restored_at| restored_at < *revoked_at)
             });
-        if let Some(source_observed_at) = source_observed_at {
-            if revocation
+        if let Some(source_observed_at) = source_observed_at
+            && (revocation
                 .as_ref()
                 .is_some_and(|(revoked_at, _)| source_observed_at <= *revoked_at)
-                || revocation_active
-            {
-                return Ok(None);
-            }
-            if existing
-                .as_ref()
-                .is_some_and(|(_, origin)| origin == "explicit_user")
-            {
-                return Ok(None);
-            }
+                || revocation_active)
+        {
+            return Ok(None);
         }
+        let preserve_existing =
+            source_observed_at.is_some() && existing_origin == Some(MemoryOrigin::ExplicitUser);
         let existing_id = existing.as_ref().map(|(entry_id, _)| entry_id);
         let state = if revocation.is_some() {
             MemoryState::Restored
@@ -154,20 +145,29 @@ impl MemoryRuntime {
             MemoryState::Active
         };
         let entry_id = if let Some(existing_id) = existing_id {
-            transaction.execute(
-                "UPDATE memory_entries
-                 SET kind = ?1, body = ?2, origin = ?3, state = ?4,
-                     updated_at = ?5, replacement_entry_id = NULL
-                 WHERE entry_id = ?6",
-                rusqlite::params![
-                    kind_name(kind),
-                    body,
-                    origin_name(origin),
-                    state_name(state),
-                    now,
-                    existing_id,
-                ],
-            )?;
+            if preserve_existing {
+                transaction.execute(
+                    "UPDATE memory_entries
+                     SET updated_at = ?1
+                     WHERE entry_id = ?2",
+                    rusqlite::params![now, existing_id],
+                )?;
+            } else {
+                transaction.execute(
+                    "UPDATE memory_entries
+                     SET kind = ?1, body = ?2, origin = ?3, state = ?4,
+                         updated_at = ?5, replacement_entry_id = NULL
+                     WHERE entry_id = ?6",
+                    rusqlite::params![
+                        kind_name(kind),
+                        body,
+                        origin_name(origin),
+                        state_name(state),
+                        now,
+                        existing_id,
+                    ],
+                )?;
+            }
             if allow_restore {
                 transaction.execute(
                     "UPDATE memory_revocations
@@ -199,17 +199,19 @@ impl MemoryRuntime {
             )?;
             entry_id
         };
-        transaction.execute(
-            "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
-            [entry_id.as_str()],
-        )?;
-        transaction.execute(
-            "INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
-             SELECT entry_id, normalized_key, body
-             FROM memory_entries
-             WHERE entry_id = ?1",
-            [entry_id.as_str()],
-        )?;
+        if !preserve_existing {
+            transaction.execute(
+                "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
+                [entry_id.as_str()],
+            )?;
+            transaction.execute(
+                "INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
+                 SELECT entry_id, normalized_key, body
+                 FROM memory_entries
+                 WHERE entry_id = ?1",
+                [entry_id.as_str()],
+            )?;
+        }
         transaction.execute(
             "INSERT INTO memory_evidence (
                  evidence_id, entry_id, session_id, turn_id, source_user_item_id,
@@ -239,89 +241,6 @@ impl MemoryRuntime {
             .ok_or_else(|| MemoryError::InvalidStoredValue("committed entry is missing".into()))?;
         self.refresh_projection(&connection, request.scope, &scope_id)?;
         Ok(Some(entry))
-    }
-
-    pub(super) fn list(&self, request: ListMemoryRequest) -> Result<MemoryListResult, MemoryError> {
-        self.list_with_mode(request, MemoryListMode::Management)
-    }
-
-    pub(super) fn list_recallable(
-        &self,
-        request: ListMemoryRequest,
-    ) -> Result<MemoryListResult, MemoryError> {
-        self.list_with_mode(request, MemoryListMode::Recallable)
-    }
-
-    fn list_with_mode(
-        &self,
-        request: ListMemoryRequest,
-        mode: MemoryListMode,
-    ) -> Result<MemoryListResult, MemoryError> {
-        let scope = request.scope.unwrap_or(MemoryScope::User);
-        let scope_id = self.scope_id(scope, &request.workspace_root)?;
-        let limit = request
-            .limit
-            .unwrap_or(DEFAULT_LIST_LIMIT)
-            .clamp(1, MAX_LIST_LIMIT);
-        let offset = parse_cursor(request.cursor.as_deref())?;
-        let state_filter = match mode {
-            MemoryListMode::Management => "AND (?4 IS NULL OR state = ?4)",
-            MemoryListMode::Recallable => {
-                "AND (?4 IS NULL OR state = ?4 OR (?4 = 'active' AND state = 'restored'))"
-            }
-        };
-        let query = format!(
-            "SELECT entry_id
-             FROM memory_entries
-             WHERE scope_type = ?1
-               AND scope_id = ?2
-               AND (?3 IS NULL OR kind = ?3)
-               {state_filter}
-               AND (?5 IS NULL OR origin = ?5)
-               AND (?6 IS NULL OR body LIKE '%' || ?6 || '%' OR normalized_key LIKE '%' || ?6 || '%')
-             ORDER BY updated_at DESC, entry_id ASC
-             LIMIT ?7 OFFSET ?8"
-        );
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| MemoryError::LockPoisoned)?;
-        let mut statement = connection.prepare(&query)?;
-        let kind = request.kind.map(kind_name);
-        let state = request.state.map(state_name);
-        let origin = request.origin.map(origin_name);
-        let ids = statement
-            .query_map(
-                rusqlite::params![
-                    scope_name(scope),
-                    scope_id,
-                    kind,
-                    state,
-                    origin,
-                    request.text,
-                    i64::from(limit) + 1,
-                    i64::try_from(offset).map_err(|_| {
-                        MemoryError::InvalidRequest("memory cursor is too large".into())
-                    })?,
-                ],
-                |row| row.get::<_, String>(0),
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        let has_next = ids.len() > usize::try_from(limit).unwrap_or(usize::MAX);
-        let ids = ids.into_iter().take(limit as usize).collect::<Vec<_>>();
-        drop(statement);
-        let entries = ids
-            .iter()
-            .map(|id| {
-                load_entry(&connection, &MemoryEntryId::from_string(id.clone()))?.ok_or_else(|| {
-                    MemoryError::InvalidStoredValue("listed entry is missing".into())
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Page {
-            data: entries,
-            next_cursor: has_next.then(|| (offset + usize::try_from(limit).unwrap()).to_string()),
-        })
     }
 
     pub(super) fn scope_id(
@@ -407,13 +326,6 @@ fn contains_secret(body: &str) -> bool {
             .all()
             .into_iter()
             .any(|detector| !detector.detect(body).is_empty())
-}
-
-fn parse_cursor(cursor: Option<&str>) -> Result<usize, MemoryError> {
-    cursor
-        .unwrap_or("0")
-        .parse::<usize>()
-        .map_err(|_| MemoryError::InvalidRequest("memory cursor must be a number".into()))
 }
 
 pub(super) fn load_entry(
