@@ -15,6 +15,67 @@ impl ExplicitMemoryIntent {
     }
 }
 
+struct MemoryMutationContext {
+    memory: Arc<crate::memory::MemoryRuntime>,
+    source: crate::memory::MemorySourceContext,
+}
+
+impl MemoryMutationContext {
+    async fn authorize(
+        runtime: Arc<ServerRuntime>,
+        session_id: String,
+        turn_id: String,
+        source_user_item_id: Option<devo_protocol::native::ids::ItemId>,
+        intent: ExplicitMemoryIntent,
+    ) -> Result<Self, ToolCallError> {
+        let session_id = SessionId::try_from(session_id.as_str())
+            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+        let turn_id = TurnId::try_from(turn_id.as_str())
+            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+        let operation = match intent {
+            ExplicitMemoryIntent::Remember => "memory_remember",
+            ExplicitMemoryIntent::Forget => "memory_forget",
+        };
+        let source_item_id = source_user_item_id.ok_or_else(|| {
+            ToolCallError::InvalidInput(format!(
+                "{operation} requires the current user message context"
+            ))
+        })?;
+        let source_item_id_string = source_item_id.to_string();
+        if !has_explicit_current_user_memory_intent(
+            &runtime,
+            session_id,
+            turn_id,
+            &source_item_id_string,
+            intent,
+        )
+        .await
+        {
+            return Err(ToolCallError::InvalidInput(format!(
+                "{operation} requires explicit intent in the current user message"
+            )));
+        }
+        let memory = runtime.memory.clone().ok_or_else(|| {
+            ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
+        })?;
+        let summary = runtime
+            .session_summary_snapshot(session_id)
+            .await
+            .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
+        let source = crate::memory::MemorySourceContext {
+            user_item_id: Some(source_item_id),
+            session_id,
+            turn_id: Some(turn_id),
+            workspace_root: summary.cwd,
+        };
+        Ok(Self { memory, source })
+    }
+
+    fn memory(&self) -> &crate::memory::MemoryRuntime {
+        self.memory.as_ref()
+    }
+}
+
 async fn has_explicit_current_user_memory_intent(
     runtime: &ServerRuntime,
     session_id: SessionId,
@@ -47,48 +108,22 @@ pub(super) async fn remember(
     turn_id: String,
     params: devo_protocol::native::rpc_memory::MemoryRememberParams,
 ) -> Result<devo_protocol::native::rpc_memory::MemoryEntry, ToolCallError> {
-    let session_id = SessionId::try_from(session_id.as_str())
-        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-    let turn_id = TurnId::try_from(turn_id.as_str())
-        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-    let source_item_id = params.source_user_item_id.clone().ok_or_else(|| {
-        ToolCallError::InvalidInput(
-            "memory_remember requires the current user message context".to_string(),
-        )
-    })?;
-    let source_item_id_string = source_item_id.to_string();
-    if !has_explicit_current_user_memory_intent(
-        &runtime,
+    let context = MemoryMutationContext::authorize(
+        runtime,
         session_id,
         turn_id,
-        &source_item_id_string,
+        params.source_user_item_id.clone(),
         ExplicitMemoryIntent::Remember,
     )
-    .await
-    {
-        return Err(ToolCallError::InvalidInput(
-            "memory_remember requires explicit intent in the current user message".to_string(),
-        ));
-    }
-    let memory = runtime.memory.as_ref().ok_or_else(|| {
-        ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
-    })?;
-    let summary = runtime
-        .session_summary_snapshot(session_id)
-        .await
-        .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
-    let result = memory
+    .await?;
+    let result = context
+        .memory()
         .execute_command(crate::memory::MemoryCommand::Remember(
             crate::memory::MemoryRememberRequest {
                 text: params.text,
                 scope: params.scope,
                 kind: params.kind,
-                source: crate::memory::MemorySourceContext {
-                    user_item_id: Some(source_item_id),
-                    session_id,
-                    turn_id: Some(turn_id),
-                    workspace_root: summary.cwd,
-                },
+                source: context.source.clone(),
             },
         ))
         .await
@@ -109,48 +144,22 @@ pub(super) async fn forget(
     turn_id: String,
     params: devo_protocol::native::rpc_memory::MemoryForgetParams,
 ) -> Result<devo_protocol::native::rpc_memory::MemoryForgetResult, ToolCallError> {
-    let session_id = SessionId::try_from(session_id.as_str())
-        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-    let turn_id = TurnId::try_from(turn_id.as_str())
-        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-    let source_item_id = params.source_user_item_id.clone().ok_or_else(|| {
-        ToolCallError::InvalidInput(
-            "memory_forget requires the current user message context".to_string(),
-        )
-    })?;
-    let source_item_id_string = source_item_id.to_string();
-    if !has_explicit_current_user_memory_intent(
-        &runtime,
+    let context = MemoryMutationContext::authorize(
+        runtime,
         session_id,
         turn_id,
-        &source_item_id_string,
+        params.source_user_item_id.clone(),
         ExplicitMemoryIntent::Forget,
     )
-    .await
-    {
-        return Err(ToolCallError::InvalidInput(
-            "memory_forget requires explicit intent in the current user message".to_string(),
-        ));
-    }
-    let memory = runtime.memory.as_ref().ok_or_else(|| {
-        ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
-    })?;
-    let summary = runtime
-        .session_summary_snapshot(session_id)
-        .await
-        .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
-    let result = memory
+    .await?;
+    let result = context
+        .memory()
         .execute_command(crate::memory::MemoryCommand::Forget(
             crate::memory::MemoryForgetRequest {
                 selector: crate::memory::MemoryForgetSelector::from_params(&params)
                     .map_err(|message| ToolCallError::InvalidInput(message.to_string()))?,
                 scope: params.scope,
-                source: crate::memory::MemorySourceContext {
-                    user_item_id: Some(source_item_id),
-                    session_id,
-                    turn_id: Some(turn_id),
-                    workspace_root: summary.cwd,
-                },
+                source: context.source.clone(),
             },
         ))
         .await
@@ -269,10 +278,7 @@ fn has_explicit_memory_forget_intent(text: &str) -> bool {
         "删除那条记忆",
     ]
     .iter()
-    .any(|phrase| {
-        memory_command_has_payload(&text, phrase)
-            && (*phrase != "forget about" || memory_command_has_memory_payload(&text, phrase))
-    })
+    .any(|phrase| memory_command_has_forget_payload(&text, phrase))
 }
 
 fn memory_command_has_payload(text: &str, phrase: &str) -> bool {
@@ -280,11 +286,20 @@ fn memory_command_has_payload(text: &str, phrase: &str) -> bool {
         .is_some_and(|remainder| remainder.chars().any(char::is_alphanumeric))
 }
 
-fn memory_command_has_memory_payload(text: &str, phrase: &str) -> bool {
-    memory_command_payload(text, phrase).is_some_and(|remainder| {
-        remainder.chars().any(char::is_alphanumeric)
-            && (remainder.contains("memory") || remainder.contains("记忆"))
-    })
+fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
+    let Some(remainder) = memory_command_payload(text, phrase) else {
+        return false;
+    };
+    let remainder = remainder.trim_start();
+    let is_about_task = phrase.ends_with("forget about")
+        || remainder.strip_prefix("about").is_some_and(|suffix| {
+            suffix
+                .chars()
+                .next()
+                .is_none_or(|character| !character.is_ascii_alphanumeric())
+        });
+    remainder.chars().any(char::is_alphanumeric)
+        && (!is_about_task || remainder.contains("memory") || remainder.contains("记忆"))
 }
 
 fn memory_command_payload<'a>(text: &'a str, phrase: &str) -> Option<&'a str> {
@@ -353,8 +368,21 @@ mod tests {
         assert!(!has_explicit_memory_forget_intent(
             "Forget about adding tests; implement B"
         ));
+        for text in [
+            "Please forget about adding tests; implement B",
+            "Can you forget about adding tests; implement B",
+            "Could you forget about adding tests; implement B",
+            "Would you forget about adding tests; implement B",
+            "I want you to forget about adding tests; implement B",
+            "I'd like you to forget about adding tests; implement B",
+        ] {
+            assert!(!has_explicit_memory_forget_intent(text), "{text}");
+        }
         assert!(has_explicit_memory_forget_intent(
             "Forget about this memory"
+        ));
+        assert!(has_explicit_memory_forget_intent(
+            "Please forget about this memory"
         ));
     }
 }

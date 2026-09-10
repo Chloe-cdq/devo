@@ -3,10 +3,9 @@ use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use rusqlite::OptionalExtension;
 
-use super::entries::{load_entry, normalize_body};
+use super::entries::{load_entry, normalize_body, parse_scope};
 use super::{
-    MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryRuntime, MemoryScope, scope_name,
-    state_name,
+    MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryRuntime, scope_name, state_name,
 };
 
 impl MemoryRuntime {
@@ -132,13 +131,5 @@ impl MemoryRuntime {
             forgotten: Some(entry),
             candidates: Vec::new(),
         })
-    }
-}
-
-fn parse_scope(value: &str) -> Result<MemoryScope, MemoryError> {
-    match value {
-        "user" => Ok(MemoryScope::User),
-        "project" => Ok(MemoryScope::Project),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
     }
 }

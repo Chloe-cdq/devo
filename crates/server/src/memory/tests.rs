@@ -8,6 +8,7 @@ use devo_protocol::TurnId;
 use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryKind;
+use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::rpc_memory::MemoryProvenance;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
@@ -53,7 +54,11 @@ fn forget_request(entry_id: devo_protocol::native::ids::MemoryEntryId) -> Memory
     MemoryForgetRequest {
         selector: MemoryForgetSelector::EntryId(entry_id),
         scope: MemoryScope::User,
-        source: test_source(None, "session-1", None),
+        source: test_source(
+            /*user_item_id*/ None,
+            "session-1",
+            /*turn_id*/ None,
+        ),
     }
 }
 
@@ -62,7 +67,7 @@ fn inferred_request(text: &str, observed_at: &str) -> MemoryInferredRememberRequ
         text: text.to_owned(),
         scope: MemoryScope::User,
         kind: Some(MemoryKind::Preference),
-        source: test_source(None, "session-2", Some("turn-2")),
+        source: test_source(/*user_item_id*/ None, "session-2", Some("turn-2")),
         source_observed_at: DateTime::parse_from_rfc3339(observed_at)
             .expect("observed timestamp")
             .with_timezone(&Utc),
@@ -166,9 +171,21 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
         .expect("replay old evidence");
 
     assert_eq!(replay, None);
-    assert_eq!(restored.entry_id, remembered.entry_id);
-    assert_eq!(restored.body, "Use tabs");
-    assert_eq!(restored.state, MemoryState::Restored);
+    let expected_restored = MemoryEntry {
+        entry_id: remembered.entry_id,
+        scope: MemoryScope::User,
+        scope_id: "user".to_owned(),
+        kind: MemoryKind::Preference,
+        normalized_key: "use tabs".to_owned(),
+        body: "Use tabs".to_owned(),
+        origin: MemoryOrigin::ExplicitUser,
+        state: MemoryState::Restored,
+        created_at: restored.created_at,
+        updated_at: restored.updated_at,
+        replacement_entry_id: None,
+        provenance: restored.provenance.clone(),
+    };
+    assert_eq!(restored, expected_restored);
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8

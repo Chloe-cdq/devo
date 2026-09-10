@@ -54,7 +54,12 @@ fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
     MemoryForgetRequest {
         selector,
         scope: MemoryScope::User,
-        source: test_source(None, "session-1", None, PathBuf::new()),
+        source: test_source(
+            /*user_item_id*/ None,
+            "session-1",
+            /*turn_id*/ None,
+            PathBuf::new(),
+        ),
     }
 }
 

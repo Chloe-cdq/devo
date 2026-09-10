@@ -441,7 +441,7 @@ fn load_provenance(
     Ok(rows)
 }
 
-fn parse_scope(value: &str) -> Result<MemoryScope, MemoryError> {
+pub(super) fn parse_scope(value: &str) -> Result<MemoryScope, MemoryError> {
     match value {
         "user" => Ok(MemoryScope::User),
         "project" => Ok(MemoryScope::Project),
