@@ -4,7 +4,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[path = "support/memory.rs"]
+use devo_server::memory::MemorySourceContext;
+
+#[path = "../src/memory/test_support.rs"]
 mod support;
 
 use anyhow::Context;
@@ -27,11 +29,11 @@ use devo_protocol::ResponseMetadata;
 use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
-use devo_protocol::TurnId;
 use devo_protocol::Usage;
-use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::page::Page;
-use devo_protocol::native::rpc_memory::{MemoryForgetResult, MemoryKind, MemoryScope, MemoryState};
+use devo_protocol::native::rpc_memory::{
+    MemoryEntry, MemoryForgetResult, MemoryKind, MemoryScope, MemoryState,
+};
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
@@ -39,7 +41,7 @@ use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
 use devo_server::memory::{
     ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryError, MemoryRememberRequest,
-    MemoryRuntime, MemorySourceContext, PrepareMemoryRequest,
+    MemoryRuntime, PrepareMemoryRequest,
 };
 use futures::Stream;
 use futures::stream;
@@ -112,15 +114,12 @@ fn remember_request(
         text: text.to_string(),
         scope: MemoryScope::User,
         kind: None,
-        source: MemorySourceContext {
-            user_item_id: Some(ItemId::from_string(format!(
-                "item_{:032x}",
-                support::deterministic_uuid(source_user_item_id).as_u128()
-            ))),
-            session_id: SessionId::from(support::deterministic_uuid("ses-1")),
-            turn_id: Some(TurnId::from(support::deterministic_uuid("turn-1"))),
-            workspace_root: workspace_root.to_path_buf(),
-        },
+        source: support::test_source(
+            Some(source_user_item_id),
+            "ses-1",
+            Some("turn-1"),
+            workspace_root.to_path_buf(),
+        ),
     }
 }
 
@@ -756,11 +755,16 @@ async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<
     let forgotten: MemoryForgetResult = serde_json::from_value(forgotten["result"].clone())?;
     assert_eq!(forgotten.candidates, Vec::new());
     let forgotten_entry = forgotten.forgotten.expect("exact entry was retired");
-    assert_eq!(forgotten_entry.entry_id, remembered.entry_id);
-    assert_eq!(forgotten_entry.state, MemoryState::Retired);
+    let expected_forgotten = MemoryEntry {
+        state: MemoryState::Retired,
+        updated_at: forgotten_entry.updated_at,
+        ..remembered
+    };
+    assert_eq!(forgotten_entry, expected_forgotten);
 
+    let mut expected_candidates = vec![forgotten_entry];
     for text in ["I prefer tabs", "I prefer spaces"] {
-        runtime
+        let remembered = runtime
             .handle_incoming(
                 connection_id,
                 serde_json::json!({
@@ -771,6 +775,7 @@ async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<
             )
             .await
             .expect("memory/remember candidate response");
+        expected_candidates.push(serde_json::from_value(remembered["result"].clone())?);
     }
     let ambiguous = runtime
         .handle_incoming(
@@ -784,8 +789,11 @@ async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<
         .await
         .expect("ambiguous memory/forget response");
     let ambiguous: MemoryForgetResult = serde_json::from_value(ambiguous["result"].clone())?;
-    assert!(ambiguous.forgotten.is_none());
-    assert_eq!(ambiguous.candidates.len(), 3);
+    expected_candidates.sort_by_key(|entry| entry.entry_id.to_string());
+    let mut actual_candidates = ambiguous.candidates;
+    actual_candidates.sort_by_key(|entry| entry.entry_id.to_string());
+    assert_eq!(ambiguous.forgotten, None);
+    assert_eq!(actual_candidates, expected_candidates);
 
     let active = runtime
         .handle_incoming(

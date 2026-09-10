@@ -1,46 +1,28 @@
 use std::fs;
 use std::path::PathBuf;
 
-#[path = "support/memory.rs"]
+use devo_server::memory::MemorySourceContext;
+
+#[path = "../src/memory/test_support.rs"]
 mod support;
 
 use devo_core::MemoryConfig;
-use devo_protocol::SessionId;
-use devo_protocol::TurnId;
-use devo_protocol::native::ids::ItemId;
-use devo_protocol::native::rpc_memory::{MemoryEntry, MemoryKind, MemoryScope, MemoryState};
+use devo_protocol::native::rpc_memory::{
+    MemoryEntry, MemoryForgetResult, MemoryKind, MemoryScope, MemoryState,
+};
 use devo_server::memory::{
     MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
-    MemoryRememberRequest, MemoryRuntime, MemorySourceContext, PrepareMemoryRequest,
+    MemoryRememberRequest, MemoryRuntime, PrepareMemoryRequest,
 };
 use pretty_assertions::assert_eq;
 use rusqlite::Connection;
-
-fn test_source(
-    user_item_id: Option<&str>,
-    session_id: &str,
-    turn_id: Option<&str>,
-    workspace_root: PathBuf,
-) -> MemorySourceContext {
-    MemorySourceContext {
-        user_item_id: user_item_id.map(|seed| {
-            ItemId::from_string(format!(
-                "item_{:032x}",
-                support::deterministic_uuid(seed).as_u128()
-            ))
-        }),
-        session_id: SessionId::from(support::deterministic_uuid(session_id)),
-        turn_id: turn_id.map(|seed| TurnId::from(support::deterministic_uuid(seed))),
-        workspace_root,
-    }
-}
 
 fn remember_request(text: &str) -> MemoryRememberRequest {
     MemoryRememberRequest {
         text: text.to_owned(),
         scope: MemoryScope::User,
         kind: Some(MemoryKind::Preference),
-        source: test_source(
+        source: support::test_source(
             Some("user-item-1"),
             "session-1",
             Some("turn-1"),
@@ -53,7 +35,7 @@ fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
     MemoryForgetRequest {
         selector,
         scope: MemoryScope::User,
-        source: test_source(
+        source: support::test_source(
             /*user_item_id*/ None,
             "session-1",
             /*turn_id*/ None,
@@ -330,11 +312,19 @@ async fn exact_forget_uses_persisted_scope_for_project_entry() {
 async fn ambiguous_text_forget_returns_candidates_without_mutation() {
     let database_root = tempfile::tempdir().expect("temporary memory root");
     let runtime = open_runtime(database_root.path());
+    let mut expected_candidates = Vec::new();
     for text in ["I prefer tabs", "I prefer spaces"] {
-        runtime
+        let remembered = match runtime
             .execute_command(MemoryCommand::Remember(remember_request(text)))
             .await
-            .expect("remember candidate");
+            .expect("remember candidate")
+        {
+            MemoryCommandResult::Remember(entry) => entry,
+            MemoryCommandResult::Forget(_)
+            | MemoryCommandResult::List(_)
+            | MemoryCommandResult::Status(_) => panic!("expected remembered candidate"),
+        };
+        expected_candidates.push(remembered);
     }
 
     let result = match runtime
@@ -349,8 +339,19 @@ async fn ambiguous_text_forget_returns_candidates_without_mutation() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
-    assert!(result.forgotten.is_none());
-    assert_eq!(result.candidates.len(), 2);
+    expected_candidates.sort_by_key(|entry| entry.entry_id.to_string());
+    let mut actual_candidates = result.candidates;
+    actual_candidates.sort_by_key(|entry| entry.entry_id.to_string());
+    assert_eq!(
+        MemoryForgetResult {
+            forgotten: result.forgotten,
+            candidates: actual_candidates,
+        },
+        MemoryForgetResult {
+            forgotten: None,
+            candidates: expected_candidates,
+        }
+    );
 
     let connection =
         Connection::open(database_root.path().join("memory.sqlite3")).expect("memory database");

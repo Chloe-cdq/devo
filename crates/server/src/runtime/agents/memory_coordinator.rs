@@ -287,8 +287,15 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         return false;
     };
     let remainder = remainder.trim_start();
-    let is_about_task = phrase.ends_with("forget about")
-        || ["about", "all about"].iter().any(|prefix| {
+    let has_payload = remainder.chars().any(char::is_alphanumeric);
+    let phrase_names_memory = phrase.contains("memory") || phrase.contains("记忆");
+    let has_memory_subject = remainder.contains("memory") || remainder.contains("记忆");
+    let has_personal_subject = remainder.starts_with("my ")
+        || remainder.starts_with("my:")
+        || remainder.starts_with("我的");
+    let is_task_lead = ["about", "all about", "everything about"]
+        .iter()
+        .any(|prefix| {
             remainder.strip_prefix(prefix).is_some_and(|suffix| {
                 suffix
                     .chars()
@@ -296,8 +303,22 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
                     .is_none_or(|character| !character.is_ascii_alphanumeric())
             })
         });
-    remainder.chars().any(char::is_alphanumeric)
-        && (!is_about_task || remainder.contains("memory") || remainder.contains("记忆"))
+    let names_specific_memory = [
+        "this memory",
+        "that memory",
+        "my memory",
+        "这条记忆",
+        "那条记忆",
+        "我的记忆",
+    ]
+    .iter()
+    .any(|subject| remainder.contains(subject));
+
+    has_payload
+        && (phrase_names_memory
+            || has_personal_subject
+            || (has_memory_subject && (!is_task_lead || names_specific_memory))
+            || (phrase == "forget my" && has_payload))
 }
 
 fn memory_command_payload<'a>(text: &'a str, phrase: &str) -> Option<&'a str> {
@@ -373,6 +394,9 @@ mod tests {
             "Would you forget about adding tests; implement B",
             "I want you to forget about adding tests; implement B",
             "I'd like you to forget about adding tests; implement B",
+            "Please forget all about adding tests; implement B",
+            "Please forget everything about adding tests; implement B",
+            "请删除这个文件",
         ] {
             assert!(!has_explicit_memory_forget_intent(text), "{text}");
         }
@@ -381,6 +405,9 @@ mod tests {
         ));
         assert!(has_explicit_memory_forget_intent(
             "Please forget about this memory"
+        ));
+        assert!(has_explicit_memory_forget_intent(
+            "Please forget all about this memory"
         ));
     }
 }

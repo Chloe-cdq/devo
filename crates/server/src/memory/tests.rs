@@ -1,14 +1,10 @@
 use std::path::PathBuf;
 
-#[path = "../../tests/support/memory.rs"]
-mod test_support;
-
 use chrono::DateTime;
 use chrono::Utc;
 use devo_core::MemoryConfig;
 use devo_protocol::SessionId;
 use devo_protocol::TurnId;
-use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
@@ -17,35 +13,23 @@ use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
 use pretty_assertions::assert_eq;
 
+use super::test_support::{deterministic_uuid, test_source};
 use super::{
     MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
-    MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime, MemorySourceContext,
+    MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime,
 };
-
-fn test_source(
-    user_item_id: Option<&str>,
-    session_id: &str,
-    turn_id: Option<&str>,
-) -> MemorySourceContext {
-    MemorySourceContext {
-        user_item_id: user_item_id.map(|seed| {
-            ItemId::from_string(format!(
-                "item_{:032x}",
-                test_support::deterministic_uuid(seed).as_u128()
-            ))
-        }),
-        session_id: SessionId::from(test_support::deterministic_uuid(session_id)),
-        turn_id: turn_id.map(|seed| TurnId::from(test_support::deterministic_uuid(seed))),
-        workspace_root: PathBuf::new(),
-    }
-}
 
 fn remember_request(text: &str) -> MemoryRememberRequest {
     MemoryRememberRequest {
         text: text.to_owned(),
         scope: MemoryScope::User,
         kind: Some(MemoryKind::Preference),
-        source: test_source(Some("user-item-1"), "session-1", Some("turn-1")),
+        source: test_source(
+            Some("user-item-1"),
+            "session-1",
+            Some("turn-1"),
+            Default::default(),
+        ),
     }
 }
 
@@ -57,6 +41,7 @@ fn forget_request(entry_id: devo_protocol::native::ids::MemoryEntryId) -> Memory
             /*user_item_id*/ None,
             "session-1",
             /*turn_id*/ None,
+            Default::default(),
         ),
     }
 }
@@ -66,7 +51,12 @@ fn inferred_request(text: &str, observed_at: &str) -> MemoryInferredRememberRequ
         text: text.to_owned(),
         scope: MemoryScope::User,
         kind: Some(MemoryKind::Preference),
-        source: test_source(/*user_item_id*/ None, "session-2", Some("turn-2")),
+        source: test_source(
+            /*user_item_id*/ None,
+            "session-2",
+            Some("turn-2"),
+            Default::default(),
+        ),
         source_observed_at: DateTime::parse_from_rfc3339(observed_at)
             .expect("observed timestamp")
             .with_timezone(&Utc),
@@ -220,11 +210,9 @@ async fn inferred_memory_does_not_replace_explicit_content() {
             remembered.provenance[0].clone(),
             MemoryProvenance {
                 source_session_id: Some(
-                    SessionId::from(test_support::deterministic_uuid("session-2")).to_string(),
+                    SessionId::from(deterministic_uuid("session-2")).to_string(),
                 ),
-                source_turn_id: Some(
-                    TurnId::from(test_support::deterministic_uuid("turn-2")).to_string(),
-                ),
+                source_turn_id: Some(TurnId::from(deterministic_uuid("turn-2")).to_string()),
                 source_user_item_id: None,
             },
         ],
