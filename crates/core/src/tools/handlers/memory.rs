@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use devo_protocol::native::ids::ItemId;
+use devo_protocol::native::ids::MemoryEntryId;
+use devo_protocol::native::rpc_memory::MemoryForgetParams;
 use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryRememberParams;
 use devo_protocol::native::rpc_memory::MemoryScope;
@@ -20,6 +22,25 @@ use crate::tool_spec::ToolSpec;
 /// Built-in root-agent action for explicitly persisting User or Project memory.
 pub struct MemoryRememberHandler {
     spec: ToolSpec,
+}
+
+/// Built-in root-agent action for safely retiring User or Project memory.
+pub struct MemoryForgetHandler {
+    spec: ToolSpec,
+}
+
+impl Default for MemoryForgetHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryForgetHandler {
+    pub fn new() -> Self {
+        Self {
+            spec: memory_forget_spec(),
+        }
+    }
 }
 
 impl Default for MemoryRememberHandler {
@@ -84,6 +105,46 @@ pub fn memory_remember_spec() -> ToolSpec {
     }
 }
 
+pub fn memory_forget_spec() -> ToolSpec {
+    ToolSpec {
+        name: "memory_forget".to_string(),
+        description: "Forget one user or project memory. Provide an exact entry_id when known; otherwise provide text and review returned candidates before selecting an entry. Only call this when the current user explicitly asks to forget or remove the memory.".to_string(),
+        input_schema: JsonSchema::object(
+            BTreeMap::from([
+                (
+                    "entry_id".to_string(),
+                    JsonSchema::string(Some("Stable memory entry id to retire exactly.")),
+                ),
+                (
+                    "text".to_string(),
+                    JsonSchema::string(Some("Text used to find a memory; ambiguous matches are returned without mutation.")),
+                ),
+                (
+                    "source_user_item_id".to_string(),
+                    JsonSchema::string(Some("The item id of the current user message that explicitly requested forgetting.")),
+                ),
+                (
+                    "scope".to_string(),
+                    JsonSchema {
+                        enum_values: Some(vec![json!("user"), json!("project")]),
+                        ..JsonSchema::string(Some("Memory scope: user or project."))
+                    },
+                ),
+            ]),
+            Some(Vec::new()),
+            Some(/*additional_properties*/ false),
+        ),
+        output_mode: ToolOutputMode::StructuredJson,
+        execution_mode: ToolExecutionMode::Mutating,
+        capability_tags: vec![],
+        supports_parallel: false,
+        preparation_feedback: ToolPreparationFeedback::None,
+        display_name: None,
+        supports_cancellation: None,
+        supports_streaming: None,
+    }
+}
+
 #[async_trait]
 impl ToolHandler for MemoryRememberHandler {
     fn spec(&self) -> &ToolSpec {
@@ -120,6 +181,46 @@ impl ToolHandler for MemoryRememberHandler {
         Ok(ToolResult::success(
             ToolResultContent::Json(value),
             "Memory remembered",
+        ))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for MemoryForgetHandler {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    async fn handle(
+        &self,
+        ctx: ToolContext,
+        input: serde_json::Value,
+        _progress: Option<ToolProgressSender>,
+    ) -> Result<ToolResult, ToolCallError> {
+        if ctx.agent_scope == crate::contracts::ToolAgentScope::Subagent {
+            return Err(ToolCallError::Denied(
+                "sub-agents cannot read or mutate user memory".to_string(),
+            ));
+        }
+        let params = parse_memory_forget_input(&input, ctx.current_user_item_id.as_deref())?;
+        let turn_id = ctx.turn_id.ok_or_else(|| {
+            ToolCallError::InvalidInput(
+                "memory_forget requires an active turn with a current user message".to_string(),
+            )
+        })?;
+        let coordinator = ctx.agent_coordinator.ok_or_else(|| {
+            ToolCallError::NeedsConfiguration(
+                "memory_forget requires a server runtime coordinator".to_string(),
+            )
+        })?;
+        let result = Arc::clone(&coordinator)
+            .memory_forget(ctx.session_id, turn_id, params)
+            .await?;
+        let value = serde_json::to_value(result)
+            .map_err(|error| ToolCallError::InternalError(error.to_string()))?;
+        Ok(ToolResult::success(
+            ToolResultContent::Json(value),
+            "Memory forget result",
         ))
     }
 }
@@ -175,6 +276,59 @@ fn parse_memory_remember_input(
         text: text.to_string(),
         scope,
         kind,
+        source_user_item_id: Some(ItemId::from_string(source_user_item_id.to_string())),
+    })
+}
+
+fn parse_memory_forget_input(
+    input: &serde_json::Value,
+    fallback_source_user_item_id: Option<&str>,
+) -> Result<MemoryForgetParams, ToolCallError> {
+    let entry_id = input
+        .get("entry_id")
+        .or_else(|| input.get("entryId"))
+        .and_then(serde_json::Value::as_str)
+        .map(|id| MemoryEntryId::from_string(id.to_string()));
+    let text = input
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if entry_id.is_some() == text.is_some() {
+        return Err(ToolCallError::InvalidInput(
+            "memory_forget requires exactly one of 'entry_id' or 'text'".to_string(),
+        ));
+    }
+    let input_source_user_item_id = input
+        .get("source_user_item_id")
+        .or_else(|| input.get("sourceUserItemId"))
+        .and_then(serde_json::Value::as_str);
+    let source_user_item_id = fallback_source_user_item_id.ok_or_else(|| {
+        ToolCallError::InvalidInput(
+            "memory_forget requires the current user message context".to_string(),
+        )
+    })?;
+    if input_source_user_item_id.is_some_and(|source| source != source_user_item_id) {
+        return Err(ToolCallError::InvalidInput(
+            "memory_forget source must match the current user message context".to_string(),
+        ));
+    }
+    let scope = match input
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("user")
+    {
+        "user" => MemoryScope::User,
+        "project" => MemoryScope::Project,
+        _ => {
+            return Err(ToolCallError::InvalidInput(
+                "memory_forget received an unsupported scope".to_string(),
+            ));
+        }
+    };
+    Ok(MemoryForgetParams {
+        entry_id,
+        text,
+        scope,
         source_user_item_id: Some(ItemId::from_string(source_user_item_id.to_string())),
     })
 }
@@ -239,5 +393,60 @@ mod tests {
         )
         .expect("project scope is valid for explicit memory");
         assert_eq!(parsed.scope, MemoryScope::Project);
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-12
+    /// Verifies: forgetting accepts one stable ID or one text selector and preserves the server binding.
+    #[test]
+    fn forget_tool_parses_exact_and_ambiguous_selectors() {
+        let exact = parse_memory_forget_input(
+            &serde_json::json!({
+                "entryId": "mem-existing",
+                "scope": "project"
+            }),
+            Some("item-current"),
+        )
+        .expect("exact entry selector is valid");
+        assert_eq!(
+            exact,
+            MemoryForgetParams {
+                entry_id: Some(MemoryEntryId::from_string("mem-existing".to_string())),
+                text: None,
+                scope: MemoryScope::Project,
+                source_user_item_id: Some(ItemId::from_string("item-current".to_string())),
+            }
+        );
+
+        let text = parse_memory_forget_input(
+            &serde_json::json!({"text": "old timezone"}),
+            Some("item-current"),
+        )
+        .expect("text selector is valid");
+        assert_eq!(
+            text,
+            MemoryForgetParams {
+                entry_id: None,
+                text: Some("old timezone".to_string()),
+                scope: MemoryScope::User,
+                source_user_item_id: Some(ItemId::from_string("item-current".to_string())),
+            }
+        );
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-12
+    /// Verifies: the tool rejects selectors that could make a destructive request ambiguous.
+    #[test]
+    fn forget_tool_rejects_missing_or_multiple_selectors() {
+        for input in [
+            serde_json::json!({}),
+            serde_json::json!({"entry_id": "mem-existing", "text": "old timezone"}),
+        ] {
+            let error = parse_memory_forget_input(&input, Some("item-current"))
+                .expect_err("forget needs exactly one selector");
+            assert_eq!(
+                error.to_string(),
+                "invalid input: memory_forget requires exactly one of 'entry_id' or 'text'"
+            );
+        }
     }
 }

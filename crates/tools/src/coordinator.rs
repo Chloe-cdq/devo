@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use devo_protocol::native::rpc_memory::MemoryEntry;
+use devo_protocol::native::rpc_memory::MemoryForgetParams;
+use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use devo_protocol::native::rpc_memory::MemoryRememberParams;
 use devo_protocol::{
     AgentInfo, AgentListParams, AgentMessageParams, AgentMessageResult, AwaitTaskParams,
@@ -104,6 +106,19 @@ pub trait AgentToolCoordinator: Send + Sync {
     ) -> Result<MemoryEntry, ToolCallError> {
         Err(ToolCallError::ExecutionFailed(
             "memory_remember is unavailable in this runtime".to_string(),
+        ))
+    }
+
+    /// Retires one root-agent memory identity after the runtime validates the
+    /// current user's explicit forget request.
+    async fn memory_forget(
+        self: Arc<Self>,
+        _session_id: String,
+        _turn_id: String,
+        _params: MemoryForgetParams,
+    ) -> Result<MemoryForgetResult, ToolCallError> {
+        Err(ToolCallError::ExecutionFailed(
+            "memory_forget is unavailable in this runtime".to_string(),
         ))
     }
 }

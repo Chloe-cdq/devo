@@ -562,7 +562,10 @@ async fn memory_status_reports_last_successful_scan_and_error_classes() -> Resul
     let runtime = MemoryRuntime::open(memory_root, MemoryConfig::default())?;
     let status = match runtime.execute_command(MemoryCommand::Status).await? {
         MemoryCommandResult::Status(status) => status,
-        MemoryCommandResult::Remember(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => {
             panic!("unexpected memory status result")
         }
     };

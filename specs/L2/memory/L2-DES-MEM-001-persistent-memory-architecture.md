@@ -232,6 +232,7 @@ candidate -> Active -> Stale -> Active
                   \-> Retired
 
 forget: any state -> durable revocation + Retired
+explicit remember of a revoked identity -> Restored
 ```
 
 - Explicit entries do not expire automatically.
@@ -239,6 +240,7 @@ forget: any state -> durable revocation + Retired
 - Deleting a source session removes pending candidates, completed source-job detail, and evidence links for that session. An inferred entry retires when its final evidence disappears. An explicit entry remains unless related-memory deletion was selected.
 - A duplicate evidence observation updates the existing entry rather than creating a duplicate.
 - Retired and revoked records remain only as long as required to enforce provenance, reset, and resurrection rules; user export distinguishes live entries from lifecycle metadata.
+- Restored identities are recallable like Active entries, but retain a public `restored` lifecycle state in list and Markdown projections; revocation timestamps remain internal.
 
 ## Session Settings Contract
 

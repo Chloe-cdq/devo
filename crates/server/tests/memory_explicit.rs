@@ -25,7 +25,7 @@ use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
 use devo_protocol::native::page::Page;
-use devo_protocol::native::rpc_memory::{MemoryKind, MemoryScope};
+use devo_protocol::native::rpc_memory::{MemoryForgetResult, MemoryKind, MemoryScope, MemoryState};
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
@@ -298,7 +298,10 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("commit explicit memory");
     let first = match first {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => {
             panic!("unexpected remember result")
         }
     };
@@ -312,7 +315,10 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("deduplicate explicit memory");
     let second = match second {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => {
             panic!("unexpected remember result")
         }
     };
@@ -330,7 +336,10 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("list explicit memory");
     let listed: Page<_> = match listed {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
         }
     };
@@ -464,7 +473,10 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         .expect("list first page");
     let first_page: Page<_> = match first_page {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
         }
     };
@@ -483,7 +495,10 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         .expect("list second page");
     let second_page: Page<_> = match second_page {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
         }
     };
@@ -679,6 +694,107 @@ async fn native_memory_remember_and_list_support_user_and_project_scopes() -> Re
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
+/// Verifies: Native forget retires exact identities and returns ambiguous text matches without mutation.
+#[tokio::test]
+async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<()> {
+    let data_root = TempDir::new()?;
+    fs::create_dir_all(data_root.path().join(".devo"))?;
+    fs::write(
+        data_root.path().join(".devo").join("config.toml"),
+        "[memory]\nenabled = true\n",
+    )?;
+    let runtime = build_memory_test_runtime(data_root.path())?;
+    let (notifications_tx, _notifications_rx) =
+        devo_server::test_outbound_channel(/*capacity*/ 8);
+    let connection_id = runtime
+        .register_connection(ClientTransportKind::Stdio, notifications_tx)
+        .await;
+    let session_id = start_native_session(&runtime, connection_id, data_root.path()).await?;
+    let _subscription = create_native_session_subscription(
+        &runtime,
+        connection_id,
+        &session_id,
+        /*request_id*/ 3,
+    )
+    .await?;
+
+    let remembered = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 4,
+                "method": "memory/remember",
+                "params": { "text": "I prefer dark mode" }
+            }),
+        )
+        .await
+        .expect("memory/remember response");
+    let remembered: devo_protocol::native::rpc_memory::MemoryEntry =
+        serde_json::from_value(remembered["result"].clone())?;
+
+    let forgotten = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 5,
+                "method": "memory/forget",
+                "params": { "entryId": remembered.entry_id }
+            }),
+        )
+        .await
+        .expect("memory/forget response");
+    let forgotten: MemoryForgetResult = serde_json::from_value(forgotten["result"].clone())?;
+    assert_eq!(forgotten.candidates, Vec::new());
+    let forgotten_entry = forgotten.forgotten.expect("exact entry was retired");
+    assert_eq!(forgotten_entry.entry_id, remembered.entry_id);
+    assert_eq!(forgotten_entry.state, MemoryState::Retired);
+
+    for text in ["I prefer tabs", "I prefer spaces"] {
+        runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 6,
+                    "method": "memory/remember",
+                    "params": { "text": text }
+                }),
+            )
+            .await
+            .expect("memory/remember candidate response");
+    }
+    let ambiguous = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 7,
+                "method": "memory/forget",
+                "params": { "text": "I prefer" }
+            }),
+        )
+        .await
+        .expect("ambiguous memory/forget response");
+    let ambiguous: MemoryForgetResult = serde_json::from_value(ambiguous["result"].clone())?;
+    assert!(ambiguous.forgotten.is_none());
+    assert_eq!(ambiguous.candidates.len(), 3);
+
+    let active = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 8,
+                "method": "memory/list",
+                "params": { "scope": "user", "state": "active" }
+            }),
+        )
+        .await
+        .expect("active memory/list response");
+    let active: Page<devo_protocol::native::rpc_memory::MemoryEntry> =
+        serde_json::from_value(active["result"].clone())?;
+    assert_eq!(active.data.len(), 2);
+    Ok(())
+}
+
 /// Trace: L2-DES-MEM-001
 /// Verifies: a committed entry appears only in a newly prepared memory snapshot.
 #[tokio::test]
@@ -764,7 +880,10 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("remember project memory from main checkout")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => {
             panic!("unexpected project remember result")
         }
     };
@@ -778,7 +897,10 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("remember project memory from linked worktree")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => {
             panic!("unexpected linked project remember result")
         }
     };
@@ -801,7 +923,10 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("list linked project memory")
     {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_) => {
             panic!("unexpected linked project list result")
         }
     };
@@ -817,7 +942,10 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("remember unrelated project memory")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => {
             panic!("unexpected unrelated project remember result")
         }
     };
@@ -833,7 +961,10 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("list main project memory")
     {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::RememberInferred(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_) => {
             panic!("unexpected main project list result")
         }
     };

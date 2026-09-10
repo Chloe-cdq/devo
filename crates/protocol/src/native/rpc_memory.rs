@@ -44,6 +44,8 @@ pub enum MemoryState {
     Stale,
     Conflicted,
     Retired,
+    /// An explicitly remembered identity that was previously retired.
+    Restored,
 }
 
 /// Provenance summary safe to return with a memory entry.
@@ -94,6 +96,38 @@ pub struct MemoryRememberParams {
     /// root-agent action bound to the current user item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_user_item_id: Option<ItemId>,
+}
+
+/// Parameters for safely retiring a memory entry.
+///
+/// Callers must provide exactly one of `entryId` or `text`. Text-based
+/// requests return candidate entries when more than one identity matches;
+/// they never mutate an ambiguous request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryForgetParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<MemoryEntryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub scope: MemoryScope,
+    /// Optional when the request is a direct Native command rather than a
+    /// root-agent action bound to the current user item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_user_item_id: Option<ItemId>,
+}
+
+/// Result of a memory forget request.
+///
+/// `forgotten` is populated only after an exact identity was retired.
+/// `candidates` is populated for an ambiguous text request and signals that
+/// the caller must select an entry ID before retrying.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryForgetResult {
+    pub forgotten: Option<MemoryEntry>,
+    pub candidates: Vec<MemoryEntry>,
 }
 
 /// Parameters for safe memory inspection.

@@ -35,7 +35,10 @@ impl ServerRuntime {
         let status = match self.memory.as_ref() {
             Some(memory) => match memory.execute_command(MemoryCommand::Status).await {
                 Ok(MemoryCommandResult::Status(status)) => status,
-                Ok(MemoryCommandResult::Remember(_)) | Ok(MemoryCommandResult::List(_)) => {
+                Ok(MemoryCommandResult::Remember(_))
+                | Ok(MemoryCommandResult::RememberInferred(_))
+                | Ok(MemoryCommandResult::Forget(_))
+                | Ok(MemoryCommandResult::List(_)) => {
                     tracing::error!("memory status command returned an unexpected result");
                     unavailable_memory_status(configured_enabled)
                 }
@@ -227,12 +230,14 @@ impl ServerRuntime {
                 result: entry,
             })
             .expect("serialize memory/remember response"),
-            Ok(MemoryCommandResult::Status(_)) | Ok(MemoryCommandResult::List(_)) => self
-                .error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    "memory/remember returned an unexpected result",
-                ),
+            Ok(MemoryCommandResult::Status(_))
+            | Ok(MemoryCommandResult::RememberInferred(_))
+            | Ok(MemoryCommandResult::Forget(_))
+            | Ok(MemoryCommandResult::List(_)) => self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                "memory/remember returned an unexpected result",
+            ),
             Err(error) => self.memory_error_response(request_id, error),
         }
     }
@@ -307,17 +312,19 @@ impl ServerRuntime {
                 result: page,
             })
             .expect("serialize memory/list response"),
-            Ok(MemoryCommandResult::Status(_)) | Ok(MemoryCommandResult::Remember(_)) => self
-                .error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    "memory/list returned an unexpected result",
-                ),
+            Ok(MemoryCommandResult::Status(_))
+            | Ok(MemoryCommandResult::Remember(_))
+            | Ok(MemoryCommandResult::RememberInferred(_))
+            | Ok(MemoryCommandResult::Forget(_)) => self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                "memory/list returned an unexpected result",
+            ),
             Err(error) => self.memory_error_response(request_id, error),
         }
     }
 
-    fn memory_error_response(
+    pub(super) fn memory_error_response(
         &self,
         request_id: serde_json::Value,
         error: MemoryError,
@@ -346,7 +353,7 @@ impl ServerRuntime {
         self.error_response(request_id, code, message)
     }
 
-    fn project_memory_context_error_response(
+    pub(super) fn project_memory_context_error_response(
         &self,
         request_id: serde_json::Value,
         method: &str,

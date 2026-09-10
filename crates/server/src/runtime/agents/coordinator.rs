@@ -252,6 +252,47 @@ impl ServerRuntime {
             .await;
         Ok(devo_protocol::CancelTaskResult { task })
     }
+
+    async fn has_explicit_current_user_memory_intent(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        source_item_id: &str,
+        intent: ExplicitMemoryIntent,
+    ) -> bool {
+        if let Some(stream) = self.active_stream_state(session_id).await {
+            let stream = stream.lock().await;
+            stream.turn_inline.as_ref().is_some_and(|inline| {
+                inline.turn_id == turn_id
+                    && inline.persisted_turn_items.iter().any(|item| {
+                        item.turn_id == turn_id
+                            && item.item_id.to_string() == source_item_id
+                            && matches!(
+                                &item.turn_item,
+                                devo_core::TurnItem::UserMessage(text)
+                                    if intent.matches(&text.text)
+                            )
+                    })
+            })
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExplicitMemoryIntent {
+    Remember,
+    Forget,
+}
+
+impl ExplicitMemoryIntent {
+    fn matches(self, text: &str) -> bool {
+        match self {
+            Self::Remember => has_explicit_memory_intent(text),
+            Self::Forget => has_explicit_memory_forget_intent(text),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -384,24 +425,14 @@ impl AgentToolCoordinator for ServerRuntime {
             )
         })?;
         let source_item_id_string = source_item_id.to_string();
-        let current_user_message_matches =
-            if let Some(stream) = self.active_stream_state(session_id).await {
-                let stream = stream.lock().await;
-                stream.turn_inline.as_ref().is_some_and(|inline| {
-                    inline.turn_id == turn_id
-                        && inline.persisted_turn_items.iter().any(|item| {
-                            item.turn_id == turn_id
-                                && item.item_id.to_string() == source_item_id_string
-                                && matches!(
-                                    &item.turn_item,
-                                    devo_core::TurnItem::UserMessage(text)
-                                        if has_explicit_memory_intent(&text.text)
-                                )
-                        })
-                })
-            } else {
-                false
-            };
+        let current_user_message_matches = self
+            .has_explicit_current_user_memory_intent(
+                session_id,
+                turn_id,
+                &source_item_id_string,
+                ExplicitMemoryIntent::Remember,
+            )
+            .await;
         if !current_user_message_matches {
             return Err(ToolCallError::InvalidInput(
                 "memory_remember requires explicit intent in the current user message".to_string(),
@@ -431,8 +462,71 @@ impl AgentToolCoordinator for ServerRuntime {
         match result {
             crate::memory::MemoryCommandResult::Remember(entry) => Ok(entry),
             crate::memory::MemoryCommandResult::Status(_)
+            | crate::memory::MemoryCommandResult::RememberInferred(_)
+            | crate::memory::MemoryCommandResult::Forget(_)
             | crate::memory::MemoryCommandResult::List(_) => Err(ToolCallError::InternalError(
                 "memory_remember returned an unexpected result".to_string(),
+            )),
+        }
+    }
+
+    async fn memory_forget(
+        self: Arc<Self>,
+        session_id: String,
+        turn_id: String,
+        params: devo_protocol::native::rpc_memory::MemoryForgetParams,
+    ) -> Result<devo_protocol::native::rpc_memory::MemoryForgetResult, ToolCallError> {
+        let session_id = SessionId::try_from(session_id.as_str())
+            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+        let turn_id = TurnId::try_from(turn_id.as_str())
+            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+        let source_item_id = params.source_user_item_id.clone().ok_or_else(|| {
+            ToolCallError::InvalidInput(
+                "memory_forget requires the current user message context".to_string(),
+            )
+        })?;
+        let source_item_id_string = source_item_id.to_string();
+        if !self
+            .has_explicit_current_user_memory_intent(
+                session_id,
+                turn_id,
+                &source_item_id_string,
+                ExplicitMemoryIntent::Forget,
+            )
+            .await
+        {
+            return Err(ToolCallError::InvalidInput(
+                "memory_forget requires explicit intent in the current user message".to_string(),
+            ));
+        }
+        let memory = self.memory.as_ref().ok_or_else(|| {
+            ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
+        })?;
+        let summary = self
+            .session_summary_snapshot(session_id)
+            .await
+            .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
+        let result = memory
+            .execute_command(crate::memory::MemoryCommand::Forget(
+                crate::memory::MemoryForgetRequest {
+                    entry_id: params.entry_id,
+                    text: params.text,
+                    scope: params.scope,
+                    source_user_item_id: Some(source_item_id_string),
+                    source_session_id: session_id.to_string(),
+                    source_turn_id: Some(turn_id.to_string()),
+                    workspace_root: summary.cwd,
+                },
+            ))
+            .await
+            .map_err(memory_tool_error)?;
+        match result {
+            crate::memory::MemoryCommandResult::Forget(result) => Ok(result),
+            crate::memory::MemoryCommandResult::Status(_)
+            | crate::memory::MemoryCommandResult::Remember(_)
+            | crate::memory::MemoryCommandResult::RememberInferred(_)
+            | crate::memory::MemoryCommandResult::List(_) => Err(ToolCallError::InternalError(
+                "memory_forget returned an unexpected result".to_string(),
             )),
         }
     }
@@ -512,6 +606,39 @@ fn has_explicit_memory_intent(text: &str) -> bool {
     .any(|phrase| memory_command_has_payload(&text, phrase))
 }
 
+fn has_explicit_memory_forget_intent(text: &str) -> bool {
+    let text = text.trim_start().to_ascii_lowercase();
+    if text.starts_with("don't forget") || text.starts_with("do not forget") {
+        return false;
+    }
+    [
+        "please forget",
+        "can you forget",
+        "could you forget",
+        "would you forget",
+        "i want you to forget",
+        "i'd like you to forget",
+        "forget this",
+        "forget that",
+        "forget my",
+        "forget about",
+        "remove this from memory",
+        "remove that from memory",
+        "delete this memory",
+        "delete that memory",
+        "please remove from memory",
+        "please delete from memory",
+        "请忘记",
+        "请删除",
+        "忘记这",
+        "忘记那",
+        "删除这条记忆",
+        "删除那条记忆",
+    ]
+    .iter()
+    .any(|phrase| memory_command_has_payload(&text, phrase))
+}
+
 fn memory_command_has_payload(text: &str, phrase: &str) -> bool {
     let Some(remainder) = text.strip_prefix(phrase) else {
         return false;
@@ -529,7 +656,7 @@ fn memory_command_has_payload(text: &str, phrase: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::has_explicit_memory_intent;
+    use super::{has_explicit_memory_forget_intent, has_explicit_memory_intent};
 
     /// Trace: L2-DES-MEM-001
     /// Verifies: supported explicit memory requests are recognized in English and Chinese.
@@ -560,5 +687,22 @@ mod tests {
         assert!(!has_explicit_memory_intent("请勿记住这件事"));
         assert!(!has_explicit_memory_intent("I remember my birthday"));
         assert!(!has_explicit_memory_intent("我保存过这个"));
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-12
+    /// Verifies: forget authorization is distinct from a remember request and its negation.
+    #[test]
+    fn explicit_memory_forget_intent_accepts_deletion_requests_only() {
+        assert!(has_explicit_memory_forget_intent(
+            "Please forget my old timezone"
+        ));
+        assert!(has_explicit_memory_forget_intent("请删除这条记忆"));
+        assert!(!has_explicit_memory_forget_intent(
+            "Don't forget my timezone"
+        ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Please remember my timezone"
+        ));
+        assert!(!has_explicit_memory_forget_intent("Please forget"));
     }
 }

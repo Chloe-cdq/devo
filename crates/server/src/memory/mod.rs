@@ -4,6 +4,7 @@
 //! tables are an implementation detail and are never returned to callers.
 
 mod entries;
+mod forget;
 mod identity;
 mod projection;
 mod schema;
@@ -18,6 +19,7 @@ use chrono::Utc;
 use devo_core::MemoryConfig;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryEntry;
+use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryListResult;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
@@ -111,6 +113,7 @@ pub(super) fn state_name(state: MemoryState) -> &'static str {
         MemoryState::Stale => "stale",
         MemoryState::Conflicted => "conflicted",
         MemoryState::Retired => "retired",
+        MemoryState::Restored => "restored",
     }
 }
 
@@ -196,6 +199,20 @@ impl MemoryRuntime {
                 }
                 Ok(MemoryCommandResult::Remember(self.remember(request)?))
             }
+            MemoryCommand::RememberInferred(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                Ok(MemoryCommandResult::RememberInferred(
+                    self.remember_inferred(request)?,
+                ))
+            }
+            MemoryCommand::Forget(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                Ok(MemoryCommandResult::Forget(self.forget(request)?))
+            }
             MemoryCommand::List(request) => {
                 if !self.config.enabled {
                     return Ok(MemoryCommandResult::List(Page {
@@ -243,6 +260,10 @@ pub enum MemoryCommand {
     Status,
     /// Validate, commit, and project an explicit user memory request.
     Remember(MemoryRememberRequest),
+    /// Apply one background inferred-memory observation.
+    RememberInferred(MemoryInferredRememberRequest),
+    /// Retire one exact identity or return candidates for an ambiguous text match.
+    Forget(MemoryForgetRequest),
     /// Return a filtered, paginated view of canonical memory entries.
     List(ListMemoryRequest),
 }
@@ -254,6 +275,11 @@ pub enum MemoryCommandResult {
     Status(MemoryStatus),
     /// Result of [`MemoryCommand::Remember`].
     Remember(MemoryEntry),
+    /// Result of a background inferred-memory observation; `None` means a
+    /// durable revocation rejected the observation without mutation.
+    RememberInferred(Option<MemoryEntry>),
+    /// Result of [`MemoryCommand::Forget`].
+    Forget(MemoryForgetResult),
     /// Result of [`MemoryCommand::List`].
     List(MemoryListResult),
 }
@@ -265,6 +291,34 @@ pub struct MemoryRememberRequest {
     pub text: String,
     pub scope: MemoryScope,
     pub kind: Option<MemoryKind>,
+    pub source_user_item_id: Option<String>,
+    pub source_session_id: String,
+    pub source_turn_id: Option<String>,
+    pub workspace_root: PathBuf,
+}
+
+/// Input passed through the server-owned memory command seam for an inferred
+/// source observation. A revoked identity cannot be recreated by this path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryInferredRememberRequest {
+    pub text: String,
+    pub scope: MemoryScope,
+    pub kind: Option<MemoryKind>,
+    pub source_user_item_id: Option<String>,
+    pub source_session_id: String,
+    pub source_turn_id: Option<String>,
+    pub source_observed_at: DateTime<Utc>,
+    pub source_watermark: String,
+    pub workspace_root: PathBuf,
+}
+
+/// Input passed through the server-owned memory command seam for a forget
+/// request. Exactly one selector is required: a stable entry ID or text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryForgetRequest {
+    pub entry_id: Option<devo_protocol::native::ids::MemoryEntryId>,
+    pub text: Option<String>,
+    pub scope: MemoryScope,
     pub source_user_item_id: Option<String>,
     pub source_session_id: String,
     pub source_turn_id: Option<String>,
