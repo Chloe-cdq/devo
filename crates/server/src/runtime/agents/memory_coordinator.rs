@@ -70,10 +70,6 @@ impl MemoryMutationContext {
         };
         Ok(Self { memory, source })
     }
-
-    fn memory(&self) -> &crate::memory::MemoryRuntime {
-        self.memory.as_ref()
-    }
 }
 
 async fn has_explicit_current_user_memory_intent(
@@ -117,7 +113,7 @@ pub(super) async fn remember(
     )
     .await?;
     let result = context
-        .memory()
+        .memory
         .execute_command(crate::memory::MemoryCommand::Remember(
             crate::memory::MemoryRememberRequest {
                 text: params.text,
@@ -153,7 +149,7 @@ pub(super) async fn forget(
     )
     .await?;
     let result = context
-        .memory()
+        .memory
         .execute_command(crate::memory::MemoryCommand::Forget(
             crate::memory::MemoryForgetRequest {
                 selector: crate::memory::MemoryForgetSelector::from_params(&params)
@@ -292,11 +288,13 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     };
     let remainder = remainder.trim_start();
     let is_about_task = phrase.ends_with("forget about")
-        || remainder.strip_prefix("about").is_some_and(|suffix| {
-            suffix
-                .chars()
-                .next()
-                .is_none_or(|character| !character.is_ascii_alphanumeric())
+        || ["about", "all about"].iter().any(|prefix| {
+            remainder.strip_prefix(prefix).is_some_and(|suffix| {
+                suffix
+                    .chars()
+                    .next()
+                    .is_none_or(|character| !character.is_ascii_alphanumeric())
+            })
         });
     remainder.chars().any(char::is_alphanumeric)
         && (!is_about_task || remainder.contains("memory") || remainder.contains("记忆"))

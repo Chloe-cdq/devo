@@ -4,6 +4,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[path = "support/memory.rs"]
+mod support;
+
 use anyhow::Context;
 use anyhow::Result;
 use devo_core::AgentsMdConfig;
@@ -43,19 +46,11 @@ use futures::stream;
 use pretty_assertions::assert_eq;
 use rusqlite::Connection;
 use tempfile::TempDir;
-use uuid::Uuid;
 
 struct NoopProvider;
 
 struct BlockingProvider {
     release: Arc<tokio::sync::Notify>,
-}
-
-fn test_uuid(seed: &str) -> Uuid {
-    let value = seed.bytes().fold(0_u128, |value, byte| {
-        value.rotate_left(5) ^ u128::from(byte)
-    });
-    Uuid::from_u128(value)
 }
 
 #[async_trait::async_trait]
@@ -120,10 +115,10 @@ fn remember_request(
         source: MemorySourceContext {
             user_item_id: Some(ItemId::from_string(format!(
                 "item_{:032x}",
-                test_uuid(source_user_item_id).as_u128()
+                support::deterministic_uuid(source_user_item_id).as_u128()
             ))),
-            session_id: SessionId::from(test_uuid("ses-1")),
-            turn_id: Some(TurnId::from(test_uuid("turn-1"))),
+            session_id: SessionId::from(support::deterministic_uuid("ses-1")),
+            turn_id: Some(TurnId::from(support::deterministic_uuid("turn-1"))),
             workspace_root: workspace_root.to_path_buf(),
         },
     }
@@ -475,7 +470,7 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     assert!(projection.contains("created_at:"));
     assert!(projection.contains(&format!(
         "source_session_id: {}",
-        SessionId::from(test_uuid("ses-1"))
+        SessionId::from(support::deterministic_uuid("ses-1"))
     )));
 
     let first_page = runtime

@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+#[path = "../../tests/support/memory.rs"]
+mod test_support;
+
 use chrono::DateTime;
 use chrono::Utc;
 use devo_core::MemoryConfig;
@@ -13,19 +16,11 @@ use devo_protocol::native::rpc_memory::MemoryProvenance;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
 use pretty_assertions::assert_eq;
-use uuid::Uuid;
 
 use super::{
     MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
     MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime, MemorySourceContext,
 };
-
-fn test_uuid(seed: &str) -> Uuid {
-    let value = seed.bytes().fold(0_u128, |value, byte| {
-        value.rotate_left(5) ^ u128::from(byte)
-    });
-    Uuid::from_u128(value)
-}
 
 fn test_source(
     user_item_id: Option<&str>,
@@ -33,10 +28,14 @@ fn test_source(
     turn_id: Option<&str>,
 ) -> MemorySourceContext {
     MemorySourceContext {
-        user_item_id: user_item_id
-            .map(|seed| ItemId::from_string(format!("item_{:032x}", test_uuid(seed).as_u128()))),
-        session_id: SessionId::from(test_uuid(session_id)),
-        turn_id: turn_id.map(|seed| TurnId::from(test_uuid(seed))),
+        user_item_id: user_item_id.map(|seed| {
+            ItemId::from_string(format!(
+                "item_{:032x}",
+                test_support::deterministic_uuid(seed).as_u128()
+            ))
+        }),
+        session_id: SessionId::from(test_support::deterministic_uuid(session_id)),
+        turn_id: turn_id.map(|seed| TurnId::from(test_support::deterministic_uuid(seed))),
         workspace_root: PathBuf::new(),
     }
 }
@@ -102,12 +101,18 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
-    runtime
+    let forgotten = match runtime
         .execute_command(MemoryCommand::Forget(forget_request(
             remembered.entry_id.clone(),
         )))
         .await
-        .expect("forget entry");
+        .expect("forget entry")
+    {
+        MemoryCommandResult::Forget(result) => result.forgotten.expect("forgotten entry"),
+        MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_) => panic!("expected forget result"),
+    };
 
     let result = runtime
         .record_inferred(inferred_request("Use tabs", "2026-09-09T00:00:00Z"))
@@ -129,8 +134,7 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected retired list"),
     };
-    assert_eq!(listed.data.len(), 1);
-    assert_eq!(listed.data[0].entry_id, remembered.entry_id);
+    assert_eq!(listed.data, vec![forgotten]);
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8, DD-9
@@ -215,8 +219,12 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         provenance: vec![
             remembered.provenance[0].clone(),
             MemoryProvenance {
-                source_session_id: Some(SessionId::from(test_uuid("session-2")).to_string()),
-                source_turn_id: Some(TurnId::from(test_uuid("turn-2")).to_string()),
+                source_session_id: Some(
+                    SessionId::from(test_support::deterministic_uuid("session-2")).to_string(),
+                ),
+                source_turn_id: Some(
+                    TurnId::from(test_support::deterministic_uuid("turn-2")).to_string(),
+                ),
                 source_user_item_id: None,
             },
         ],

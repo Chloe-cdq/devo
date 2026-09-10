@@ -1,25 +1,20 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[path = "support/memory.rs"]
+mod support;
+
 use devo_core::MemoryConfig;
 use devo_protocol::SessionId;
 use devo_protocol::TurnId;
 use devo_protocol::native::ids::ItemId;
-use devo_protocol::native::rpc_memory::{MemoryKind, MemoryScope, MemoryState};
+use devo_protocol::native::rpc_memory::{MemoryEntry, MemoryKind, MemoryScope, MemoryState};
 use devo_server::memory::{
     MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
     MemoryRememberRequest, MemoryRuntime, MemorySourceContext, PrepareMemoryRequest,
 };
 use pretty_assertions::assert_eq;
 use rusqlite::Connection;
-use uuid::Uuid;
-
-fn test_uuid(seed: &str) -> Uuid {
-    let value = seed.bytes().fold(0_u128, |value, byte| {
-        value.rotate_left(5) ^ u128::from(byte)
-    });
-    Uuid::from_u128(value)
-}
 
 fn test_source(
     user_item_id: Option<&str>,
@@ -28,10 +23,14 @@ fn test_source(
     workspace_root: PathBuf,
 ) -> MemorySourceContext {
     MemorySourceContext {
-        user_item_id: user_item_id
-            .map(|seed| ItemId::from_string(format!("item_{:032x}", test_uuid(seed).as_u128()))),
-        session_id: SessionId::from(test_uuid(session_id)),
-        turn_id: turn_id.map(|seed| TurnId::from(test_uuid(seed))),
+        user_item_id: user_item_id.map(|seed| {
+            ItemId::from_string(format!(
+                "item_{:032x}",
+                support::deterministic_uuid(seed).as_u128()
+            ))
+        }),
+        session_id: SessionId::from(support::deterministic_uuid(session_id)),
+        turn_id: turn_id.map(|seed| TurnId::from(support::deterministic_uuid(seed))),
         workspace_root,
     }
 }
@@ -61,13 +60,6 @@ fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
             PathBuf::new(),
         ),
     }
-}
-
-fn project_remember_request(text: &str, workspace_root: &std::path::Path) -> MemoryRememberRequest {
-    let mut request = remember_request(text);
-    request.scope = MemoryScope::Project;
-    request.source.workspace_root = workspace_root.to_path_buf();
-    request
 }
 
 fn open_runtime(root: &std::path::Path) -> MemoryRuntime {
@@ -137,8 +129,12 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         }
     };
 
-    assert_eq!(restored.entry_id, first.entry_id);
-    assert_eq!(restored.state, MemoryState::Restored);
+    let expected_restored = MemoryEntry {
+        state: MemoryState::Restored,
+        updated_at: restored.updated_at,
+        ..first.clone()
+    };
+    assert_eq!(restored, expected_restored);
 
     let restored_at: Option<String> = connection
         .query_row(
@@ -236,9 +232,13 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
     let forgotten = result.forgotten.expect("exact forget returns entry");
-    assert_eq!(forgotten.entry_id, remembered.entry_id);
-    assert_eq!(forgotten.state, MemoryState::Retired);
-    assert!(result.candidates.is_empty());
+    let expected_forgotten = MemoryEntry {
+        state: MemoryState::Retired,
+        updated_at: forgotten.updated_at,
+        ..remembered.clone()
+    };
+    assert_eq!(forgotten, expected_forgotten);
+    assert_eq!(result.candidates, Vec::new());
 
     let listed = match runtime
         .execute_command(MemoryCommand::List(
@@ -288,11 +288,11 @@ async fn exact_forget_uses_persisted_scope_for_project_entry() {
     let project_root = database_root.path().join("project");
     std::fs::create_dir_all(&project_root).expect("project root");
     let runtime = open_runtime(database_root.path());
+    let mut project_request = remember_request("Use tabs");
+    project_request.scope = MemoryScope::Project;
+    project_request.source.workspace_root = project_root.clone();
     let remembered = match runtime
-        .execute_command(MemoryCommand::Remember(project_remember_request(
-            "Use tabs",
-            &project_root,
-        )))
+        .execute_command(MemoryCommand::Remember(project_request))
         .await
         .expect("remember project entry")
     {
@@ -314,11 +314,14 @@ async fn exact_forget_uses_persisted_scope_for_project_entry() {
         MemoryCommandResult::List(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
+    }
+    .expect("forgotten project entry");
+    let expected_forgotten = MemoryEntry {
+        state: MemoryState::Retired,
+        updated_at: forgotten.updated_at,
+        ..remembered
     };
-    assert_eq!(
-        forgotten.map(|entry| entry.entry_id),
-        Some(remembered.entry_id)
-    );
+    assert_eq!(forgotten, expected_forgotten);
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
