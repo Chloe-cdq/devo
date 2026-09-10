@@ -509,8 +509,8 @@ impl AgentToolCoordinator for ServerRuntime {
         let result = memory
             .execute_command(crate::memory::MemoryCommand::Forget(
                 crate::memory::MemoryForgetRequest {
-                    entry_id: params.entry_id,
-                    text: params.text,
+                    selector: crate::memory::MemoryForgetSelector::from_params(&params)
+                        .map_err(|message| ToolCallError::InvalidInput(message.to_string()))?,
                     scope: params.scope,
                     source_user_item_id: Some(source_item_id_string),
                     source_session_id: session_id.to_string(),

@@ -4,7 +4,9 @@ use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use rusqlite::OptionalExtension;
 
 use super::entries::{load_entry, normalize_body};
-use super::{MemoryError, MemoryForgetRequest, MemoryRuntime, scope_name, state_name};
+use super::{
+    MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryRuntime, scope_name, state_name,
+};
 
 impl MemoryRuntime {
     pub(super) fn forget(
@@ -17,18 +19,8 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let (entry_id, normalized_key) = match (request.entry_id, request.text) {
-            (Some(_), Some(_)) => {
-                return Err(MemoryError::InvalidRequest(
-                    "memory forget accepts exactly one of entryId or text".into(),
-                ));
-            }
-            (None, None) => {
-                return Err(MemoryError::InvalidRequest(
-                    "memory forget requires entryId or text".into(),
-                ));
-            }
-            (Some(entry_id), None) => {
+        let (entry_id, normalized_key) = match request.selector {
+            MemoryForgetSelector::EntryId(entry_id) => {
                 let target = transaction
                     .query_row(
                         "SELECT entry_id, normalized_key
@@ -41,7 +33,7 @@ impl MemoryRuntime {
                 target
                     .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?
             }
-            (None, Some(text)) => {
+            MemoryForgetSelector::Text(text) => {
                 let text = normalize_body(&text)?;
                 let targets = {
                     let mut statement = transaction.prepare(

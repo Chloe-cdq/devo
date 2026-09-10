@@ -77,7 +77,7 @@ This decision is recorded in `docs/adr/0001-sqlite-authority-for-general-persist
 
 ### DD-5: Flat typed entries with lightweight provenance
 
-Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired`), timestamps, and zero or more evidence links.
+Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired | Restored`), timestamps, and zero or more evidence links.
 
 Provenance records source session and turn IDs when available. The first release has no floating confidence value or trust graph. Explicit user origin has higher authority than inferred origin but remains advisory relative to current instructions and policy.
 
@@ -116,7 +116,7 @@ Reset clears one scope and advances `ignore_sources_before` for that scope. Auto
 
 At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` entries are automatically recalled.
 
-The result is capped at 12 entries and approximately 2,000 tokens. It is rendered as a distinct advisory memory context block, never concatenated into system policy, project instructions, or `AGENTS.md`. The block explicitly states that current instructions and observed repository state take precedence.
+The result is capped at 12 entries and approximately 2,000 tokens. `Active` and explicitly `Restored` entries are recallable; other lifecycle states are excluded. It is rendered as a distinct advisory memory context block, never concatenated into system policy, project instructions, or `AGENTS.md`. The block explicitly states that current instructions and observed repository state take precedence.
 
 The prepared snapshot is reused for every model call and tool loop iteration in that turn. A cwd or setting change is reflected by the next turn. Subagents receive the parent's read-only snapshot; they do not query the store independently. `memory_search` and `memory_read` allow the root agent to fetch additional entries on demand.
 

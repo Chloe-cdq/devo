@@ -7,6 +7,7 @@ pub mod goal;
 mod history;
 mod memory;
 mod memory_forget;
+mod memory_source;
 mod message_edit;
 mod message_edit_restore;
 mod queue;

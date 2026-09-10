@@ -19,6 +19,7 @@ use chrono::Utc;
 use devo_core::MemoryConfig;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryEntry;
+use devo_protocol::native::rpc_memory::MemoryForgetParams;
 use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryListResult;
@@ -149,7 +150,7 @@ impl MemoryRuntime {
         let identity = identity::resolve_project_memory_identity(&request.workspace_root)
             .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
         let user_entries = self
-            .list(ListMemoryRequest {
+            .list_recallable(ListMemoryRequest {
                 scope: Some(MemoryScope::User),
                 state: Some(MemoryState::Active),
                 limit: Some(self.config.max_entries_per_turn),
@@ -315,9 +316,29 @@ pub struct MemoryInferredRememberRequest {
 /// Input passed through the server-owned memory command seam for a forget
 /// request. Exactly one selector is required: a stable entry ID or text.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryForgetSelector {
+    /// Select one entry by its stable identity.
+    EntryId(devo_protocol::native::ids::MemoryEntryId),
+    /// Select entries whose body or normalized identity contains this text.
+    Text(String),
+}
+
+impl MemoryForgetSelector {
+    pub(crate) fn from_params(params: &MemoryForgetParams) -> Result<Self, &'static str> {
+        match (&params.entry_id, &params.text) {
+            (Some(entry_id), None) => Ok(Self::EntryId(entry_id.clone())),
+            (None, Some(text)) => Ok(Self::Text(text.clone())),
+            (Some(_), Some(_)) => Err("memory forget accepts exactly one of entryId or text"),
+            (None, None) => Err("memory forget requires entryId or text"),
+        }
+    }
+}
+
+/// Input passed through the server-owned memory command seam for a forget
+/// request. Exactly one selector is required: a stable entry ID or text.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryForgetRequest {
-    pub entry_id: Option<devo_protocol::native::ids::MemoryEntryId>,
-    pub text: Option<String>,
+    pub selector: MemoryForgetSelector,
     pub scope: MemoryScope,
     pub source_user_item_id: Option<String>,
     pub source_session_id: String,
