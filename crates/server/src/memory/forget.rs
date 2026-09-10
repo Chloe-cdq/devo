@@ -5,7 +5,8 @@ use rusqlite::OptionalExtension;
 
 use super::entries::{load_entry, normalize_body};
 use super::{
-    MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryRuntime, scope_name, state_name,
+    MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryRuntime, MemoryScope, scope_name,
+    state_name,
 };
 
 impl MemoryRuntime {
@@ -13,28 +14,38 @@ impl MemoryRuntime {
         &self,
         request: MemoryForgetRequest,
     ) -> Result<MemoryForgetResult, MemoryError> {
-        let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
         let connection = self
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let (entry_id, normalized_key) = match request.selector {
+        let (entry_id, normalized_key, scope, scope_id) = match request.selector {
             MemoryForgetSelector::EntryId(entry_id) => {
                 let target = transaction
                     .query_row(
-                        "SELECT entry_id, normalized_key
+                        "SELECT entry_id, normalized_key, scope_type, scope_id
                          FROM memory_entries
-                         WHERE entry_id = ?1 AND scope_type = ?2 AND scope_id = ?3",
-                        rusqlite::params![entry_id.as_str(), scope_name(request.scope), scope_id,],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                         WHERE entry_id = ?1",
+                        [entry_id.as_str()],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        },
                     )
                     .optional()?;
-                target
-                    .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?
+                let (entry_id, normalized_key, scope, scope_id) = target
+                    .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?;
+                let scope = parse_scope(&scope)?;
+                (entry_id, normalized_key, scope, scope_id)
             }
             MemoryForgetSelector::Text(text) => {
                 let text = normalize_body(&text)?;
+                let scope = request.scope;
+                let scope_id = self.scope_id(scope, &request.source.workspace_root)?;
                 let targets = {
                     let mut statement = transaction.prepare(
                         "SELECT entry_id, normalized_key
@@ -72,9 +83,10 @@ impl MemoryRuntime {
                         candidates,
                     });
                 }
-                targets.into_iter().next().ok_or_else(|| {
+                let (entry_id, normalized_key) = targets.into_iter().next().ok_or_else(|| {
                     MemoryError::InvalidStoredValue("forget target is missing".into())
-                })?
+                })?;
+                (entry_id, normalized_key, scope, scope_id)
             }
         };
 
@@ -88,7 +100,7 @@ impl MemoryRuntime {
                  restored_at = NULL",
             rusqlite::params![
                 uuid::Uuid::now_v7().simple().to_string(),
-                scope_name(request.scope),
+                scope_name(scope),
                 scope_id,
                 normalized_key,
                 now,
@@ -102,7 +114,7 @@ impl MemoryRuntime {
                 state_name(devo_protocol::native::rpc_memory::MemoryState::Retired),
                 now,
                 entry_id,
-                scope_name(request.scope),
+                scope_name(scope),
                 scope_id,
             ],
         )?;
@@ -115,10 +127,18 @@ impl MemoryRuntime {
         let entry_id = MemoryEntryId::from_string(entry_id);
         let entry = load_entry(&connection, &entry_id)?
             .ok_or_else(|| MemoryError::InvalidStoredValue("forgotten entry is missing".into()))?;
-        self.refresh_projection(&connection, request.scope, &scope_id)?;
+        self.refresh_projection(&connection, scope, &scope_id)?;
         Ok(MemoryForgetResult {
             forgotten: Some(entry),
             candidates: Vec::new(),
         })
+    }
+}
+
+fn parse_scope(value: &str) -> Result<MemoryScope, MemoryError> {
+    match value {
+        "user" => Ok(MemoryScope::User),
+        "project" => Ok(MemoryScope::Project),
+        _ => Err(MemoryError::InvalidStoredValue(value.into())),
     }
 }

@@ -2,23 +2,51 @@ use std::fs;
 use std::path::PathBuf;
 
 use devo_core::MemoryConfig;
+use devo_protocol::SessionId;
+use devo_protocol::TurnId;
+use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::rpc_memory::{MemoryKind, MemoryScope, MemoryState};
 use devo_server::memory::{
     MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
-    MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime, PrepareMemoryRequest,
+    MemoryRememberRequest, MemoryRuntime, MemorySourceContext, PrepareMemoryRequest,
 };
 use pretty_assertions::assert_eq;
 use rusqlite::Connection;
+use uuid::Uuid;
+
+fn test_uuid(seed: &str) -> Uuid {
+    let value = seed.bytes().fold(0_u128, |value, byte| {
+        value.rotate_left(5) ^ u128::from(byte)
+    });
+    Uuid::from_u128(value)
+}
+
+fn test_source(
+    user_item_id: Option<&str>,
+    session_id: &str,
+    turn_id: Option<&str>,
+    workspace_root: PathBuf,
+) -> MemorySourceContext {
+    MemorySourceContext {
+        user_item_id: user_item_id
+            .map(|seed| ItemId::from_string(format!("item_{:032x}", test_uuid(seed).as_u128()))),
+        session_id: SessionId::from(test_uuid(session_id)),
+        turn_id: turn_id.map(|seed| TurnId::from(test_uuid(seed))),
+        workspace_root,
+    }
+}
 
 fn remember_request(text: &str) -> MemoryRememberRequest {
     MemoryRememberRequest {
         text: text.to_owned(),
         scope: MemoryScope::User,
         kind: Some(MemoryKind::Preference),
-        source_user_item_id: Some("user-item-1".to_owned()),
-        source_session_id: "session-1".to_owned(),
-        source_turn_id: Some("turn-1".to_owned()),
-        workspace_root: PathBuf::new(),
+        source: test_source(
+            Some("user-item-1"),
+            "session-1",
+            Some("turn-1"),
+            PathBuf::new(),
+        ),
     }
 }
 
@@ -26,27 +54,15 @@ fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
     MemoryForgetRequest {
         selector,
         scope: MemoryScope::User,
-        source_user_item_id: None,
-        source_session_id: "session-1".to_owned(),
-        source_turn_id: None,
-        workspace_root: PathBuf::new(),
+        source: test_source(None, "session-1", None, PathBuf::new()),
     }
 }
 
-fn inferred_request(text: &str, observed_at: &str) -> MemoryInferredRememberRequest {
-    MemoryInferredRememberRequest {
-        text: text.to_owned(),
-        scope: MemoryScope::User,
-        kind: Some(MemoryKind::Preference),
-        source_user_item_id: None,
-        source_session_id: "session-2".to_owned(),
-        source_turn_id: Some("turn-2".to_owned()),
-        source_observed_at: chrono::DateTime::parse_from_rfc3339(observed_at)
-            .expect("observed timestamp")
-            .with_timezone(&chrono::Utc),
-        source_watermark: observed_at.to_owned(),
-        workspace_root: PathBuf::new(),
-    }
+fn project_remember_request(text: &str, workspace_root: &std::path::Path) -> MemoryRememberRequest {
+    let mut request = remember_request(text);
+    request.scope = MemoryScope::Project;
+    request.source.workspace_root = workspace_root.to_path_buf();
+    request
 }
 
 fn open_runtime(root: &std::path::Path) -> MemoryRuntime {
@@ -74,7 +90,6 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("expected remembered entry")
@@ -111,7 +126,6 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("expected restored entry")
@@ -149,7 +163,6 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Status(_) => panic!("expected active list"),
     };
     assert!(listed.data.is_empty());
@@ -169,7 +182,6 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Status(_) => panic!("expected restored list"),
     };
     assert_eq!(restored_list.data, vec![restored.clone()]);
@@ -189,174 +201,6 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     assert!(!projection.contains("restored_at"));
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9
-/// Verifies: inferred source replay cannot reactivate a revoked identity.
-#[tokio::test]
-async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
-    let database_root = tempfile::tempdir().expect("temporary memory root");
-    let runtime = open_runtime(database_root.path());
-    let remembered = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
-        .await
-        .expect("remember entry")
-    {
-        MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_)
-        | MemoryCommandResult::RememberInferred(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
-    };
-
-    runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
-        )))
-        .await
-        .expect("forget entry");
-
-    let result = runtime
-        .execute_command(MemoryCommand::RememberInferred(inferred_request(
-            "Use tabs",
-            "2026-09-09T00:00:00Z",
-        )))
-        .await
-        .expect("replay old evidence");
-    assert_eq!(result, MemoryCommandResult::RememberInferred(None));
-
-    let listed = match runtime
-        .execute_command(MemoryCommand::List(
-            devo_server::memory::ListMemoryRequest {
-                scope: Some(MemoryScope::User),
-                state: Some(MemoryState::Retired),
-                workspace_root: PathBuf::new(),
-                ..Default::default()
-            },
-        ))
-        .await
-        .expect("list retired entry")
-    {
-        MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(_)
-        | MemoryCommandResult::Status(_) => panic!("expected retired list"),
-    };
-    assert_eq!(listed.data.len(), 1);
-    assert_eq!(listed.data[0].entry_id, remembered.entry_id);
-}
-
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8, DD-9
-/// Verifies: an old inferred observation cannot overwrite an explicitly restored identity.
-#[tokio::test]
-async fn restored_explicit_memory_rejects_old_inferred_replay() {
-    let database_root = tempfile::tempdir().expect("temporary memory root");
-    let runtime = open_runtime(database_root.path());
-    let remembered = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
-        .await
-        .expect("remember entry")
-    {
-        MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_)
-        | MemoryCommandResult::RememberInferred(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
-    };
-    runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
-        )))
-        .await
-        .expect("forget entry");
-    let restored = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
-        .await
-        .expect("restore entry")
-    {
-        MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_)
-        | MemoryCommandResult::RememberInferred(_)
-        | MemoryCommandResult::Status(_) => panic!("expected restored entry"),
-    };
-
-    let replay = runtime
-        .execute_command(MemoryCommand::RememberInferred(inferred_request(
-            "Use tabs!",
-            "2026-09-09T00:00:00Z",
-        )))
-        .await
-        .expect("replay old evidence");
-
-    assert_eq!(replay, MemoryCommandResult::RememberInferred(None));
-    assert_eq!(restored.entry_id, remembered.entry_id);
-    assert_eq!(restored.body, "Use tabs");
-    assert_eq!(restored.state, MemoryState::Restored);
-}
-
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8
-/// Verifies: inferred content cannot replace an existing explicit identity.
-#[tokio::test]
-async fn inferred_memory_does_not_replace_explicit_content() {
-    let database_root = tempfile::tempdir().expect("temporary memory root");
-    let runtime = open_runtime(database_root.path());
-    let remembered = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
-        .await
-        .expect("remember entry")
-    {
-        MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_)
-        | MemoryCommandResult::RememberInferred(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
-    };
-
-    let inferred = match runtime
-        .execute_command(MemoryCommand::RememberInferred(inferred_request(
-            "Use tabs!",
-            "2026-09-11T00:00:00Z",
-        )))
-        .await
-        .expect("inferred duplicate")
-    {
-        MemoryCommandResult::RememberInferred(Some(entry)) => entry,
-        MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(None)
-        | MemoryCommandResult::Status(_) => panic!("expected evidence-preserving inference"),
-    };
-
-    assert_eq!(inferred.entry_id, remembered.entry_id);
-    assert_eq!(inferred.body, remembered.body);
-    assert_eq!(
-        inferred.origin,
-        devo_protocol::native::rpc_memory::MemoryOrigin::ExplicitUser
-    );
-    assert_eq!(inferred.state, remembered.state);
-    assert_eq!(inferred.provenance.len(), remembered.provenance.len() + 1);
-    assert!(inferred.updated_at > remembered.updated_at);
-    let listed = match runtime
-        .execute_command(MemoryCommand::List(
-            devo_server::memory::ListMemoryRequest {
-                scope: Some(MemoryScope::User),
-                workspace_root: PathBuf::new(),
-                ..Default::default()
-            },
-        ))
-        .await
-        .expect("list explicit entry")
-    {
-        MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(_)
-        | MemoryCommandResult::Status(_) => panic!("expected memory list"),
-    };
-    assert_eq!(listed.data, vec![inferred]);
-}
-
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
 /// Verifies: exact forget commits revocation before returning the retired entry.
 #[tokio::test]
@@ -371,7 +215,6 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
 
@@ -385,7 +228,6 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         MemoryCommandResult::Forget(result) => result,
         MemoryCommandResult::List(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
     let forgotten = result.forgotten.expect("exact forget returns entry");
@@ -408,7 +250,6 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Status(_) => panic!("expected retired list"),
     };
     assert_eq!(listed.data, vec![forgotten.clone()]);
@@ -434,6 +275,47 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
     assert_eq!((revocation_count, retired_count), (1, 1));
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
+/// Verifies: exact forget resolves the entry's persisted scope instead of the request default.
+#[tokio::test]
+async fn exact_forget_uses_persisted_scope_for_project_entry() {
+    let database_root = tempfile::tempdir().expect("temporary memory root");
+    let project_root = database_root.path().join("project");
+    std::fs::create_dir_all(&project_root).expect("project root");
+    let runtime = open_runtime(database_root.path());
+    let remembered = match runtime
+        .execute_command(MemoryCommand::Remember(project_remember_request(
+            "Use tabs",
+            &project_root,
+        )))
+        .await
+        .expect("remember project entry")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+    };
+
+    let result = runtime
+        .execute_command(MemoryCommand::Forget(forget_request(
+            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
+        )))
+        .await
+        .expect("forget project entry by stable ID");
+
+    let forgotten = match result {
+        MemoryCommandResult::Forget(result) => result.forgotten,
+        MemoryCommandResult::List(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Status(_) => panic!("expected forget result"),
+    };
+    assert_eq!(
+        forgotten.map(|entry| entry.entry_id),
+        Some(remembered.entry_id)
+    );
+}
+
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
 /// Verifies: ambiguous text forget returns candidates without mutation.
 #[tokio::test]
@@ -457,7 +339,6 @@ async fn ambiguous_text_forget_returns_candidates_without_mutation() {
         MemoryCommandResult::Forget(result) => result,
         MemoryCommandResult::List(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
     assert!(result.forgotten.is_none());

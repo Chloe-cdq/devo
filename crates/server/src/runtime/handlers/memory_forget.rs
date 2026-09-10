@@ -55,10 +55,7 @@ impl ServerRuntime {
             .execute_command(MemoryCommand::Forget(MemoryForgetRequest {
                 selector,
                 scope: params.scope,
-                source_user_item_id: source.user_item_id,
-                source_session_id: source.session_id.to_string(),
-                source_turn_id: source.turn_id,
-                workspace_root: source.workspace_root,
+                source,
             }))
             .await;
         match result {
@@ -69,7 +66,6 @@ impl ServerRuntime {
             .expect("serialize memory/forget response"),
             Ok(MemoryCommandResult::Status(_))
             | Ok(MemoryCommandResult::Remember(_))
-            | Ok(MemoryCommandResult::RememberInferred(_))
             | Ok(MemoryCommandResult::List(_)) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,

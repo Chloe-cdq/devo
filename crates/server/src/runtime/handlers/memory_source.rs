@@ -1,14 +1,10 @@
 use super::super::*;
 
-use devo_core::SessionId;
 use devo_protocol::native::rpc_memory::MemoryScope;
 
-pub(super) struct MemoryMutationSource {
-    pub(super) session_id: SessionId,
-    pub(super) turn_id: Option<String>,
-    pub(super) user_item_id: Option<String>,
-    pub(super) workspace_root: std::path::PathBuf,
-}
+use crate::memory::MemorySourceContext;
+
+type MemoryMutationSource = MemorySourceContext;
 
 impl ServerRuntime {
     pub(super) async fn resolve_memory_mutation_source(
@@ -34,7 +30,6 @@ impl ServerRuntime {
                     format!("{operation} in an active turn requires sourceUserItemId"),
                 ));
             };
-            let source_user_item_id = source_user_item_id.to_string();
             let mut active_source = None;
             for (session_id, turn) in &active_turns {
                 let item_matches = if let Some(stream) = self.active_stream_state(*session_id).await
@@ -44,7 +39,7 @@ impl ServerRuntime {
                         inline.turn_id == turn.turn_id
                             && inline.persisted_turn_items.iter().any(|item| {
                                 item.turn_id == turn.turn_id
-                                    && item.item_id.to_string() == source_user_item_id
+                                    && item.item_id.to_string() == source_user_item_id.as_str()
                                     && matches!(
                                         &item.turn_item,
                                         devo_core::TurnItem::UserMessage(_)
@@ -57,7 +52,7 @@ impl ServerRuntime {
                 if item_matches {
                     active_source = Some((
                         *session_id,
-                        Some(turn.turn_id.to_string()),
+                        Some(turn.turn_id),
                         Some(source_user_item_id.clone()),
                     ));
                     break;
@@ -94,7 +89,7 @@ impl ServerRuntime {
                     })?;
                 let (turn_id, user_item_id) = active_source
                     .as_ref()
-                    .map(|source| (source.1.clone(), source.2.clone()))
+                    .map(|source| (source.1, source.2.clone()))
                     .unwrap_or((None, None));
                 let session_id = active_source
                     .as_ref()

@@ -15,6 +15,7 @@ use super::{
     USER_SCOPE_ID, kind_name, origin_name, scope_name, state_name,
 };
 
+#[allow(dead_code)]
 enum MemoryWriteMode {
     Explicit,
     Inferred {
@@ -34,6 +35,7 @@ impl MemoryRuntime {
             })
     }
 
+    #[allow(dead_code)]
     pub(super) fn remember_inferred(
         &self,
         request: MemoryInferredRememberRequest,
@@ -43,10 +45,7 @@ impl MemoryRuntime {
                 text: request.text,
                 scope: request.scope,
                 kind: request.kind,
-                source_user_item_id: request.source_user_item_id,
-                source_session_id: request.source_session_id,
-                source_turn_id: request.source_turn_id,
-                workspace_root: request.workspace_root,
+                source: request.source,
             },
             MemoryWriteMode::Inferred {
                 source_observed_at: request.source_observed_at,
@@ -66,7 +65,7 @@ impl MemoryRuntime {
         }
         let kind = request.kind.unwrap_or_else(|| classify_kind(&body));
         let normalized_key = normalize_key(&body);
-        let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
+        let scope_id = self.scope_id(request.scope, &request.source.workspace_root)?;
         let now = Utc::now().to_rfc3339();
         let (origin, observed_at, source_watermark, source_observed_at, allow_restore) = match mode
         {
@@ -229,9 +228,12 @@ impl MemoryRuntime {
             rusqlite::params![
                 uuid::Uuid::now_v7().simple().to_string(),
                 entry_id.as_str(),
-                request.source_session_id,
-                request.source_turn_id,
-                request.source_user_item_id,
+                request.source.session_id.to_string(),
+                request.source.turn_id.map(|turn_id| turn_id.to_string()),
+                request
+                    .source
+                    .user_item_id
+                    .map(|item_id| item_id.to_string()),
                 observed_at,
                 source_watermark,
             ],

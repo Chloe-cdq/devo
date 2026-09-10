@@ -36,7 +36,6 @@ impl ServerRuntime {
             Some(memory) => match memory.execute_command(MemoryCommand::Status).await {
                 Ok(MemoryCommandResult::Status(status)) => status,
                 Ok(MemoryCommandResult::Remember(_))
-                | Ok(MemoryCommandResult::RememberInferred(_))
                 | Ok(MemoryCommandResult::Forget(_))
                 | Ok(MemoryCommandResult::List(_)) => {
                     tracing::error!("memory status command returned an unexpected result");
@@ -100,10 +99,7 @@ impl ServerRuntime {
                 text: params.text,
                 scope: params.scope,
                 kind: params.kind,
-                source_user_item_id: source.user_item_id,
-                source_session_id: source.session_id.to_string(),
-                source_turn_id: source.turn_id,
-                workspace_root: source.workspace_root,
+                source,
             }))
             .await;
         match result {
@@ -113,7 +109,6 @@ impl ServerRuntime {
             })
             .expect("serialize memory/remember response"),
             Ok(MemoryCommandResult::Status(_))
-            | Ok(MemoryCommandResult::RememberInferred(_))
             | Ok(MemoryCommandResult::Forget(_))
             | Ok(MemoryCommandResult::List(_)) => self.error_response(
                 request_id,
@@ -196,7 +191,6 @@ impl ServerRuntime {
             .expect("serialize memory/list response"),
             Ok(MemoryCommandResult::Status(_))
             | Ok(MemoryCommandResult::Remember(_))
-            | Ok(MemoryCommandResult::RememberInferred(_))
             | Ok(MemoryCommandResult::Forget(_)) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,

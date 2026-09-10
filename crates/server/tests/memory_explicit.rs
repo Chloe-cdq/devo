@@ -21,9 +21,12 @@ use devo_protocol::ModelResponse;
 use devo_protocol::ProtocolErrorCode;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
+use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
+use devo_protocol::TurnId;
 use devo_protocol::Usage;
+use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::{MemoryForgetResult, MemoryKind, MemoryScope, MemoryState};
 use devo_provider::ModelProviderSDK;
@@ -33,18 +36,26 @@ use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
 use devo_server::memory::{
     ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryError, MemoryRememberRequest,
-    MemoryRuntime, PrepareMemoryRequest,
+    MemoryRuntime, MemorySourceContext, PrepareMemoryRequest,
 };
 use futures::Stream;
 use futures::stream;
 use pretty_assertions::assert_eq;
 use rusqlite::Connection;
 use tempfile::TempDir;
+use uuid::Uuid;
 
 struct NoopProvider;
 
 struct BlockingProvider {
     release: Arc<tokio::sync::Notify>,
+}
+
+fn test_uuid(seed: &str) -> Uuid {
+    let value = seed.bytes().fold(0_u128, |value, byte| {
+        value.rotate_left(5) ^ u128::from(byte)
+    });
+    Uuid::from_u128(value)
 }
 
 #[async_trait::async_trait]
@@ -106,10 +117,15 @@ fn remember_request(
         text: text.to_string(),
         scope: MemoryScope::User,
         kind: None,
-        source_user_item_id: Some(source_user_item_id.to_string()),
-        source_session_id: "ses-1".to_string(),
-        source_turn_id: Some("turn-1".to_string()),
-        workspace_root: workspace_root.to_path_buf(),
+        source: MemorySourceContext {
+            user_item_id: Some(ItemId::from_string(format!(
+                "item_{:032x}",
+                test_uuid(source_user_item_id).as_u128()
+            ))),
+            session_id: SessionId::from(test_uuid("ses-1")),
+            turn_id: Some(TurnId::from(test_uuid("turn-1"))),
+            workspace_root: workspace_root.to_path_buf(),
+        },
     }
 }
 
@@ -299,7 +315,6 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     let first = match first {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected remember result")
@@ -316,7 +331,6 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     let second = match second {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected remember result")
@@ -337,7 +351,6 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     let listed: Page<_> = match listed {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
@@ -460,7 +473,10 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     assert!(projection.contains("state: active"));
     assert!(projection.contains("origin: explicit_user"));
     assert!(projection.contains("created_at:"));
-    assert!(projection.contains("source_session_id: ses-1"));
+    assert!(projection.contains(&format!(
+        "source_session_id: {}",
+        SessionId::from(test_uuid("ses-1"))
+    )));
 
     let first_page = runtime
         .execute_command(MemoryCommand::List(ListMemoryRequest {
@@ -474,7 +490,6 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     let first_page: Page<_> = match first_page {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
@@ -496,7 +511,6 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     let second_page: Page<_> = match second_page {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
@@ -881,7 +895,6 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected project remember result")
@@ -898,7 +911,6 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected linked project remember result")
@@ -924,7 +936,6 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected linked project list result")
@@ -943,7 +954,6 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected unrelated project remember result")
@@ -962,7 +972,6 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
-        | MemoryCommandResult::RememberInferred(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected main project list result")

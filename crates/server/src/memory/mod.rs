@@ -9,6 +9,8 @@ mod identity;
 mod projection;
 mod queries;
 mod schema;
+#[cfg(test)]
+mod tests;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -18,6 +20,9 @@ use std::sync::Mutex;
 use chrono::DateTime;
 use chrono::Utc;
 use devo_core::MemoryConfig;
+use devo_protocol::SessionId;
+use devo_protocol::TurnId;
+use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryForgetParams;
@@ -201,14 +206,6 @@ impl MemoryRuntime {
                 }
                 Ok(MemoryCommandResult::Remember(self.remember(request)?))
             }
-            MemoryCommand::RememberInferred(request) => {
-                if !self.config.enabled {
-                    return Err(MemoryError::Disabled);
-                }
-                Ok(MemoryCommandResult::RememberInferred(
-                    self.remember_inferred(request)?,
-                ))
-            }
             MemoryCommand::Forget(request) => {
                 if !self.config.enabled {
                     return Err(MemoryError::Disabled);
@@ -225,6 +222,22 @@ impl MemoryRuntime {
                 Ok(MemoryCommandResult::List(self.list(request)?))
             }
         }
+    }
+
+    /// Records one observation from the server-owned passive extraction path.
+    ///
+    /// This remains crate-private so callers must first pass through the
+    /// server's source admission and scheduling boundary rather than invoking
+    /// inferred persistence as a public memory command.
+    #[allow(dead_code)]
+    pub(crate) fn record_inferred(
+        &self,
+        request: MemoryInferredRememberRequest,
+    ) -> Result<Option<MemoryEntry>, MemoryError> {
+        if !self.config.enabled {
+            return Err(MemoryError::Disabled);
+        }
+        self.remember_inferred(request)
     }
 
     fn status(&self) -> Result<MemoryStatus, MemoryError> {
@@ -262,8 +275,6 @@ pub enum MemoryCommand {
     Status,
     /// Validate, commit, and project an explicit user memory request.
     Remember(MemoryRememberRequest),
-    /// Apply one background inferred-memory observation.
-    RememberInferred(MemoryInferredRememberRequest),
     /// Retire one exact identity or return candidates for an ambiguous text match.
     Forget(MemoryForgetRequest),
     /// Return a filtered, paginated view of canonical memory entries.
@@ -277,9 +288,6 @@ pub enum MemoryCommandResult {
     Status(MemoryStatus),
     /// Result of [`MemoryCommand::Remember`].
     Remember(MemoryEntry),
-    /// Result of a background inferred-memory observation; `None` means a
-    /// durable revocation rejected the observation without mutation.
-    RememberInferred(Option<MemoryEntry>),
     /// Result of [`MemoryCommand::Forget`].
     Forget(MemoryForgetResult),
     /// Result of [`MemoryCommand::List`].
@@ -293,24 +301,30 @@ pub struct MemoryRememberRequest {
     pub text: String,
     pub scope: MemoryScope,
     pub kind: Option<MemoryKind>,
-    pub source_user_item_id: Option<String>,
-    pub source_session_id: String,
-    pub source_turn_id: Option<String>,
-    pub workspace_root: PathBuf,
+    pub source: MemorySourceContext,
 }
 
-/// Input passed through the server-owned memory command seam for an inferred
-/// source observation. A revoked identity cannot be recreated by this path.
+/// Internal input for one server-owned passive extraction observation.
+///
+/// A revoked identity cannot be recreated by this path. The type is crate
+/// private because inferred writes are not part of the public command seam.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryInferredRememberRequest {
-    pub text: String,
-    pub scope: MemoryScope,
-    pub kind: Option<MemoryKind>,
-    pub source_user_item_id: Option<String>,
-    pub source_session_id: String,
-    pub source_turn_id: Option<String>,
-    pub source_observed_at: DateTime<Utc>,
-    pub source_watermark: String,
+pub(crate) struct MemoryInferredRememberRequest {
+    pub(crate) text: String,
+    pub(crate) scope: MemoryScope,
+    pub(crate) kind: Option<MemoryKind>,
+    pub(crate) source: MemorySourceContext,
+    pub(crate) source_observed_at: DateTime<Utc>,
+    pub(crate) source_watermark: String,
+}
+
+/// Typed provenance and workspace context shared by memory mutations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySourceContext {
+    pub user_item_id: Option<ItemId>,
+    pub session_id: SessionId,
+    pub turn_id: Option<TurnId>,
     pub workspace_root: PathBuf,
 }
 
@@ -341,10 +355,7 @@ impl MemoryForgetSelector {
 pub struct MemoryForgetRequest {
     pub selector: MemoryForgetSelector,
     pub scope: MemoryScope,
-    pub source_user_item_id: Option<String>,
-    pub source_session_id: String,
-    pub source_turn_id: Option<String>,
-    pub workspace_root: PathBuf,
+    pub source: MemorySourceContext,
 }
 
 /// Filter and paging input for a memory inspection command.
