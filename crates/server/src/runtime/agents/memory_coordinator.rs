@@ -260,6 +260,7 @@ fn has_explicit_memory_forget_intent(text: &str) -> bool {
         "forget that",
         "forget my",
         "forget about",
+        "forget memory entry",
         "remove this from memory",
         "remove that from memory",
         "delete this memory",
@@ -272,6 +273,7 @@ fn has_explicit_memory_forget_intent(text: &str) -> bool {
         "忘记那",
         "删除这条记忆",
         "删除那条记忆",
+        "删除记忆条目",
     ]
     .iter()
     .any(|phrase| memory_command_has_forget_payload(&text, phrase))
@@ -296,7 +298,43 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     if !has_payload {
         return phrase_names_memory;
     }
-    let has_memory_subject = remainder.contains("memory") || remainder.contains("记忆");
+    let suffix_is_boundary = |suffix: &str| {
+        suffix
+            .chars()
+            .next()
+            .is_none_or(|character| !character.is_alphanumeric())
+    };
+    let suffix_is_delimited = |suffix: &str| {
+        suffix.is_empty()
+            || suffix.chars().next().is_some_and(|character| {
+                character.is_ascii_punctuation()
+                    || matches!(character, '：' | '，' | '。' | '；' | '、')
+            })
+    };
+    let starts_with_subject = |subject: &str| {
+        remainder.strip_prefix(subject).is_some_and(|suffix| {
+            if subject == "memory entry" || subject == "记忆条目" {
+                suffix_is_boundary(suffix)
+            } else {
+                suffix_is_delimited(suffix)
+            }
+        })
+    };
+    let has_memory_subject = remainder == "memory"
+        || remainder == "记忆"
+        || [
+            "this memory",
+            "that memory",
+            "the memory",
+            "my memory",
+            "memory entry",
+            "这条记忆",
+            "那条记忆",
+            "我的记忆",
+            "记忆条目",
+        ]
+        .iter()
+        .any(|subject| starts_with_subject(subject));
     if phrase == "请删除" {
         return has_memory_subject;
     }
@@ -363,32 +401,49 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         ]
         .iter()
         .any(|subject| remainder.starts_with(subject));
-    let is_task_lead = ["about", "all about", "everything about"]
-        .iter()
-        .any(|prefix| {
-            remainder.strip_prefix(prefix).is_some_and(|suffix| {
-                suffix
-                    .chars()
-                    .next()
-                    .is_none_or(|character| !character.is_ascii_alphanumeric())
-            })
-        });
+    let is_task_lead = phrase.ends_with("forget about")
+        || ["about", "all about", "everything about"]
+            .iter()
+            .any(|prefix| {
+                remainder.strip_prefix(prefix).is_some_and(|suffix| {
+                    suffix
+                        .chars()
+                        .next()
+                        .is_none_or(|character| !character.is_ascii_alphanumeric())
+                })
+            });
+    let contains_subject = |subject: &str, suffix_is_valid: &dyn Fn(&str) -> bool| {
+        remainder.match_indices(subject).any(|(index, _)| {
+            let prefix = &remainder[..index];
+            let suffix = &remainder[index + subject.len()..];
+            let prefix_is_boundary = prefix
+                .chars()
+                .next_back()
+                .is_none_or(|character| !character.is_alphanumeric());
+            prefix_is_boundary && suffix_is_valid(suffix)
+        })
+    };
     let names_specific_memory = [
         "this memory",
         "that memory",
+        "the memory",
         "my memory",
         "这条记忆",
         "那条记忆",
         "我的记忆",
     ]
     .iter()
-    .any(|subject| remainder.contains(subject));
+    .any(|subject| contains_subject(subject, &suffix_is_delimited))
+        || ["memory entry", "记忆条目"]
+            .iter()
+            .any(|subject| contains_subject(subject, &suffix_is_boundary));
 
     has_payload
-        && (phrase_names_memory
+        && (phrase_names_memory && (!is_task_lead || names_specific_memory)
             || has_english_memory_statement
             || has_chinese_memory_statement
             || has_personal_memory_subject
+            || names_specific_memory
             || (has_memory_subject && (!is_task_lead || names_specific_memory)))
 }
 
@@ -468,6 +523,19 @@ mod tests {
         assert!(!has_explicit_memory_forget_intent(
             "Forget about adding tests; implement B"
         ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Forget about memory safety; implement UI"
+        ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Forget about the memory safety issue; implement UI"
+        ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Please forget memory safety; implement UI"
+        ));
+        assert!(has_explicit_memory_forget_intent(
+            "Forget memory entry mem_123"
+        ));
+        assert!(has_explicit_memory_forget_intent("删除记忆条目 mem_123"));
         for text in [
             "Please forget about adding tests; implement B",
             "Can you forget about adding tests; implement B",

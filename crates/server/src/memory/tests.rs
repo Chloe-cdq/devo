@@ -12,25 +12,11 @@ use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
 use pretty_assertions::assert_eq;
 
-use super::runtime_test_support::{open_runtime, remember_request};
+use super::runtime_test_support::{forget_request, open_runtime, remember_request};
 use super::test_support::{deterministic_uuid, test_source};
 use super::{
-    MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
-    MemoryInferredRememberRequest,
+    MemoryCommand, MemoryCommandResult, MemoryForgetSelector, MemoryInferredRememberRequest,
 };
-
-fn forget_request(entry_id: devo_protocol::native::ids::MemoryEntryId) -> MemoryForgetRequest {
-    MemoryForgetRequest {
-        selector: MemoryForgetSelector::EntryId(entry_id),
-        scope: MemoryScope::User,
-        source: test_source(
-            /*user_item_id*/ None,
-            "session-1",
-            /*turn_id*/ None,
-            Default::default(),
-        ),
-    }
-}
 
 fn inferred_request(text: &str, observed_at: DateTime<Utc>) -> MemoryInferredRememberRequest {
     MemoryInferredRememberRequest {
@@ -66,7 +52,7 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
     };
     let forgotten = match runtime
         .execute_command(MemoryCommand::Forget(forget_request(
-            remembered.entry_id.clone(),
+            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
         )))
         .await
         .expect("forget entry")
@@ -119,7 +105,7 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
     };
     runtime
         .execute_command(MemoryCommand::Forget(forget_request(
-            remembered.entry_id.clone(),
+            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
         )))
         .await
         .expect("forget entry");

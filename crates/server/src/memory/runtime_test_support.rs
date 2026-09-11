@@ -6,7 +6,20 @@ use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryScope;
 
 use super::test_support::test_source;
-use super::{MemoryRememberRequest, MemoryRuntime};
+use super::{MemoryForgetRequest, MemoryForgetSelector, MemoryRememberRequest, MemoryRuntime};
+
+pub fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
+    MemoryForgetRequest {
+        selector,
+        scope: MemoryScope::User,
+        source: test_source(
+            /*user_item_id*/ None,
+            "session-1",
+            /*turn_id*/ None,
+            PathBuf::new(),
+        ),
+    }
+}
 
 pub fn remember_request(text: &str) -> MemoryRememberRequest {
     MemoryRememberRequest {

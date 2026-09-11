@@ -16,21 +16,8 @@ use devo_server::memory::{
     MemoryRememberRequest, MemoryRuntime, PrepareMemoryRequest,
 };
 use pretty_assertions::assert_eq;
-use runtime_support::{open_runtime, remember_request};
+use runtime_support::{forget_request, open_runtime, remember_request};
 use rusqlite::Connection;
-
-fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
-    MemoryForgetRequest {
-        selector,
-        scope: MemoryScope::User,
-        source: test_support::test_source(
-            /*user_item_id*/ None,
-            "session-1",
-            /*turn_id*/ None,
-            PathBuf::new(),
-        ),
-    }
-}
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
 /// Verifies: explicit remember restores a revoked identity and records its lineage.
@@ -276,19 +263,25 @@ async fn exact_forget_uses_persisted_scope_for_project_entry() {
         .await
         .expect("forget project entry by stable ID");
 
-    let forgotten = match result {
-        MemoryCommandResult::Forget(result) => result.forgotten,
+    let result = match result {
+        MemoryCommandResult::Forget(result) => result,
         MemoryCommandResult::List(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
-    }
-    .expect("forgotten project entry");
+    };
+    let forgotten = result.forgotten.clone().expect("forgotten project entry");
     let expected_forgotten = MemoryEntry {
         state: MemoryState::Retired,
         updated_at: forgotten.updated_at,
         ..remembered
     };
-    assert_eq!(forgotten, expected_forgotten);
+    assert_eq!(
+        result,
+        MemoryForgetResult {
+            forgotten: Some(expected_forgotten),
+            candidates: Vec::new(),
+        }
+    );
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
