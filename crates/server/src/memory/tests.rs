@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use chrono::DateTime;
 use chrono::Utc;
-use devo_core::MemoryConfig;
 use devo_protocol::SessionId;
 use devo_protocol::TurnId;
 use devo_protocol::native::rpc_memory::MemoryEntry;
@@ -13,25 +12,12 @@ use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
 use pretty_assertions::assert_eq;
 
+use super::runtime_test_support::{open_runtime, remember_request};
 use super::test_support::{deterministic_uuid, test_source};
 use super::{
     MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
-    MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime,
+    MemoryInferredRememberRequest,
 };
-
-fn remember_request(text: &str) -> MemoryRememberRequest {
-    MemoryRememberRequest {
-        text: text.to_owned(),
-        scope: MemoryScope::User,
-        kind: Some(MemoryKind::Preference),
-        source: test_source(
-            Some("user-item-1"),
-            "session-1",
-            Some("turn-1"),
-            Default::default(),
-        ),
-    }
-}
 
 fn forget_request(entry_id: devo_protocol::native::ids::MemoryEntryId) -> MemoryForgetRequest {
     MemoryForgetRequest {
@@ -60,17 +46,6 @@ fn inferred_request(text: &str, observed_at: DateTime<Utc>) -> MemoryInferredRem
         source_observed_at: observed_at,
         source_watermark: observed_at.to_rfc3339(),
     }
-}
-
-fn open_runtime(root: &std::path::Path) -> MemoryRuntime {
-    MemoryRuntime::open(
-        root.to_path_buf(),
-        MemoryConfig {
-            enabled: true,
-            ..MemoryConfig::default()
-        },
-    )
-    .expect("memory runtime")
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9

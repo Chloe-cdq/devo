@@ -286,10 +286,21 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     let Some(remainder) = memory_command_payload(text, phrase) else {
         return false;
     };
-    let remainder = remainder.trim_start();
+    let remainder = remainder.trim_start_matches(|character: char| {
+        character.is_whitespace()
+            || character.is_ascii_punctuation()
+            || matches!(character, '：' | '，' | '。' | '；' | '、')
+    });
     let has_payload = remainder.chars().any(char::is_alphanumeric);
+    let phrase_names_memory = phrase.contains("memory") || phrase.contains("记忆");
+    if !has_payload {
+        return phrase_names_memory;
+    }
     let has_memory_subject = remainder.contains("memory") || remainder.contains("记忆");
-    let has_memory_statement = [
+    if phrase == "请删除" {
+        return has_memory_subject;
+    }
+    let has_english_memory_statement = [
         "i ",
         "i'm ",
         "i am ",
@@ -300,26 +311,31 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         "that i am ",
     ]
     .iter()
-    .any(|prefix| remainder.starts_with(prefix))
-        || [
-            "我喜欢",
-            "我偏好",
-            "我不",
-            "我是",
-            "我有",
-            "我在",
-            "我会",
-            "我要",
-            "我用",
-            "我需要",
-            "我习惯",
-            "我通常",
-            "我住",
-            "我来自",
-            "我叫",
-        ]
-        .iter()
-        .any(|prefix| remainder.starts_with(prefix));
+    .any(|prefix| remainder.starts_with(prefix));
+    let has_chinese_memory_statement = [
+        "我喜欢",
+        "我偏好",
+        "我不喜欢",
+        "我不喝",
+        "我不吃",
+        "我不想",
+        "我不使用",
+        "我不会",
+        "我是",
+        "我有",
+        "我在",
+        "我会",
+        "我要",
+        "我用",
+        "我需要",
+        "我习惯",
+        "我通常",
+        "我住",
+        "我来自",
+        "我叫",
+    ]
+    .iter()
+    .any(|prefix| remainder.starts_with(prefix) && !remainder.contains('的'));
     let has_personal_memory_subject = remainder.starts_with("my ")
         && [
             "timezone",
@@ -334,7 +350,6 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
             "location",
             "pronouns",
             "theme",
-            "settings",
         ]
         .iter()
         .any(|subject| remainder.contains(subject))
@@ -345,7 +360,6 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
             "我的偏好",
             "我的语言",
             "我的位置",
-            "我的设置",
         ]
         .iter()
         .any(|subject| remainder.starts_with(subject));
@@ -371,7 +385,9 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     .any(|subject| remainder.contains(subject));
 
     has_payload
-        && (has_memory_statement
+        && (phrase_names_memory
+            || has_english_memory_statement
+            || has_chinese_memory_statement
             || has_personal_memory_subject
             || (has_memory_subject && (!is_task_lead || names_specific_memory)))
 }
@@ -436,6 +452,12 @@ mod tests {
         ));
         assert!(has_explicit_memory_forget_intent("请忘记我喜欢深色模式"));
         assert!(has_explicit_memory_forget_intent("请删除这条记忆"));
+        assert!(has_explicit_memory_forget_intent(
+            "Remove this from memory: my old timezone"
+        ));
+        assert!(has_explicit_memory_forget_intent(
+            "Delete this memory: old timezone"
+        ));
         assert!(!has_explicit_memory_forget_intent(
             "Don't forget my timezone"
         ));
@@ -457,7 +479,12 @@ mod tests {
             "Please forget everything about adding tests; implement B",
             "请删除这个文件",
             "Please forget my changes",
+            "Please forget my settings",
             "请删除我的文件",
+            "请忘记我的设置",
+            "请删除我不需要的文件",
+            "请删除我喜欢的文件",
+            "请忘记我喜欢的文件",
         ] {
             assert!(!has_explicit_memory_forget_intent(text), "{text}");
         }

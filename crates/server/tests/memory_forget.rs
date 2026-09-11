@@ -3,56 +3,33 @@ use std::path::PathBuf;
 
 use devo_server::memory::MemorySourceContext;
 
+#[path = "../src/memory/runtime_test_support.rs"]
+mod runtime_support;
 #[path = "../src/memory/test_support.rs"]
-mod support;
+mod test_support;
 
-use devo_core::MemoryConfig;
 use devo_protocol::native::rpc_memory::{
-    MemoryEntry, MemoryForgetResult, MemoryKind, MemoryScope, MemoryState,
+    MemoryEntry, MemoryForgetResult, MemoryScope, MemoryState,
 };
 use devo_server::memory::{
     MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
     MemoryRememberRequest, MemoryRuntime, PrepareMemoryRequest,
 };
 use pretty_assertions::assert_eq;
+use runtime_support::{open_runtime, remember_request};
 use rusqlite::Connection;
-
-fn remember_request(text: &str) -> MemoryRememberRequest {
-    MemoryRememberRequest {
-        text: text.to_owned(),
-        scope: MemoryScope::User,
-        kind: Some(MemoryKind::Preference),
-        source: support::test_source(
-            Some("user-item-1"),
-            "session-1",
-            Some("turn-1"),
-            PathBuf::new(),
-        ),
-    }
-}
 
 fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
     MemoryForgetRequest {
         selector,
         scope: MemoryScope::User,
-        source: support::test_source(
+        source: test_support::test_source(
             /*user_item_id*/ None,
             "session-1",
             /*turn_id*/ None,
             PathBuf::new(),
         ),
     }
-}
-
-fn open_runtime(root: &std::path::Path) -> MemoryRuntime {
-    MemoryRuntime::open(
-        root.to_path_buf(),
-        MemoryConfig {
-            enabled: true,
-            ..MemoryConfig::default()
-        },
-    )
-    .expect("memory runtime")
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
@@ -213,14 +190,22 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
-    let forgotten = result.forgotten.expect("exact forget returns entry");
+    let forgotten = result
+        .forgotten
+        .clone()
+        .expect("exact forget returns entry");
     let expected_forgotten = MemoryEntry {
         state: MemoryState::Retired,
         updated_at: forgotten.updated_at,
         ..remembered.clone()
     };
-    assert_eq!(forgotten, expected_forgotten);
-    assert_eq!(result.candidates, Vec::new());
+    assert_eq!(
+        result,
+        MemoryForgetResult {
+            forgotten: Some(expected_forgotten),
+            candidates: Vec::new(),
+        }
+    );
 
     let listed = match runtime
         .execute_command(MemoryCommand::List(

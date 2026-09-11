@@ -7,7 +7,7 @@ use std::time::Duration;
 use devo_server::memory::MemorySourceContext;
 
 #[path = "../src/memory/test_support.rs"]
-mod support;
+mod test_support;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -114,7 +114,7 @@ fn remember_request(
         text: text.to_string(),
         scope: MemoryScope::User,
         kind: None,
-        source: support::test_source(
+        source: test_support::test_source(
             Some(source_user_item_id),
             "ses-1",
             Some("turn-1"),
@@ -469,7 +469,7 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     assert!(projection.contains("created_at:"));
     assert!(projection.contains(&format!(
         "source_session_id: {}",
-        SessionId::from(support::deterministic_uuid("ses-1"))
+        SessionId::from(test_support::deterministic_uuid("ses-1"))
     )));
 
     let first_page = runtime
@@ -753,16 +753,24 @@ async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<
         .await
         .expect("memory/forget response");
     let forgotten: MemoryForgetResult = serde_json::from_value(forgotten["result"].clone())?;
-    assert_eq!(forgotten.candidates, Vec::new());
-    let forgotten_entry = forgotten.forgotten.expect("exact entry was retired");
+    let forgotten_entry = forgotten
+        .forgotten
+        .clone()
+        .expect("exact entry was retired");
     let expected_forgotten = MemoryEntry {
         state: MemoryState::Retired,
         updated_at: forgotten_entry.updated_at,
         ..remembered
     };
-    assert_eq!(forgotten_entry, expected_forgotten);
+    assert_eq!(
+        forgotten,
+        MemoryForgetResult {
+            forgotten: Some(expected_forgotten.clone()),
+            candidates: Vec::new(),
+        }
+    );
 
-    let mut expected_candidates = vec![forgotten_entry];
+    let mut expected_candidates = vec![expected_forgotten];
     for text in ["I prefer tabs", "I prefer spaces"] {
         let remembered = runtime
             .handle_incoming(
@@ -792,8 +800,16 @@ async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<
     expected_candidates.sort_by_key(|entry| entry.entry_id.to_string());
     let mut actual_candidates = ambiguous.candidates;
     actual_candidates.sort_by_key(|entry| entry.entry_id.to_string());
-    assert_eq!(ambiguous.forgotten, None);
-    assert_eq!(actual_candidates, expected_candidates);
+    assert_eq!(
+        MemoryForgetResult {
+            forgotten: ambiguous.forgotten,
+            candidates: actual_candidates,
+        },
+        MemoryForgetResult {
+            forgotten: None,
+            candidates: expected_candidates.clone(),
+        }
+    );
 
     let active = runtime
         .handle_incoming(

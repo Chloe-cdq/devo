@@ -8,6 +8,8 @@ mod forget;
 mod identity;
 mod projection;
 mod queries;
+#[cfg(test)]
+mod runtime_test_support;
 mod schema;
 #[cfg(test)]
 mod test_support;
