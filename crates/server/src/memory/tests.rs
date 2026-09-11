@@ -4,6 +4,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use devo_protocol::SessionId;
 use devo_protocol::TurnId;
+use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
@@ -84,7 +85,13 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected retired list"),
     };
-    assert_eq!(listed.data, vec![forgotten]);
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![forgotten],
+            next_cursor: None,
+        }
+    );
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8, DD-9
@@ -197,5 +204,11 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected memory list"),
     };
-    assert_eq!(listed.data, vec![inferred]);
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![inferred],
+            next_cursor: None,
+        }
+    );
 }

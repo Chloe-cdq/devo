@@ -339,14 +339,32 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         return has_memory_subject;
     }
     let has_english_memory_statement = [
-        "i ",
-        "i'm ",
+        "i prefer ",
+        "i like ",
+        "i love ",
+        "i dislike ",
+        "i hate ",
+        "i use ",
+        "i don't use ",
+        "i do not use ",
         "i am ",
-        "i've ",
+        "i'm ",
         "i have ",
-        "that i ",
-        "that i'm ",
+        "i live ",
+        "i work ",
+        "that i prefer ",
+        "that i like ",
+        "that i love ",
+        "that i dislike ",
+        "that i hate ",
+        "that i use ",
+        "that i don't use ",
+        "that i do not use ",
         "that i am ",
+        "that i'm ",
+        "that i have ",
+        "that i live ",
+        "that i work ",
     ]
     .iter()
     .any(|prefix| remainder.starts_with(prefix));
@@ -373,24 +391,47 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         "我叫",
     ]
     .iter()
-    .any(|prefix| remainder.starts_with(prefix) && !remainder.contains('的'));
-    let has_personal_memory_subject = remainder.starts_with("my ")
-        && [
-            "timezone",
-            "birthday",
-            "name",
-            "preference",
-            "preferences",
-            "favorite",
-            "favourite",
-            "language",
-            "locale",
-            "location",
-            "pronouns",
-            "theme",
+    .any(|prefix| remainder.starts_with(prefix) && !remainder.contains('的'))
+        || [
+            "我喜欢的颜色",
+            "我喜欢的主题",
+            "我喜欢的模式",
+            "我喜欢的语言",
+            "我偏好的颜色",
+            "我偏好的主题",
+            "我偏好的模式",
+            "我偏好的语言",
         ]
         .iter()
-        .any(|subject| remainder.contains(subject))
+        .any(|prefix| remainder.starts_with(prefix));
+    let personal_memory_subjects = [
+        "timezone",
+        "birthday",
+        "name",
+        "preference",
+        "preferences",
+        "favorite",
+        "favourite",
+        "language",
+        "locale",
+        "location",
+        "pronouns",
+        "theme",
+    ];
+    let english_personal_subject = remainder.strip_prefix("that ").unwrap_or(remainder);
+    let has_personal_memory_subject = english_personal_subject.starts_with("my ")
+        && personal_memory_subjects
+            .iter()
+            .any(|subject| english_personal_subject.contains(subject))
+        || phrase == "forget my"
+            && personal_memory_subjects.iter().any(|subject| {
+                remainder.strip_prefix(subject).is_some_and(|suffix| {
+                    suffix
+                        .chars()
+                        .next()
+                        .is_none_or(|character| !character.is_alphanumeric())
+                })
+            })
         || [
             "我的时区",
             "我的生日",
@@ -505,7 +546,14 @@ mod tests {
         assert!(has_explicit_memory_forget_intent(
             "Forget that I prefer tabs"
         ));
+        assert!(has_explicit_memory_forget_intent("Forget my timezone"));
+        assert!(has_explicit_memory_forget_intent(
+            "Please forget that my favorite color is blue"
+        ));
         assert!(has_explicit_memory_forget_intent("请忘记我喜欢深色模式"));
+        assert!(has_explicit_memory_forget_intent(
+            "请忘记我喜欢的颜色是蓝色"
+        ));
         assert!(has_explicit_memory_forget_intent("请删除这条记忆"));
         assert!(has_explicit_memory_forget_intent(
             "Remove this from memory: my old timezone"
@@ -528,6 +576,9 @@ mod tests {
         ));
         assert!(!has_explicit_memory_forget_intent(
             "Forget about the memory safety issue; implement UI"
+        ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Please forget that I asked for tests; implement docs"
         ));
         assert!(!has_explicit_memory_forget_intent(
             "Please forget memory safety; implement UI"

@@ -108,7 +108,7 @@ pub fn memory_remember_spec() -> ToolSpec {
 pub fn memory_forget_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_forget".to_string(),
-        description: "Forget one user or project memory. Provide an exact entry_id when known; otherwise provide text and review returned candidates before selecting an entry. Only call this when the current user explicitly asks to forget or remove the memory.".to_string(),
+        description: "Forget one user or project memory by its exact entry_id. Use memory_search first for natural-language requests, then pass the selected stable ID. Only call this when the current user explicitly asks to forget or remove the memory.".to_string(),
         input_schema: JsonSchema::object(
             BTreeMap::from([
                 (
@@ -116,19 +116,8 @@ pub fn memory_forget_spec() -> ToolSpec {
                     JsonSchema::string(Some("Stable memory entry id to retire exactly.")),
                 ),
                 (
-                    "text".to_string(),
-                    JsonSchema::string(Some("Text used to find a memory; ambiguous matches are returned without mutation.")),
-                ),
-                (
                     "source_user_item_id".to_string(),
                     JsonSchema::string(Some("The item id of the current user message that explicitly requested forgetting.")),
-                ),
-                (
-                    "scope".to_string(),
-                    JsonSchema {
-                        enum_values: Some(vec![json!("user"), json!("project")]),
-                        ..JsonSchema::string(Some("Memory scope: user or project."))
-                    },
                 ),
             ]),
             Some(Vec::new()),
@@ -284,20 +273,22 @@ fn parse_memory_forget_input(
     input: &serde_json::Value,
     fallback_source_user_item_id: Option<&str>,
 ) -> Result<MemoryForgetParams, ToolCallError> {
+    if input.get("text").is_some() || input.get("scope").is_some() {
+        return Err(ToolCallError::InvalidInput(
+            "memory_forget accepts only 'entry_id' and server-bound source context".to_string(),
+        ));
+    }
     let entry_id = input
         .get("entry_id")
         .or_else(|| input.get("entryId"))
         .and_then(serde_json::Value::as_str)
-        .map(|id| MemoryEntryId::from_string(id.to_string()));
-    let text = input
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    if entry_id.is_some() == text.is_some() {
-        return Err(ToolCallError::InvalidInput(
-            "memory_forget requires exactly one of 'entry_id' or 'text'".to_string(),
-        ));
-    }
+        .map(|id| MemoryEntryId::from_string(id.to_string()))
+        .ok_or_else(|| {
+            ToolCallError::InvalidInput(
+                "memory_forget requires a stable 'entry_id'; use memory_search for text selectors"
+                    .to_string(),
+            )
+        })?;
     let input_source_user_item_id = input
         .get("source_user_item_id")
         .or_else(|| input.get("sourceUserItemId"))
@@ -312,23 +303,10 @@ fn parse_memory_forget_input(
             "memory_forget source must match the current user message context".to_string(),
         ));
     }
-    let scope = match input
-        .get("scope")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("user")
-    {
-        "user" => MemoryScope::User,
-        "project" => MemoryScope::Project,
-        _ => {
-            return Err(ToolCallError::InvalidInput(
-                "memory_forget received an unsupported scope".to_string(),
-            ));
-        }
-    };
     Ok(MemoryForgetParams {
-        entry_id,
-        text,
-        scope,
+        entry_id: Some(entry_id),
+        text: None,
+        scope: MemoryScope::User,
         source_user_item_id: Some(ItemId::from_string(source_user_item_id.to_string())),
     })
 }
@@ -396,14 +374,11 @@ mod tests {
     }
 
     /// Trace: L2-DES-MEM-001 DD-12
-    /// Verifies: forgetting accepts one stable ID or one text selector and preserves the server binding.
+    /// Verifies: forgetting accepts one stable ID and preserves the server binding.
     #[test]
-    fn forget_tool_parses_exact_and_ambiguous_selectors() {
+    fn forget_tool_parses_exact_selector() {
         let exact = parse_memory_forget_input(
-            &serde_json::json!({
-                "entryId": "mem-existing",
-                "scope": "project"
-            }),
+            &serde_json::json!({"entryId": "mem-existing"}),
             Some("item-current"),
         )
         .expect("exact entry selector is valid");
@@ -412,21 +387,6 @@ mod tests {
             MemoryForgetParams {
                 entry_id: Some(MemoryEntryId::from_string("mem-existing".to_string())),
                 text: None,
-                scope: MemoryScope::Project,
-                source_user_item_id: Some(ItemId::from_string("item-current".to_string())),
-            }
-        );
-
-        let text = parse_memory_forget_input(
-            &serde_json::json!({"text": "old timezone"}),
-            Some("item-current"),
-        )
-        .expect("text selector is valid");
-        assert_eq!(
-            text,
-            MemoryForgetParams {
-                entry_id: None,
-                text: Some("old timezone".to_string()),
                 scope: MemoryScope::User,
                 source_user_item_id: Some(ItemId::from_string("item-current".to_string())),
             }
@@ -434,19 +394,40 @@ mod tests {
     }
 
     /// Trace: L2-DES-MEM-001 DD-12
-    /// Verifies: the tool rejects selectors that could make a destructive request ambiguous.
+    /// Verifies: the agent mutation tool rejects text selectors and caller-selected scopes.
     #[test]
-    fn forget_tool_rejects_missing_or_multiple_selectors() {
+    fn forget_tool_rejects_non_contract_selectors() {
+        let missing_entry_id =
+            parse_memory_forget_input(&serde_json::json!({}), Some("item-current"))
+                .expect_err("agent forget requires a stable entry ID");
+        assert_eq!(
+            missing_entry_id.to_string(),
+            "invalid input: memory_forget requires a stable 'entry_id'; use memory_search for text selectors"
+        );
+
         for input in [
-            serde_json::json!({}),
-            serde_json::json!({"entry_id": "mem-existing", "text": "old timezone"}),
+            serde_json::json!({"text": "old timezone"}),
+            serde_json::json!({"entry_id": "mem-existing", "scope": "project"}),
         ] {
             let error = parse_memory_forget_input(&input, Some("item-current"))
-                .expect_err("forget needs exactly one selector");
+                .expect_err("agent forget rejects non-contract selectors");
             assert_eq!(
                 error.to_string(),
-                "invalid input: memory_forget requires exactly one of 'entry_id' or 'text'"
+                "invalid input: memory_forget accepts only 'entry_id' and server-bound source context"
             );
         }
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-12
+    /// Verifies: the root-agent forget schema exposes only the approved stable-ID mutation surface.
+    #[test]
+    fn forget_tool_schema_exposes_only_stable_id_selector() {
+        let schema = memory_forget_spec().input_schema;
+        let properties = schema.properties.expect("forget tool properties");
+        assert_eq!(
+            properties.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["entry_id", "source_user_item_id"]
+        );
+        assert_eq!(schema.required, Some(Vec::new()));
     }
 }

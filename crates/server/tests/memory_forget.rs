@@ -8,6 +8,7 @@ mod runtime_support;
 #[path = "../src/memory/test_support.rs"]
 mod test_support;
 
+use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryForgetResult, MemoryScope, MemoryState,
 };
@@ -112,7 +113,13 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected active list"),
     };
-    assert!(listed.data.is_empty());
+    assert_eq!(
+        listed,
+        Page {
+            data: Vec::new(),
+            next_cursor: None,
+        }
+    );
 
     let restored_list = match runtime
         .execute_command(MemoryCommand::List(
@@ -131,7 +138,13 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected restored list"),
     };
-    assert_eq!(restored_list.data, vec![restored.clone()]);
+    assert_eq!(
+        restored_list,
+        Page {
+            data: vec![restored.clone()],
+            next_cursor: None,
+        }
+    );
 
     let prepared = runtime
         .prepare_turn(PrepareMemoryRequest {
@@ -211,7 +224,13 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected retired list"),
     };
-    assert_eq!(listed.data, vec![forgotten.clone()]);
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![forgotten.clone()],
+            next_cursor: None,
+        }
+    );
     let projection = fs::read_to_string(database_root.path().join("user").join("MEMORY.md"))
         .expect("read user projection");
     assert!(projection.contains("state: retired"));
