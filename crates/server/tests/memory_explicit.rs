@@ -808,7 +808,21 @@ async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<
         .expect("active memory/list response");
     let active: Page<devo_protocol::native::rpc_memory::MemoryEntry> =
         serde_json::from_value(active["result"].clone())?;
-    assert_eq!(active.data.len(), 2);
+    let mut actual_active = active;
+    actual_active
+        .data
+        .sort_by_key(|entry| entry.entry_id.to_string());
+    let expected_active = expected_candidates
+        .into_iter()
+        .filter(|entry| entry.state == MemoryState::Active)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual_active,
+        Page {
+            data: expected_active,
+            next_cursor: None,
+        }
+    );
     Ok(())
 }
 

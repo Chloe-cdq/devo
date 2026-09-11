@@ -288,11 +288,67 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     };
     let remainder = remainder.trim_start();
     let has_payload = remainder.chars().any(char::is_alphanumeric);
-    let phrase_names_memory = phrase.contains("memory") || phrase.contains("记忆");
     let has_memory_subject = remainder.contains("memory") || remainder.contains("记忆");
-    let has_personal_subject = remainder.starts_with("my ")
-        || remainder.starts_with("my:")
-        || remainder.starts_with("我的");
+    let has_memory_statement = [
+        "i ",
+        "i'm ",
+        "i am ",
+        "i've ",
+        "i have ",
+        "that i ",
+        "that i'm ",
+        "that i am ",
+    ]
+    .iter()
+    .any(|prefix| remainder.starts_with(prefix))
+        || [
+            "我喜欢",
+            "我偏好",
+            "我不",
+            "我是",
+            "我有",
+            "我在",
+            "我会",
+            "我要",
+            "我用",
+            "我需要",
+            "我习惯",
+            "我通常",
+            "我住",
+            "我来自",
+            "我叫",
+        ]
+        .iter()
+        .any(|prefix| remainder.starts_with(prefix));
+    let has_personal_memory_subject = remainder.starts_with("my ")
+        && [
+            "timezone",
+            "birthday",
+            "name",
+            "preference",
+            "preferences",
+            "favorite",
+            "favourite",
+            "language",
+            "locale",
+            "location",
+            "pronouns",
+            "theme",
+            "settings",
+        ]
+        .iter()
+        .any(|subject| remainder.contains(subject))
+        || [
+            "我的时区",
+            "我的生日",
+            "我的名字",
+            "我的偏好",
+            "我的语言",
+            "我的位置",
+            "我的设置",
+        ]
+        .iter()
+        .any(|subject| remainder.starts_with(subject));
     let is_task_lead = ["about", "all about", "everything about"]
         .iter()
         .any(|prefix| {
@@ -315,10 +371,9 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     .any(|subject| remainder.contains(subject));
 
     has_payload
-        && (phrase_names_memory
-            || has_personal_subject
-            || (has_memory_subject && (!is_task_lead || names_specific_memory))
-            || (phrase == "forget my" && has_payload))
+        && (has_memory_statement
+            || has_personal_memory_subject
+            || (has_memory_subject && (!is_task_lead || names_specific_memory)))
 }
 
 fn memory_command_payload<'a>(text: &'a str, phrase: &str) -> Option<&'a str> {
@@ -376,6 +431,10 @@ mod tests {
         assert!(has_explicit_memory_forget_intent(
             "Please forget my old timezone"
         ));
+        assert!(has_explicit_memory_forget_intent(
+            "Forget that I prefer tabs"
+        ));
+        assert!(has_explicit_memory_forget_intent("请忘记我喜欢深色模式"));
         assert!(has_explicit_memory_forget_intent("请删除这条记忆"));
         assert!(!has_explicit_memory_forget_intent(
             "Don't forget my timezone"
@@ -397,6 +456,8 @@ mod tests {
             "Please forget all about adding tests; implement B",
             "Please forget everything about adding tests; implement B",
             "请删除这个文件",
+            "Please forget my changes",
+            "请删除我的文件",
         ] {
             assert!(!has_explicit_memory_forget_intent(text), "{text}");
         }

@@ -46,7 +46,7 @@ fn forget_request(entry_id: devo_protocol::native::ids::MemoryEntryId) -> Memory
     }
 }
 
-fn inferred_request(text: &str, observed_at: &str) -> MemoryInferredRememberRequest {
+fn inferred_request(text: &str, observed_at: DateTime<Utc>) -> MemoryInferredRememberRequest {
     MemoryInferredRememberRequest {
         text: text.to_owned(),
         scope: MemoryScope::User,
@@ -57,10 +57,8 @@ fn inferred_request(text: &str, observed_at: &str) -> MemoryInferredRememberRequ
             Some("turn-2"),
             Default::default(),
         ),
-        source_observed_at: DateTime::parse_from_rfc3339(observed_at)
-            .expect("observed timestamp")
-            .with_timezone(&Utc),
-        source_watermark: observed_at.to_owned(),
+        source_observed_at: observed_at,
+        source_watermark: observed_at.to_rfc3339(),
     }
 }
 
@@ -104,8 +102,9 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
 
+    let old_observed_at = remembered.updated_at;
     let result = runtime
-        .record_inferred(inferred_request("Use tabs", "2026-09-09T00:00:00Z"))
+        .record_inferred(inferred_request("Use tabs", old_observed_at))
         .expect("replay old evidence");
     assert_eq!(result, None);
 
@@ -160,8 +159,9 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
         | MemoryCommandResult::Status(_) => panic!("expected restored entry"),
     };
 
+    let old_observed_at = remembered.updated_at;
     let replay = runtime
-        .record_inferred(inferred_request("Use tabs!", "2026-09-09T00:00:00Z"))
+        .record_inferred(inferred_request("Use tabs!", old_observed_at))
         .expect("replay old evidence");
 
     assert_eq!(replay, None);
@@ -199,8 +199,9 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
 
+    let inferred_observed_at = remembered.updated_at + chrono::Duration::seconds(1);
     let inferred = runtime
-        .record_inferred(inferred_request("Use tabs!", "2026-09-11T00:00:00Z"))
+        .record_inferred(inferred_request("Use tabs!", inferred_observed_at))
         .expect("inferred duplicate")
         .expect("evidence-preserving inference");
     let remembered_updated_at = remembered.updated_at;
