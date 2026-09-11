@@ -5,6 +5,8 @@ use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryForgetParams;
 use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use devo_protocol::native::rpc_memory::MemoryRememberParams;
+use devo_protocol::native::rpc_memory::MemorySearchParams;
+use devo_protocol::native::rpc_memory::MemorySearchResult;
 use devo_protocol::{
     AgentInfo, AgentListParams, AgentMessageParams, AgentMessageResult, AwaitTaskParams,
     AwaitTaskResult, CancelTaskParams, CancelTaskResult, CloseAgentParams, CloseAgentResult,
@@ -119,6 +121,18 @@ pub trait AgentToolCoordinator: Send + Sync {
     ) -> Result<MemoryForgetResult, ToolCallError> {
         Err(ToolCallError::ExecutionFailed(
             "memory_forget is unavailable in this runtime".to_string(),
+        ))
+    }
+
+    /// Searches bounded root-agent memory candidates before an exact-ID
+    /// mutation is requested.
+    async fn memory_search(
+        self: Arc<Self>,
+        _session_id: String,
+        _params: MemorySearchParams,
+    ) -> Result<MemorySearchResult, ToolCallError> {
+        Err(ToolCallError::ExecutionFailed(
+            "memory_search is unavailable in this runtime".to_string(),
         ))
     }
 }

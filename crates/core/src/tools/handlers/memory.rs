@@ -120,7 +120,7 @@ pub fn memory_forget_spec() -> ToolSpec {
                     JsonSchema::string(Some("The item id of the current user message that explicitly requested forgetting.")),
                 ),
             ]),
-            Some(Vec::new()),
+            Some(vec!["entry_id".to_string()]),
             Some(/*additional_properties*/ false),
         ),
         output_mode: ToolOutputMode::StructuredJson,
@@ -428,6 +428,6 @@ mod tests {
             properties.keys().map(String::as_str).collect::<Vec<_>>(),
             vec!["entry_id", "source_user_item_id"]
         );
-        assert_eq!(schema.required, Some(Vec::new()));
+        assert_eq!(schema.required, Some(vec!["entry_id".to_string()]));
     }
 }

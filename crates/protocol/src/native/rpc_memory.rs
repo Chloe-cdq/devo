@@ -153,6 +153,34 @@ pub struct MemoryListParams {
 /// Result returned by `memory/list`.
 pub type MemoryListResult = Page<MemoryEntry>;
 
+/// Parameters for the root-agent memory search tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchParams {
+    /// User-provided text used to find matching memory entries.
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<MemoryScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MemoryKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<MemoryState>,
+}
+
+/// Bounded candidate information returned by the root-agent memory search tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchEntry {
+    pub entry_id: MemoryEntryId,
+    pub scope: MemoryScope,
+    pub kind: MemoryKind,
+    pub state: MemoryState,
+    pub summary: String,
+}
+
+/// Result returned by the root-agent memory search tool.
+pub type MemorySearchResult = Page<MemorySearchEntry>;
+
 /// Safe, aggregate memory health information exposed to Native clients.
 ///
 /// Counts intentionally exclude row contents and error details. The server

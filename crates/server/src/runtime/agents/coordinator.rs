@@ -385,4 +385,12 @@ impl AgentToolCoordinator for ServerRuntime {
     ) -> Result<devo_protocol::native::rpc_memory::MemoryForgetResult, ToolCallError> {
         memory_coordinator::forget(self, session_id, turn_id, params).await
     }
+
+    async fn memory_search(
+        self: Arc<Self>,
+        session_id: String,
+        params: devo_protocol::native::rpc_memory::MemorySearchParams,
+    ) -> Result<devo_protocol::native::rpc_memory::MemorySearchResult, ToolCallError> {
+        memory_coordinator::search(self, session_id, params).await
+    }
 }

@@ -170,6 +170,80 @@ pub(super) async fn forget(
     }
 }
 
+pub(super) async fn search(
+    runtime: Arc<ServerRuntime>,
+    session_id: String,
+    params: devo_protocol::native::rpc_memory::MemorySearchParams,
+) -> Result<devo_protocol::native::rpc_memory::MemorySearchResult, ToolCallError> {
+    let session_id = SessionId::try_from(session_id.as_str())
+        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+    let memory = runtime.memory.clone().ok_or_else(|| {
+        ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
+    })?;
+    let summary = runtime
+        .session_summary_snapshot(session_id)
+        .await
+        .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
+    let scope = params.scope.unwrap_or_default();
+    let workspace_root = if scope == devo_protocol::native::rpc_memory::MemoryScope::Project {
+        summary.cwd
+    } else {
+        std::path::PathBuf::new()
+    };
+    let result = memory
+        .execute_command(crate::memory::MemoryCommand::List(
+            crate::memory::ListMemoryRequest {
+                scope: Some(scope),
+                kind: params.kind,
+                state: params
+                    .state
+                    .or(Some(devo_protocol::native::rpc_memory::MemoryState::Active)),
+                origin: None,
+                text: Some(params.query),
+                cursor: None,
+                limit: Some(20),
+                workspace_root,
+            },
+        ))
+        .await
+        .map_err(memory_tool_error)?;
+    let page = match result {
+        crate::memory::MemoryCommandResult::List(page) => page,
+        crate::memory::MemoryCommandResult::Status(_)
+        | crate::memory::MemoryCommandResult::Remember(_)
+        | crate::memory::MemoryCommandResult::Forget(_) => {
+            return Err(ToolCallError::InternalError(
+                "memory_search returned an unexpected result".to_string(),
+            ));
+        }
+    };
+    Ok(devo_protocol::native::page::Page {
+        data: page
+            .data
+            .into_iter()
+            .map(
+                |entry| devo_protocol::native::rpc_memory::MemorySearchEntry {
+                    entry_id: entry.entry_id,
+                    scope: entry.scope,
+                    kind: entry.kind,
+                    state: entry.state,
+                    summary: bounded_memory_summary(&entry.body),
+                },
+            )
+            .collect(),
+        next_cursor: None,
+    })
+}
+
+fn bounded_memory_summary(body: &str) -> String {
+    const MAX_SUMMARY_CHARS: usize = 240;
+    let mut summary = body.chars().take(MAX_SUMMARY_CHARS).collect::<String>();
+    if body.chars().count() > MAX_SUMMARY_CHARS {
+        summary.push('…');
+    }
+    summary
+}
+
 fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
     match error {
         crate::memory::MemoryError::InvalidRequest(message) => ToolCallError::InvalidInput(message),
@@ -288,6 +362,14 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     let Some(remainder) = memory_command_payload(text, phrase) else {
         return false;
     };
+    let memory_phrase_suffix_is_delimited = remainder
+        .trim_start_matches(char::is_whitespace)
+        .chars()
+        .next()
+        .is_none_or(|character| {
+            character.is_ascii_punctuation()
+                || matches!(character, '：' | '，' | '。' | '；' | '、')
+        });
     let remainder = remainder.trim_start_matches(|character: char| {
         character.is_whitespace()
             || character.is_ascii_punctuation()
@@ -335,6 +417,10 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         ]
         .iter()
         .any(|subject| starts_with_subject(subject));
+    let has_safe_memory_phrase = phrase_names_memory
+        && (memory_phrase_suffix_is_delimited
+            || phrase == "forget memory entry"
+            || phrase == "删除记忆条目");
     if phrase == "请删除" {
         return has_memory_subject;
     }
@@ -347,11 +433,9 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         "i use ",
         "i don't use ",
         "i do not use ",
-        "i am ",
-        "i'm ",
-        "i have ",
-        "i live ",
-        "i work ",
+        "i drink ",
+        "i don't drink ",
+        "i do not drink ",
         "that i prefer ",
         "that i like ",
         "that i love ",
@@ -360,11 +444,9 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
         "that i use ",
         "that i don't use ",
         "that i do not use ",
-        "that i am ",
-        "that i'm ",
-        "that i have ",
-        "that i live ",
-        "that i work ",
+        "that i drink ",
+        "that i don't drink ",
+        "that i do not drink ",
     ]
     .iter()
     .any(|prefix| remainder.starts_with(prefix));
@@ -392,18 +474,9 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
     ]
     .iter()
     .any(|prefix| remainder.starts_with(prefix) && !remainder.contains('的'))
-        || [
-            "我喜欢的颜色",
-            "我喜欢的主题",
-            "我喜欢的模式",
-            "我喜欢的语言",
-            "我偏好的颜色",
-            "我偏好的主题",
-            "我偏好的模式",
-            "我偏好的语言",
-        ]
-        .iter()
-        .any(|prefix| remainder.starts_with(prefix));
+        || ["我喜欢的", "我偏好的"].iter().any(|prefix| {
+            remainder.starts_with(prefix) && (remainder.contains('是') || remainder.contains('为'))
+        });
     let personal_memory_subjects = [
         "timezone",
         "birthday",
@@ -479,8 +552,10 @@ fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
             .iter()
             .any(|subject| contains_subject(subject, &suffix_is_boundary));
 
+    let has_task_continuation = remainder.contains(';') || remainder.contains('；');
     has_payload
-        && (phrase_names_memory && (!is_task_lead || names_specific_memory)
+        && !has_task_continuation
+        && (has_safe_memory_phrase && (!is_task_lead || names_specific_memory)
             || has_english_memory_statement
             || has_chinese_memory_statement
             || has_personal_memory_subject
@@ -554,6 +629,12 @@ mod tests {
         assert!(has_explicit_memory_forget_intent(
             "请忘记我喜欢的颜色是蓝色"
         ));
+        assert!(has_explicit_memory_forget_intent(
+            "请忘记我喜欢的编辑器是 Vim"
+        ));
+        assert!(has_explicit_memory_forget_intent(
+            "Please forget that I drink coffee"
+        ));
         assert!(has_explicit_memory_forget_intent("请删除这条记忆"));
         assert!(has_explicit_memory_forget_intent(
             "Remove this from memory: my old timezone"
@@ -579,6 +660,15 @@ mod tests {
         ));
         assert!(!has_explicit_memory_forget_intent(
             "Please forget that I asked for tests; implement docs"
+        ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Please forget that I work on tests; implement docs"
+        ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Please forget that I use tests; implement docs"
+        ));
+        assert!(!has_explicit_memory_forget_intent(
+            "Delete this memory leak"
         ));
         assert!(!has_explicit_memory_forget_intent(
             "Please forget memory safety; implement UI"
