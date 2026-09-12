@@ -370,27 +370,25 @@ impl AgentToolCoordinator for ServerRuntime {
 
     async fn memory_remember(
         self: Arc<Self>,
-        session_id: String,
-        turn_id: String,
+        invocation: devo_core::tools::MemoryToolInvocation,
         params: devo_protocol::native::rpc_memory::MemoryRememberParams,
     ) -> Result<devo_protocol::native::rpc_memory::MemoryEntry, ToolCallError> {
-        memory_coordinator::remember(self, session_id, turn_id, params).await
+        memory_coordinator::remember(self, invocation, params).await
     }
 
     async fn memory_forget(
         self: Arc<Self>,
-        session_id: String,
-        turn_id: String,
+        invocation: devo_core::tools::MemoryToolInvocation,
         params: devo_protocol::native::rpc_memory::MemoryForgetParams,
     ) -> Result<devo_protocol::native::rpc_memory::MemoryForgetResult, ToolCallError> {
-        memory_coordinator::forget(self, session_id, turn_id, params).await
+        memory_coordinator::forget(self, invocation, params).await
     }
 
     async fn memory_search(
         self: Arc<Self>,
-        session_id: String,
+        invocation: devo_core::tools::MemoryToolInvocation,
         params: devo_protocol::native::rpc_memory::MemorySearchParams,
     ) -> Result<devo_protocol::native::rpc_memory::MemorySearchResult, ToolCallError> {
-        memory_coordinator::search(self, session_id, params).await
+        memory_coordinator::search(self, invocation, params).await
     }
 }

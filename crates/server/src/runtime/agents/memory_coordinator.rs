@@ -1,19 +1,6 @@
+use devo_core::tools::MemoryToolInvocation;
+
 use super::*;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExplicitMemoryIntent {
-    Remember,
-    Forget,
-}
-
-impl ExplicitMemoryIntent {
-    fn matches(self, text: &str) -> bool {
-        match self {
-            Self::Remember => has_explicit_memory_intent(text),
-            Self::Forget => has_explicit_memory_forget_intent(text),
-        }
-    }
-}
 
 struct MemoryMutationContext {
     memory: Arc<crate::memory::MemoryRuntime>,
@@ -21,97 +8,88 @@ struct MemoryMutationContext {
 }
 
 impl MemoryMutationContext {
-    async fn authorize(
-        runtime: Arc<ServerRuntime>,
-        session_id: String,
-        turn_id: String,
-        source_user_item_id: Option<devo_protocol::native::ids::ItemId>,
-        intent: ExplicitMemoryIntent,
+    async fn new(
+        runtime: &ServerRuntime,
+        invocation: &MemoryToolInvocation,
     ) -> Result<Self, ToolCallError> {
-        let session_id = SessionId::try_from(session_id.as_str())
-            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-        let turn_id = TurnId::try_from(turn_id.as_str())
-            .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-        let operation = match intent {
-            ExplicitMemoryIntent::Remember => "memory_remember",
-            ExplicitMemoryIntent::Forget => "memory_forget",
-        };
-        let source_item_id = source_user_item_id.ok_or_else(|| {
-            ToolCallError::InvalidInput(format!(
-                "{operation} requires the current user message context"
-            ))
-        })?;
-        let source_item_id_string = source_item_id.to_string();
-        if !has_explicit_current_user_memory_intent(
-            &runtime,
-            session_id,
-            turn_id,
-            &source_item_id_string,
-            intent,
-        )
-        .await
-        {
-            return Err(ToolCallError::InvalidInput(format!(
-                "{operation} requires explicit intent in the current user message"
-            )));
-        }
         let memory = runtime.memory.clone().ok_or_else(|| {
             ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
         })?;
         let summary = runtime
-            .session_summary_snapshot(session_id)
+            .session_summary_snapshot(invocation.session_id)
             .await
             .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
-        let source = crate::memory::MemorySourceContext {
-            user_item_id: Some(source_item_id),
-            session_id,
-            turn_id: Some(turn_id),
-            workspace_root: summary.cwd,
-        };
-        Ok(Self { memory, source })
+        Ok(Self {
+            memory,
+            source: crate::memory::MemorySourceContext {
+                user_item_id: Some(invocation.user_item_id.clone()),
+                session_id: invocation.session_id,
+                turn_id: Some(invocation.turn_id),
+                workspace_root: summary.cwd,
+            },
+        })
     }
 }
 
-async fn has_explicit_current_user_memory_intent(
+async fn current_user_item_text(
     runtime: &ServerRuntime,
-    session_id: SessionId,
-    turn_id: TurnId,
-    source_item_id: &str,
-    intent: ExplicitMemoryIntent,
-) -> bool {
-    if let Some(stream) = runtime.active_stream_state(session_id).await {
-        let stream = stream.lock().await;
-        stream.turn_inline.as_ref().is_some_and(|inline| {
-            inline.turn_id == turn_id
-                && inline.persisted_turn_items.iter().any(|item| {
-                    item.turn_id == turn_id
-                        && item.item_id.to_string() == source_item_id
-                        && matches!(
-                            &item.turn_item,
-                            devo_core::TurnItem::UserMessage(text)
-                                if intent.matches(&text.text)
-                        )
-                })
-        })
-    } else {
-        false
+    invocation: &MemoryToolInvocation,
+) -> Result<String, ToolCallError> {
+    let stream = runtime
+        .active_stream_state(invocation.session_id)
+        .await
+        .ok_or_else(|| {
+            ToolCallError::InvalidInput(
+                "memory tool requires an active turn with a current user message".to_string(),
+            )
+        })?;
+    let stream = stream.lock().await;
+    let inline = stream.turn_inline.as_ref().ok_or_else(|| {
+        ToolCallError::InvalidInput(
+            "memory tool requires an active turn with a current user message".to_string(),
+        )
+    })?;
+    if inline.turn_id != invocation.turn_id {
+        return Err(ToolCallError::InvalidInput(
+            "memory tool turn context does not match the active turn".to_string(),
+        ));
     }
+    inline
+        .persisted_turn_items
+        .iter()
+        .find_map(|item| {
+            (item.turn_id == invocation.turn_id
+                && item.item_id.to_string() == invocation.user_item_id.as_str())
+            .then(|| match &item.turn_item {
+                devo_core::TurnItem::UserMessage(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .flatten()
+        })
+        .ok_or_else(|| {
+            ToolCallError::InvalidInput(
+                "memory tool source must be the current user message".to_string(),
+            )
+        })
 }
 
 pub(super) async fn remember(
     runtime: Arc<ServerRuntime>,
-    session_id: String,
-    turn_id: String,
+    invocation: MemoryToolInvocation,
     params: devo_protocol::native::rpc_memory::MemoryRememberParams,
 ) -> Result<devo_protocol::native::rpc_memory::MemoryEntry, ToolCallError> {
-    let context = MemoryMutationContext::authorize(
-        runtime,
-        session_id,
-        turn_id,
-        params.source_user_item_id.clone(),
-        ExplicitMemoryIntent::Remember,
-    )
-    .await?;
+    if params.source_user_item_id.as_ref() != Some(&invocation.user_item_id) {
+        return Err(ToolCallError::InvalidInput(
+            "memory_remember source must match the current user message context".to_string(),
+        ));
+    }
+    let user_text = current_user_item_text(&runtime, &invocation).await?;
+    if !has_explicit_memory_intent(&user_text) {
+        return Err(ToolCallError::InvalidInput(
+            "memory_remember requires explicit intent in the current user message".to_string(),
+        ));
+    }
+    let context = MemoryMutationContext::new(&runtime, &invocation).await?;
     let result = context
         .memory
         .execute_command(crate::memory::MemoryCommand::Remember(
@@ -119,7 +97,7 @@ pub(super) async fn remember(
                 text: params.text,
                 scope: params.scope,
                 kind: params.kind,
-                source: context.source.clone(),
+                source: context.source,
             },
         ))
         .await
@@ -136,32 +114,58 @@ pub(super) async fn remember(
 
 pub(super) async fn forget(
     runtime: Arc<ServerRuntime>,
-    session_id: String,
-    turn_id: String,
+    invocation: MemoryToolInvocation,
     params: devo_protocol::native::rpc_memory::MemoryForgetParams,
 ) -> Result<devo_protocol::native::rpc_memory::MemoryForgetResult, ToolCallError> {
-    let context = MemoryMutationContext::authorize(
-        runtime,
-        session_id,
-        turn_id,
-        params.source_user_item_id.clone(),
-        ExplicitMemoryIntent::Forget,
-    )
-    .await?;
+    if params.source_user_item_id.as_ref() != Some(&invocation.user_item_id) {
+        return Err(ToolCallError::InvalidInput(
+            "memory_forget source must match the current user message context".to_string(),
+        ));
+    }
+    let entry_id = match crate::memory::MemoryForgetSelector::from_params(&params)
+        .map_err(|message| ToolCallError::InvalidInput(message.to_string()))?
+    {
+        crate::memory::MemoryForgetSelector::EntryId(entry_id) => entry_id,
+        crate::memory::MemoryForgetSelector::Text(_) => {
+            return Err(ToolCallError::InvalidInput(
+                "root-agent memory_forget requires an exact stable ID".to_string(),
+            ));
+        }
+    };
+    let user_text = current_user_item_text(&runtime, &invocation).await?;
+    let grant =
+        runtime
+            .memory_forget_authorizations
+            .authorize(&invocation, &user_text, &entry_id)?;
+    let scope = match &grant {
+        crate::runtime::memory_forget_authorization::MemoryForgetGrant::Direct => params.scope,
+        crate::runtime::memory_forget_authorization::MemoryForgetGrant::Pending {
+            scope, ..
+        } => *scope,
+    };
+    let context = MemoryMutationContext::new(&runtime, &invocation).await?;
     let result = context
         .memory
         .execute_command(crate::memory::MemoryCommand::Forget(
             crate::memory::MemoryForgetRequest {
-                selector: crate::memory::MemoryForgetSelector::from_params(&params)
-                    .map_err(|message| ToolCallError::InvalidInput(message.to_string()))?,
-                scope: params.scope,
-                source: context.source.clone(),
+                selector: crate::memory::MemoryForgetSelector::EntryId(entry_id),
+                scope,
+                source: context.source,
             },
         ))
         .await
         .map_err(memory_tool_error)?;
     match result {
-        crate::memory::MemoryCommandResult::Forget(result) => Ok(result),
+        crate::memory::MemoryCommandResult::Forget(result) => {
+            if let crate::runtime::memory_forget_authorization::MemoryForgetGrant::Pending {
+                reservation,
+                ..
+            } = grant
+            {
+                reservation.commit()?;
+            }
+            Ok(result)
+        }
         crate::memory::MemoryCommandResult::Status(_)
         | crate::memory::MemoryCommandResult::Remember(_)
         | crate::memory::MemoryCommandResult::List(_) => Err(ToolCallError::InternalError(
@@ -172,16 +176,15 @@ pub(super) async fn forget(
 
 pub(super) async fn search(
     runtime: Arc<ServerRuntime>,
-    session_id: String,
+    invocation: MemoryToolInvocation,
     params: devo_protocol::native::rpc_memory::MemorySearchParams,
 ) -> Result<devo_protocol::native::rpc_memory::MemorySearchResult, ToolCallError> {
-    let session_id = SessionId::try_from(session_id.as_str())
-        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+    current_user_item_text(&runtime, &invocation).await?;
     let memory = runtime.memory.clone().ok_or_else(|| {
         ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
     })?;
     let summary = runtime
-        .session_summary_snapshot(session_id)
+        .session_summary_snapshot(invocation.session_id)
         .await
         .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
     let scope = params.scope.unwrap_or_default();
@@ -190,36 +193,52 @@ pub(super) async fn search(
     } else {
         std::path::PathBuf::new()
     };
-    let result = memory
-        .execute_command(crate::memory::MemoryCommand::List(
-            crate::memory::ListMemoryRequest {
-                scope: Some(scope),
-                kind: params.kind,
-                state: params
-                    .state
-                    .or(Some(devo_protocol::native::rpc_memory::MemoryState::Active)),
-                origin: None,
-                text: Some(params.query),
-                cursor: None,
-                limit: Some(20),
-                workspace_root,
-            },
-        ))
-        .await
-        .map_err(memory_tool_error)?;
-    let page = match result {
-        crate::memory::MemoryCommandResult::List(page) => page,
-        crate::memory::MemoryCommandResult::Status(_)
-        | crate::memory::MemoryCommandResult::Remember(_)
-        | crate::memory::MemoryCommandResult::Forget(_) => {
-            return Err(ToolCallError::InternalError(
-                "memory_search returned an unexpected result".to_string(),
-            ));
+    let states = params.state.map_or_else(
+        || {
+            vec![
+                devo_protocol::native::rpc_memory::MemoryState::Active,
+                devo_protocol::native::rpc_memory::MemoryState::Restored,
+            ]
+        },
+        |state| vec![state],
+    );
+    let mut entries = Vec::new();
+    for state in states {
+        let result = memory
+            .execute_command(crate::memory::MemoryCommand::List(
+                crate::memory::ListMemoryRequest {
+                    scope: Some(scope),
+                    kind: params.kind,
+                    state: Some(state),
+                    origin: None,
+                    text: Some(params.query.clone()),
+                    cursor: None,
+                    limit: Some(20),
+                    workspace_root: workspace_root.clone(),
+                },
+            ))
+            .await
+            .map_err(memory_tool_error)?;
+        match result {
+            crate::memory::MemoryCommandResult::List(page) => entries.extend(page.data),
+            crate::memory::MemoryCommandResult::Status(_)
+            | crate::memory::MemoryCommandResult::Remember(_)
+            | crate::memory::MemoryCommandResult::Forget(_) => {
+                return Err(ToolCallError::InternalError(
+                    "memory_search returned an unexpected result".to_string(),
+                ));
+            }
         }
-    };
-    Ok(devo_protocol::native::page::Page {
-        data: page
-            .data
+    }
+    entries.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+    entries.truncate(20);
+    let result = devo_protocol::native::page::Page {
+        data: entries
             .into_iter()
             .map(
                 |entry| devo_protocol::native::rpc_memory::MemorySearchEntry {
@@ -230,9 +249,13 @@ pub(super) async fn search(
                     summary: bounded_memory_summary(&entry.body),
                 },
             )
-            .collect(),
+            .collect::<Vec<_>>(),
         next_cursor: None,
-    })
+    };
+    runtime
+        .memory_forget_authorizations
+        .record_search(&invocation, &result.data)?;
+    Ok(result)
 }
 
 fn bounded_memory_summary(body: &str) -> String {
@@ -315,270 +338,24 @@ fn has_explicit_memory_intent(text: &str) -> bool {
         "不要忘记",
     ]
     .iter()
-    .any(|phrase| memory_command_has_payload(&text, phrase))
-}
-
-fn has_explicit_memory_forget_intent(text: &str) -> bool {
-    let text = text.trim_start().to_ascii_lowercase();
-    if text.starts_with("don't forget") || text.starts_with("do not forget") {
-        return false;
-    }
-    [
-        "please forget",
-        "can you forget",
-        "could you forget",
-        "would you forget",
-        "i want you to forget",
-        "i'd like you to forget",
-        "forget this",
-        "forget that",
-        "forget my",
-        "forget about",
-        "forget memory entry",
-        "remove this from memory",
-        "remove that from memory",
-        "delete this memory",
-        "delete that memory",
-        "please remove from memory",
-        "please delete from memory",
-        "请忘记",
-        "请删除",
-        "忘记这",
-        "忘记那",
-        "删除这条记忆",
-        "删除那条记忆",
-        "删除记忆条目",
-    ]
-    .iter()
-    .any(|phrase| memory_command_has_forget_payload(&text, phrase))
-}
-
-fn memory_command_has_payload(text: &str, phrase: &str) -> bool {
-    memory_command_payload(text, phrase)
-        .is_some_and(|remainder| remainder.chars().any(char::is_alphanumeric))
-}
-
-fn memory_command_has_forget_payload(text: &str, phrase: &str) -> bool {
-    let Some(remainder) = memory_command_payload(text, phrase) else {
-        return false;
-    };
-    let memory_phrase_suffix_is_delimited = remainder
-        .trim_start_matches(char::is_whitespace)
-        .chars()
-        .next()
-        .is_none_or(|character| {
-            character.is_ascii_punctuation()
-                || matches!(character, '：' | '，' | '。' | '；' | '、')
-        });
-    let remainder = remainder.trim_start_matches(|character: char| {
-        character.is_whitespace()
-            || character.is_ascii_punctuation()
-            || matches!(character, '：' | '，' | '。' | '；' | '、')
-    });
-    let has_payload = remainder.chars().any(char::is_alphanumeric);
-    let phrase_names_memory = phrase.contains("memory") || phrase.contains("记忆");
-    if !has_payload {
-        return phrase_names_memory;
-    }
-    let suffix_is_boundary = |suffix: &str| {
-        suffix
-            .chars()
-            .next()
-            .is_none_or(|character| !character.is_alphanumeric())
-    };
-    let suffix_is_delimited = |suffix: &str| {
-        suffix.is_empty()
-            || suffix.chars().next().is_some_and(|character| {
-                character.is_ascii_punctuation()
-                    || matches!(character, '：' | '，' | '。' | '；' | '、')
-            })
-    };
-    let starts_with_subject = |subject: &str| {
-        remainder.strip_prefix(subject).is_some_and(|suffix| {
-            if subject == "memory entry" || subject == "记忆条目" {
-                suffix_is_boundary(suffix)
-            } else {
-                suffix_is_delimited(suffix)
-            }
-        })
-    };
-    let has_memory_subject = remainder == "memory"
-        || remainder == "记忆"
-        || [
-            "this memory",
-            "that memory",
-            "the memory",
-            "my memory",
-            "memory entry",
-            "这条记忆",
-            "那条记忆",
-            "我的记忆",
-            "记忆条目",
-        ]
-        .iter()
-        .any(|subject| starts_with_subject(subject));
-    let has_safe_memory_phrase = phrase_names_memory
-        && (memory_phrase_suffix_is_delimited
-            || phrase == "forget memory entry"
-            || phrase == "删除记忆条目");
-    if phrase == "请删除" {
-        return has_memory_subject;
-    }
-    let has_english_memory_statement = [
-        "i prefer ",
-        "i like ",
-        "i love ",
-        "i dislike ",
-        "i hate ",
-        "i use ",
-        "i don't use ",
-        "i do not use ",
-        "i drink ",
-        "i don't drink ",
-        "i do not drink ",
-        "that i prefer ",
-        "that i like ",
-        "that i love ",
-        "that i dislike ",
-        "that i hate ",
-        "that i use ",
-        "that i don't use ",
-        "that i do not use ",
-        "that i drink ",
-        "that i don't drink ",
-        "that i do not drink ",
-    ]
-    .iter()
-    .any(|prefix| remainder.starts_with(prefix));
-    let has_chinese_memory_statement = [
-        "我喜欢",
-        "我偏好",
-        "我不喜欢",
-        "我不喝",
-        "我不吃",
-        "我不想",
-        "我不使用",
-        "我不会",
-        "我是",
-        "我有",
-        "我在",
-        "我会",
-        "我要",
-        "我用",
-        "我需要",
-        "我习惯",
-        "我通常",
-        "我住",
-        "我来自",
-        "我叫",
-    ]
-    .iter()
-    .any(|prefix| remainder.starts_with(prefix) && !remainder.contains('的'))
-        || ["我喜欢的", "我偏好的"].iter().any(|prefix| {
-            remainder.starts_with(prefix) && (remainder.contains('是') || remainder.contains('为'))
-        });
-    let personal_memory_subjects = [
-        "timezone",
-        "birthday",
-        "name",
-        "preference",
-        "preferences",
-        "favorite",
-        "favourite",
-        "language",
-        "locale",
-        "location",
-        "pronouns",
-        "theme",
-    ];
-    let english_personal_subject = remainder.strip_prefix("that ").unwrap_or(remainder);
-    let has_personal_memory_subject = english_personal_subject.starts_with("my ")
-        && personal_memory_subjects
-            .iter()
-            .any(|subject| english_personal_subject.contains(subject))
-        || phrase == "forget my"
-            && personal_memory_subjects.iter().any(|subject| {
-                remainder.strip_prefix(subject).is_some_and(|suffix| {
-                    suffix
-                        .chars()
-                        .next()
-                        .is_none_or(|character| !character.is_alphanumeric())
-                })
-            })
-        || [
-            "我的时区",
-            "我的生日",
-            "我的名字",
-            "我的偏好",
-            "我的语言",
-            "我的位置",
-        ]
-        .iter()
-        .any(|subject| remainder.starts_with(subject));
-    let is_task_lead = phrase.ends_with("forget about")
-        || ["about", "all about", "everything about"]
-            .iter()
-            .any(|prefix| {
-                remainder.strip_prefix(prefix).is_some_and(|suffix| {
-                    suffix
-                        .chars()
-                        .next()
-                        .is_none_or(|character| !character.is_ascii_alphanumeric())
-                })
-            });
-    let contains_subject = |subject: &str, suffix_is_valid: &dyn Fn(&str) -> bool| {
-        remainder.match_indices(subject).any(|(index, _)| {
-            let prefix = &remainder[..index];
-            let suffix = &remainder[index + subject.len()..];
-            let prefix_is_boundary = prefix
+    .any(|phrase| {
+        text.strip_prefix(phrase).is_some_and(|remainder| {
+            let boundary_is_valid = !phrase
                 .chars()
-                .next_back()
-                .is_none_or(|character| !character.is_alphanumeric());
-            prefix_is_boundary && suffix_is_valid(suffix)
+                .last()
+                .is_some_and(|character| character.is_ascii_alphanumeric())
+                || remainder
+                    .chars()
+                    .next()
+                    .is_none_or(|character| !character.is_ascii_alphanumeric());
+            boundary_is_valid && remainder.chars().any(char::is_alphanumeric)
         })
-    };
-    let names_specific_memory = [
-        "this memory",
-        "that memory",
-        "the memory",
-        "my memory",
-        "这条记忆",
-        "那条记忆",
-        "我的记忆",
-    ]
-    .iter()
-    .any(|subject| contains_subject(subject, &suffix_is_delimited))
-        || ["memory entry", "记忆条目"]
-            .iter()
-            .any(|subject| contains_subject(subject, &suffix_is_boundary));
-
-    let has_task_continuation = remainder.contains(';') || remainder.contains('；');
-    has_payload
-        && !has_task_continuation
-        && (has_safe_memory_phrase && (!is_task_lead || names_specific_memory)
-            || has_english_memory_statement
-            || has_chinese_memory_statement
-            || has_personal_memory_subject
-            || names_specific_memory
-            || (has_memory_subject && (!is_task_lead || names_specific_memory)))
-}
-
-fn memory_command_payload<'a>(text: &'a str, phrase: &str) -> Option<&'a str> {
-    let remainder = text.strip_prefix(phrase)?;
-    let boundary_is_valid = !phrase
-        .chars()
-        .last()
-        .is_some_and(|character| character.is_ascii_alphanumeric())
-        || remainder
-            .chars()
-            .next()
-            .is_none_or(|character| !character.is_ascii_alphanumeric());
-    boundary_is_valid.then_some(remainder)
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{has_explicit_memory_forget_intent, has_explicit_memory_intent};
+    use super::has_explicit_memory_intent;
 
     /// Trace: L2-DES-MEM-001
     /// Verifies: supported explicit memory requests are recognized in English and Chinese.
@@ -609,102 +386,5 @@ mod tests {
         assert!(!has_explicit_memory_intent("请勿记住这件事"));
         assert!(!has_explicit_memory_intent("I remember my birthday"));
         assert!(!has_explicit_memory_intent("我保存过这个"));
-    }
-
-    /// Trace: L2-DES-MEM-001 DD-12
-    /// Verifies: forget authorization is distinct from a remember request and its negation.
-    #[test]
-    fn explicit_memory_forget_intent_accepts_deletion_requests_only() {
-        assert!(has_explicit_memory_forget_intent(
-            "Please forget my old timezone"
-        ));
-        assert!(has_explicit_memory_forget_intent(
-            "Forget that I prefer tabs"
-        ));
-        assert!(has_explicit_memory_forget_intent("Forget my timezone"));
-        assert!(has_explicit_memory_forget_intent(
-            "Please forget that my favorite color is blue"
-        ));
-        assert!(has_explicit_memory_forget_intent("请忘记我喜欢深色模式"));
-        assert!(has_explicit_memory_forget_intent(
-            "请忘记我喜欢的颜色是蓝色"
-        ));
-        assert!(has_explicit_memory_forget_intent(
-            "请忘记我喜欢的编辑器是 Vim"
-        ));
-        assert!(has_explicit_memory_forget_intent(
-            "Please forget that I drink coffee"
-        ));
-        assert!(has_explicit_memory_forget_intent("请删除这条记忆"));
-        assert!(has_explicit_memory_forget_intent(
-            "Remove this from memory: my old timezone"
-        ));
-        assert!(has_explicit_memory_forget_intent(
-            "Delete this memory: old timezone"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Don't forget my timezone"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Please remember my timezone"
-        ));
-        assert!(!has_explicit_memory_forget_intent("Please forget"));
-        assert!(!has_explicit_memory_forget_intent(
-            "Forget about adding tests; implement B"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Forget about memory safety; implement UI"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Forget about the memory safety issue; implement UI"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Please forget that I asked for tests; implement docs"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Please forget that I work on tests; implement docs"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Please forget that I use tests; implement docs"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Delete this memory leak"
-        ));
-        assert!(!has_explicit_memory_forget_intent(
-            "Please forget memory safety; implement UI"
-        ));
-        assert!(has_explicit_memory_forget_intent(
-            "Forget memory entry mem_123"
-        ));
-        assert!(has_explicit_memory_forget_intent("删除记忆条目 mem_123"));
-        for text in [
-            "Please forget about adding tests; implement B",
-            "Can you forget about adding tests; implement B",
-            "Could you forget about adding tests; implement B",
-            "Would you forget about adding tests; implement B",
-            "I want you to forget about adding tests; implement B",
-            "I'd like you to forget about adding tests; implement B",
-            "Please forget all about adding tests; implement B",
-            "Please forget everything about adding tests; implement B",
-            "请删除这个文件",
-            "Please forget my changes",
-            "Please forget my settings",
-            "请删除我的文件",
-            "请忘记我的设置",
-            "请删除我不需要的文件",
-            "请删除我喜欢的文件",
-            "请忘记我喜欢的文件",
-        ] {
-            assert!(!has_explicit_memory_forget_intent(text), "{text}");
-        }
-        assert!(has_explicit_memory_forget_intent(
-            "Forget about this memory"
-        ));
-        assert!(has_explicit_memory_forget_intent(
-            "Please forget about this memory"
-        ));
-        assert!(has_explicit_memory_forget_intent(
-            "Please forget all about this memory"
-        ));
     }
 }

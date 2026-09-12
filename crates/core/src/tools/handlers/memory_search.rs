@@ -14,6 +14,8 @@ use crate::tool_spec::ToolOutputMode;
 use crate::tool_spec::ToolPreparationFeedback;
 use crate::tool_spec::ToolSpec;
 
+use super::memory::memory_tool_invocation;
+
 /// Built-in root-agent read action for selecting memory IDs before mutation.
 pub struct MemorySearchHandler {
     spec: ToolSpec,
@@ -36,7 +38,7 @@ impl MemorySearchHandler {
 pub fn memory_search_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_search".to_string(),
-        description: "Search bounded user or project memory summaries and stable entry IDs. Use this before memory_forget when the user named memory in natural language.".to_string(),
+        description: "Search bounded user or project memory summaries and stable entry IDs. For natural-language forget requests, show the results and ask the user to reply in a later turn with exactly 'Confirm forget memory entry <entry_id>' or '确认删除记忆条目 <entry_id>'; memory_forget cannot run in this same user turn.".to_string(),
         input_schema: JsonSchema::object(
             BTreeMap::from([
                 (
@@ -72,7 +74,9 @@ pub fn memory_search_spec() -> ToolSpec {
                             json!("retired"),
                             json!("restored"),
                         ]),
-                        ..JsonSchema::string(Some("Optional lifecycle state; active by default."))
+                        ..JsonSchema::string(Some(
+                            "Optional lifecycle state; active and restored entries by default.",
+                        ))
                     },
                 ),
             ]),
@@ -82,7 +86,7 @@ pub fn memory_search_spec() -> ToolSpec {
         output_mode: ToolOutputMode::StructuredJson,
         execution_mode: ToolExecutionMode::ReadOnly,
         capability_tags: vec![],
-        supports_parallel: true,
+        supports_parallel: false,
         preparation_feedback: ToolPreparationFeedback::None,
         display_name: None,
         supports_cancellation: None,
@@ -108,13 +112,14 @@ impl ToolHandler for MemorySearchHandler {
             ));
         }
         let params = parse_memory_search_input(&input)?;
+        let invocation = memory_tool_invocation(&ctx, "memory_search")?;
         let coordinator = ctx.agent_coordinator.ok_or_else(|| {
             ToolCallError::NeedsConfiguration(
                 "memory_search requires a server runtime coordinator".to_string(),
             )
         })?;
         let result = Arc::clone(&coordinator)
-            .memory_search(ctx.session_id, params)
+            .memory_search(invocation, params)
             .await?;
         let value = serde_json::to_value(result)
             .map_err(|error| ToolCallError::InternalError(error.to_string()))?;
@@ -172,14 +177,15 @@ mod tests {
     }
 
     /// Trace: L2-DES-MEM-001
-    /// Verifies: the memory search schema requires only the model's query.
+    /// Verifies: the memory search schema requires only the model's query and serializes pending-state writes.
     #[test]
     fn memory_search_schema_requires_query() {
-        let schema = memory_search_spec().input_schema;
+        let spec = memory_search_spec();
 
-        assert_eq!(schema.required, Some(vec!["query".to_string()]));
+        assert_eq!(spec.supports_parallel, false);
+        assert_eq!(spec.input_schema.required, Some(vec!["query".to_string()]));
         assert_eq!(
-            schema
+            spec.input_schema
                 .properties
                 .expect("memory search properties")
                 .keys()

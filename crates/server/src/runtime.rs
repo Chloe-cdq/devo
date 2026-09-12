@@ -135,6 +135,7 @@ mod interaction_items;
 mod items;
 mod lifecycle;
 mod mcp;
+mod memory_forget_authorization;
 mod memory_scope;
 mod model_api;
 mod outbound;
@@ -180,6 +181,8 @@ pub struct ServerRuntime {
     /// Optional memory runtime; initialization failure is isolated from
     /// ordinary session operation and reported through `memory/status`.
     memory: Option<Arc<crate::memory::MemoryRuntime>>,
+    /// Short-lived root-agent search candidates awaiting a later exact-ID selection.
+    memory_forget_authorizations: memory_forget_authorization::MemoryForgetAuthorizations,
     /// Per-session actor handles; map lock must not be held across await.
     sessions: Mutex<HashMap<SessionId, SessionHandle>>,
     /// Interactive approval and user-input waits outside session actors.
@@ -396,6 +399,8 @@ impl ServerRuntime {
             goal_durable_store,
             usage_ledger,
             memory,
+            memory_forget_authorizations:
+                memory_forget_authorization::MemoryForgetAuthorizations::default(),
             sessions: Mutex::new(HashMap::new()),
             session_interactive: SessionInteractiveLanes::default(),
             event_subscriptions: Mutex::new(HashMap::new()),

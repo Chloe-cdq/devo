@@ -506,33 +506,6 @@ impl ServerRuntime {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
     }
 
-    async fn clear_deleted_session_runtime_state(&self, session_id: SessionId) {
-        self.signal_active_turn_interrupt(session_id).await;
-        self.active_turns.clear_runtime_handles(session_id).await;
-        if let Some(turn_id) = self
-            .active_goal_continuation_turns
-            .lock()
-            .await
-            .remove(&session_id)
-        {
-            self.goal_continuation_turn_goals
-                .lock()
-                .await
-                .remove(&turn_id);
-        }
-        self.goal_stores.lock().await.remove(&session_id);
-        self.agent_mailboxes.lock().await.remove(&session_id);
-        self.agent_output_buffers.lock().await.remove(&session_id);
-        self.agent_wait_cursors.lock().await.remove(&session_id);
-        {
-            let mut registries = self.agent_registries.lock().await;
-            registries.remove(&session_id);
-            for registry in registries.values_mut() {
-                registry.unregister(session_id);
-            }
-        }
-    }
-
     pub(crate) async fn handle_acp_session_set_mode(
         &self,
         request_id: serde_json::Value,

@@ -8,6 +8,7 @@ use devo_protocol::native::rpc_memory::MemoryForgetParams;
 use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryRememberParams;
 use devo_protocol::native::rpc_memory::MemoryScope;
+use devo_protocol::{SessionId, TurnId};
 use serde_json::json;
 
 use crate::contracts::ToolResultContent;
@@ -18,6 +19,7 @@ use crate::tool_spec::ToolExecutionMode;
 use crate::tool_spec::ToolOutputMode;
 use crate::tool_spec::ToolPreparationFeedback;
 use crate::tool_spec::ToolSpec;
+use crate::tools::MemoryToolInvocation;
 
 /// Built-in root-agent action for explicitly persisting User or Project memory.
 pub struct MemoryRememberHandler {
@@ -108,7 +110,7 @@ pub fn memory_remember_spec() -> ToolSpec {
 pub fn memory_forget_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_forget".to_string(),
-        description: "Forget one user or project memory by its exact entry_id. Use memory_search first for natural-language requests, then pass the selected stable ID. Only call this when the current user explicitly asks to forget or remove the memory.".to_string(),
+        description: "Forget one user or project memory by its exact entry_id. For natural-language requests, call memory_search and ask the user to reply in a later turn with exactly 'Confirm forget memory entry <entry_id>' or '确认删除记忆条目 <entry_id>'. Direct deletion without a pending search requires exactly 'Forget memory entry <entry_id>' or '删除记忆条目 <entry_id>'.".to_string(),
         input_schema: JsonSchema::object(
             BTreeMap::from([
                 (
@@ -152,18 +154,14 @@ impl ToolHandler for MemoryRememberHandler {
             ));
         }
         let params = parse_memory_remember_input(&input, ctx.current_user_item_id.as_deref())?;
-        let turn_id = ctx.turn_id.ok_or_else(|| {
-            ToolCallError::InvalidInput(
-                "memory_remember requires an active turn with a current user message".to_string(),
-            )
-        })?;
+        let invocation = memory_tool_invocation(&ctx, "memory_remember")?;
         let coordinator = ctx.agent_coordinator.ok_or_else(|| {
             ToolCallError::NeedsConfiguration(
                 "memory_remember requires a server runtime coordinator".to_string(),
             )
         })?;
         let entry = Arc::clone(&coordinator)
-            .memory_remember(ctx.session_id, turn_id, params)
+            .memory_remember(invocation, params)
             .await?;
         let value = serde_json::to_value(entry)
             .map_err(|error| ToolCallError::InternalError(error.to_string()))?;
@@ -192,18 +190,14 @@ impl ToolHandler for MemoryForgetHandler {
             ));
         }
         let params = parse_memory_forget_input(&input, ctx.current_user_item_id.as_deref())?;
-        let turn_id = ctx.turn_id.ok_or_else(|| {
-            ToolCallError::InvalidInput(
-                "memory_forget requires an active turn with a current user message".to_string(),
-            )
-        })?;
+        let invocation = memory_tool_invocation(&ctx, "memory_forget")?;
         let coordinator = ctx.agent_coordinator.ok_or_else(|| {
             ToolCallError::NeedsConfiguration(
                 "memory_forget requires a server runtime coordinator".to_string(),
             )
         })?;
         let result = Arc::clone(&coordinator)
-            .memory_forget(ctx.session_id, turn_id, params)
+            .memory_forget(invocation, params)
             .await?;
         let value = serde_json::to_value(result)
             .map_err(|error| ToolCallError::InternalError(error.to_string()))?;
@@ -212,6 +206,36 @@ impl ToolHandler for MemoryForgetHandler {
             "Memory forget result",
         ))
     }
+}
+
+pub(super) fn memory_tool_invocation(
+    ctx: &ToolContext,
+    operation: &str,
+) -> Result<MemoryToolInvocation, ToolCallError> {
+    let session_id = SessionId::try_from(ctx.session_id.as_str())
+        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+    let turn_id_text = ctx.turn_id.as_deref().ok_or_else(|| {
+        ToolCallError::InvalidInput(format!(
+            "{operation} requires an active turn with a current user message"
+        ))
+    })?;
+    let turn_id = TurnId::try_from(turn_id_text)
+        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+    let user_item_id = ItemId::from_string(
+        ctx.current_user_item_id
+            .as_deref()
+            .ok_or_else(|| {
+                ToolCallError::InvalidInput(format!(
+                    "{operation} requires the current user message context"
+                ))
+            })?
+            .to_string(),
+    );
+    Ok(MemoryToolInvocation {
+        session_id,
+        turn_id,
+        user_item_id,
+    })
 }
 
 fn parse_memory_remember_input(
