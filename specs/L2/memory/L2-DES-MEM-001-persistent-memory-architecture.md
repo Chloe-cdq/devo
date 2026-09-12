@@ -149,6 +149,9 @@ each `(scope, new memory_key)` collision group it retains the oldest entry ID an
 `created_at`, prefers the most recently updated explicit body and metadata over
 inferred content, merges evidence with null-safe tuple deduplication, removes the
 redundant rows, and rebuilds the FTS table before recreating the uniqueness index.
+The same old-to-new identity mapping is applied to revocation tombstones, whose
+collisions retain the latest revoke/restore lifecycle event. Replacement links
+to merged rows are redirected to the retained entry without creating self-links.
 Startup projection regeneration then publishes the migrated state.
 
 An extractor never resolves inferred conflicts by itself. A later explicit request may resolve the key.

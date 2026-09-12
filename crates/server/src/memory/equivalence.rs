@@ -62,14 +62,17 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
 
 fn normalize_token(token: &str) -> Option<String> {
     let trimmed = token.trim_matches(is_boundary_punctuation);
-    if trimmed.is_empty() {
-        return None;
-    }
     if is_structured_token(token, trimmed) {
-        let structured = token
-            .trim_matches(is_structured_wrapper_punctuation)
-            .trim_end_matches('.');
+        let structured = token.trim_matches(is_structured_wrapper_punctuation);
+        let without_sentence_period = structured.trim_end_matches('.');
+        let structured = if without_sentence_period.is_empty() {
+            structured
+        } else {
+            without_sentence_period
+        };
         (!structured.is_empty()).then(|| structured.to_string())
+    } else if trimmed.is_empty() {
+        None
     } else {
         Some(
             trimmed
@@ -251,6 +254,8 @@ mod tests {
             explicit_memory_key("Use ../config"),
             explicit_memory_key("Use /config")
         );
+        assert_ne!(explicit_memory_key("Use ."), explicit_memory_key("Use"));
+        assert_ne!(explicit_memory_key("Use .."), explicit_memory_key("Use"));
         assert_ne!(
             explicit_memory_key("Read config.toml"),
             explicit_memory_key("Read configtoml")

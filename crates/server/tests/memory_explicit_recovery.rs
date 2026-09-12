@@ -3,8 +3,10 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use devo_core::MemoryConfig;
-use devo_protocol::native::ids::ItemId;
-use devo_protocol::native::rpc_memory::{MemoryEntry, MemoryKind, MemoryProvenance, MemoryScope};
+use devo_protocol::native::ids::{ItemId, MemoryEntryId};
+use devo_protocol::native::rpc_memory::{
+    MemoryEntry, MemoryKind, MemoryOrigin, MemoryProvenance, MemoryScope, MemoryState,
+};
 use devo_server::memory::{
     ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryRememberRequest, MemoryRuntime,
 };
@@ -186,6 +188,35 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
         )
         .expect("insert inferred provenance");
     connection
+        .execute(
+            "INSERT INTO memory_entries (
+                 entry_id, scope_type, scope_id, kind, normalized_key, body,
+                 origin, state, created_at, updated_at, replacement_entry_id
+             ) VALUES (?1, 'user', ?2, 'fact', ?3, ?4,
+                       'inferred_session', 'retired', ?5, ?5, 'legacy-duplicate')",
+            rusqlite::params![
+                "legacy-lineage",
+                oldest.scope_id,
+                "lineage-anchor",
+                "Retired lineage anchor",
+                "2029-01-01T00:00:00Z",
+            ],
+        )
+        .expect("insert external replacement lineage");
+    connection
+        .execute_batch(
+            "INSERT INTO memory_revocations (
+                 revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
+             ) VALUES
+                 ('legacy-revocation-1', 'user', 'user',
+                  'please remember that i prefer compact responses',
+                  '2027-01-01T00:00:00Z', '2028-01-01T00:00:00Z'),
+                 ('legacy-revocation-2', 'user', 'user',
+                  'remember that i prefer compact responses',
+                  '2035-01-01T00:00:00Z', NULL);",
+        )
+        .expect("insert converging legacy revocations");
+    connection
         .execute_batch(
             "DELETE FROM memory_entries_fts;
              INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
@@ -225,7 +256,25 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
             source_user_item_id: None,
         },
     ];
-    let expected_entries = vec![expected];
+    let lineage = MemoryEntry {
+        entry_id: MemoryEntryId::from_string("legacy-lineage".to_string()),
+        scope: MemoryScope::User,
+        scope_id: expected.scope_id.clone(),
+        kind: MemoryKind::Fact,
+        normalized_key: "lineage-anchor".to_string(),
+        body: "Retired lineage anchor".to_string(),
+        origin: MemoryOrigin::InferredSession,
+        state: MemoryState::Retired,
+        created_at: DateTime::parse_from_rfc3339("2029-01-01T00:00:00Z")
+            .expect("parse lineage fixture timestamp")
+            .with_timezone(&Utc),
+        updated_at: DateTime::parse_from_rfc3339("2029-01-01T00:00:00Z")
+            .expect("parse lineage fixture timestamp")
+            .with_timezone(&Utc),
+        replacement_entry_id: Some(expected.entry_id.clone()),
+        provenance: Vec::new(),
+    };
+    let expected_entries = vec![expected, lineage];
     assert_eq!(
         list(&reopened, MemoryScope::User, data_root.path()).await,
         expected_entries
@@ -251,7 +300,34 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("read migrated storage state");
-    assert_eq!(stored, ("4".to_string(), 1, 1));
+    assert_eq!(stored, ("4".to_string(), 2, 1));
+    let revocations = connection
+        .prepare(
+            "SELECT revocation_id, normalized_key, revoked_at, restored_at
+             FROM memory_revocations
+             ORDER BY revocation_id",
+        )
+        .expect("prepare migrated revocation query")
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .expect("query migrated revocations")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect migrated revocations");
+    assert_eq!(
+        revocations,
+        vec![(
+            "legacy-revocation-2".to_string(),
+            "i prefer compact responses".to_string(),
+            "2035-01-01T00:00:00Z".to_string(),
+            None,
+        )]
+    );
     let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
         .expect("read migrated projection");
     assert!(projection.contains("Remember that I prefer compact responses"));

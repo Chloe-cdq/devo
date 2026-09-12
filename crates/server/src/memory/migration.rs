@@ -26,12 +26,23 @@ pub(super) fn migrate_explicit_equivalence(
 ) -> Result<(), MemoryError> {
     let entries = load_entries(transaction)?;
     let mut groups = BTreeMap::<(String, String, String), Vec<StoredEntry>>::new();
+    let mut explicit_key_migrations = BTreeMap::<(String, String, String), String>::new();
     for entry in entries {
         let normalized_key = if entry.origin == "explicit_user" {
             equivalence::explicit_memory_key(&entry.body)
         } else {
             entry.normalized_key.clone()
         };
+        if entry.origin == "explicit_user" && entry.normalized_key != normalized_key {
+            explicit_key_migrations.insert(
+                (
+                    entry.scope_type.clone(),
+                    entry.scope_id.clone(),
+                    entry.normalized_key.clone(),
+                ),
+                normalized_key.clone(),
+            );
+        }
         groups
             .entry((
                 entry.scope_type.clone(),
@@ -42,17 +53,80 @@ pub(super) fn migrate_explicit_equivalence(
             .push(entry);
     }
 
-    transaction.execute("DROP INDEX IF EXISTS memory_entries_scope_key", [])?;
-    for ((_, _, normalized_key), entries) in groups {
-        merge_group(transaction, &normalized_key, &entries)?;
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS memory_entries_scope_key;
+         DROP INDEX IF EXISTS memory_revocations_scope_identity;",
+    )?;
+    for ((scope_type, scope_id, old_key), new_key) in explicit_key_migrations {
+        transaction.execute(
+            "UPDATE memory_revocations
+             SET normalized_key = ?1
+             WHERE scope_type = ?2 AND scope_id = ?3 AND normalized_key = ?4",
+            rusqlite::params![new_key, scope_type, scope_id, old_key],
+        )?;
     }
+    transaction.execute_batch(
+        "UPDATE memory_revocations AS kept
+         SET revoked_at = (
+                 SELECT MAX(all_rows.revoked_at)
+                 FROM memory_revocations AS all_rows
+                 WHERE all_rows.scope_type = kept.scope_type
+                   AND all_rows.scope_id = kept.scope_id
+                   AND all_rows.normalized_key = kept.normalized_key
+             ),
+             restored_at = (
+                 SELECT CASE
+                     WHEN MAX(all_rows.restored_at) >= MAX(all_rows.revoked_at)
+                     THEN MAX(all_rows.restored_at)
+                     ELSE NULL
+                 END
+                 FROM memory_revocations AS all_rows
+                 WHERE all_rows.scope_type = kept.scope_type
+                   AND all_rows.scope_id = kept.scope_id
+                   AND all_rows.normalized_key = kept.normalized_key
+             )
+         WHERE kept.revocation_id = (
+             SELECT MAX(candidate.revocation_id)
+             FROM memory_revocations AS candidate
+             WHERE candidate.scope_type = kept.scope_type
+               AND candidate.scope_id = kept.scope_id
+               AND candidate.normalized_key = kept.normalized_key
+         );
+
+         DELETE FROM memory_revocations
+         WHERE revocation_id != (
+             SELECT MAX(candidate.revocation_id)
+             FROM memory_revocations AS candidate
+             WHERE candidate.scope_type = memory_revocations.scope_type
+               AND candidate.scope_id = memory_revocations.scope_id
+               AND candidate.normalized_key = memory_revocations.normalized_key
+         );",
+    )?;
+    let mut replacement_redirects = Vec::new();
+    for ((_, _, normalized_key), entries) in groups {
+        replacement_redirects.extend(merge_group(transaction, &normalized_key, &entries)?);
+    }
+    for (duplicate_id, keeper_id) in replacement_redirects {
+        transaction.execute(
+            "UPDATE memory_entries SET replacement_entry_id = ?1
+             WHERE replacement_entry_id = ?2",
+            rusqlite::params![keeper_id, duplicate_id],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE memory_entries SET replacement_entry_id = NULL
+         WHERE replacement_entry_id = entry_id",
+        [],
+    )?;
     deduplicate_evidence(transaction)?;
     transaction.execute_batch(
         "DELETE FROM memory_entries_fts;
          INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
          SELECT entry_id, normalized_key, body FROM memory_entries;
          CREATE UNIQUE INDEX memory_entries_scope_key
-             ON memory_entries (scope_type, scope_id, normalized_key);",
+             ON memory_entries (scope_type, scope_id, normalized_key);
+         CREATE UNIQUE INDEX memory_revocations_scope_identity
+             ON memory_revocations (scope_type, scope_id, normalized_key);",
     )?;
     Ok(())
 }
@@ -89,7 +163,7 @@ fn merge_group(
     transaction: &Transaction<'_>,
     normalized_key: &str,
     entries: &[StoredEntry],
-) -> Result<(), MemoryError> {
+) -> Result<Vec<(String, String)>, MemoryError> {
     let keeper = entries
         .iter()
         .min_by(|left, right| {
@@ -115,10 +189,12 @@ fn merge_group(
         })
         .ok_or_else(|| MemoryError::InvalidStoredValue("empty migration group".into()))?;
 
+    let mut replacement_redirects = Vec::new();
     for duplicate in entries
         .iter()
         .filter(|entry| entry.entry_id != keeper.entry_id)
     {
+        replacement_redirects.push((duplicate.entry_id.clone(), keeper.entry_id.clone()));
         transaction.execute(
             "DELETE FROM memory_evidence AS duplicate
              WHERE duplicate.entry_id = ?1
@@ -160,7 +236,7 @@ fn merge_group(
             keeper.entry_id,
         ],
     )?;
-    Ok(())
+    Ok(replacement_redirects)
 }
 
 fn deduplicate_evidence(transaction: &Transaction<'_>) -> Result<(), MemoryError> {
