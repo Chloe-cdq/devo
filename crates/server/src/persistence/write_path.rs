@@ -52,20 +52,31 @@ impl RolloutStore {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Barrier;
     use std::sync::TryLockError;
     use std::sync::mpsc;
 
+    use devo_core::InternalRecordV2;
+    use devo_core::SessionId;
+    use devo_core::SessionSettingsField;
+    use devo_core::rollout_v2::RolloutLineV2;
+    use devo_protocol::native::session::MemorySetting;
     use pretty_assertions::assert_eq;
 
+    use super::super::ParsedRolloutLine;
     use super::super::RolloutStore;
+    use super::super::parse_rollout_line;
 
     #[test]
     fn locked_write_workflow_holds_the_file_lock_for_the_entire_callback() {
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let store = Arc::new(RolloutStore::new(dir.path().to_path_buf(), None));
+        let store = Arc::new(RolloutStore::new(
+            dir.path().to_path_buf(),
+            /*event_log*/ None,
+        ));
         let rollout_path = dir.path().join("nested").join("rollout.jsonl");
-        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
-        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(/*bound*/ 0);
+        let (release_tx, release_rx) = mpsc::sync_channel(/*bound*/ 0);
 
         let workflow = {
             let store = Arc::clone(&store);
@@ -102,5 +113,97 @@ mod tests {
 
         release_tx.send(()).expect("release callback");
         workflow.join().expect("join write workflow");
+    }
+
+    #[test]
+    fn concurrent_single_and_batch_settings_appends_preserve_batch_and_epochs() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let store = Arc::new(RolloutStore::new(
+            dir.path().to_path_buf(),
+            /*event_log*/ None,
+        ));
+        let rollout_path = dir.path().join("rollout.jsonl");
+        let session_id = SessionId::new();
+        let start = Arc::new(Barrier::new(/*n*/ 3));
+        let on = serde_json::to_value(MemorySetting::On).expect("serialize on");
+        let off = serde_json::to_value(MemorySetting::Off).expect("serialize off");
+
+        let single = {
+            let store = Arc::clone(&store);
+            let rollout_path = rollout_path.clone();
+            let start = Arc::clone(&start);
+            let on = on.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                store
+                    .append_session_settings_at(
+                        &rollout_path,
+                        session_id,
+                        SessionSettingsField::MemoryRecall,
+                        on,
+                    )
+                    .expect("append single setting");
+            })
+        };
+        let batch = {
+            let store = Arc::clone(&store);
+            let rollout_path = rollout_path.clone();
+            let start = Arc::clone(&start);
+            let on = on.clone();
+            let off = off.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                store
+                    .append_session_settings_batch_at(
+                        &rollout_path,
+                        session_id,
+                        &[
+                            (SessionSettingsField::MemoryRecall, off),
+                            (SessionSettingsField::MemoryContribution, on),
+                        ],
+                    )
+                    .expect("append settings batch");
+            })
+        };
+
+        start.wait();
+        single.join().expect("join single append");
+        batch.join().expect("join batch append");
+
+        let entries = std::fs::read_to_string(&rollout_path)
+            .expect("read rollout")
+            .lines()
+            .map(|raw| {
+                let ParsedRolloutLine::V2(v2) = parse_rollout_line(raw).expect("parse line") else {
+                    panic!("settings line must parse as v2");
+                };
+                let RolloutLineV2::Internal { entry, .. } = *v2 else {
+                    panic!("settings line must be a v2 Internal record");
+                };
+                entry
+            })
+            .collect::<Vec<_>>();
+        let setting = |field, value, epoch| InternalRecordV2::SessionSettings {
+            schema_version: 1,
+            field,
+            value,
+            epoch,
+        };
+        let expected = if entries.first()
+            == Some(&setting(SessionSettingsField::MemoryRecall, on.clone(), 1))
+        {
+            vec![
+                setting(SessionSettingsField::MemoryRecall, on.clone(), 1),
+                setting(SessionSettingsField::MemoryRecall, off.clone(), 2),
+                setting(SessionSettingsField::MemoryContribution, on, 3),
+            ]
+        } else {
+            vec![
+                setting(SessionSettingsField::MemoryRecall, off, 1),
+                setting(SessionSettingsField::MemoryContribution, on.clone(), 2),
+                setting(SessionSettingsField::MemoryRecall, on, 3),
+            ]
+        };
+        assert_eq!(entries, expected);
     }
 }
