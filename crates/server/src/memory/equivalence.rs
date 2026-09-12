@@ -61,9 +61,10 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
 }
 
 fn normalize_token(token: &str) -> Option<String> {
-    let trimmed = token.trim_matches(is_boundary_punctuation);
-    if is_structured_token(token, trimmed) {
-        let structured = token.trim_matches(is_structured_wrapper_punctuation);
+    let unwrapped = token.trim_matches(is_structured_wrapper_punctuation);
+    let trimmed = unwrapped.trim_matches(is_boundary_punctuation);
+    if is_structured_token(unwrapped, trimmed) {
+        let structured = unwrapped;
         let without_sentence_period = structured.trim_end_matches('.');
         let structured = if without_sentence_period.is_empty() {
             structured
@@ -256,6 +257,20 @@ mod tests {
         );
         assert_ne!(explicit_memory_key("Use ."), explicit_memory_key("Use"));
         assert_ne!(explicit_memory_key("Use .."), explicit_memory_key("Use"));
+        assert_ne!(
+            explicit_memory_key("Use '.env' for configuration"),
+            explicit_memory_key("Use env for configuration")
+        );
+        assert_ne!(
+            explicit_memory_key("Use (.env) for configuration"),
+            explicit_memory_key("Use env for configuration")
+        );
+        assert_ne!(explicit_memory_key("Use \".\""), explicit_memory_key("Use"));
+        assert_ne!(explicit_memory_key("Use (..)"), explicit_memory_key("Use"));
+        assert_eq!(
+            explicit_memory_key("Use '.env' for configuration"),
+            explicit_memory_key("Use .env for configuration")
+        );
         assert_ne!(
             explicit_memory_key("Read config.toml"),
             explicit_memory_key("Read configtoml")
