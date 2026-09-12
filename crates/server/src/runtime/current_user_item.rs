@@ -33,12 +33,13 @@ impl ServerRuntime {
             .persisted_turn_items
             .iter()
             .find_map(|item| {
-                (item.turn_id == turn_id && item.item_id.to_string() == user_item_id.as_str())
-                    .then(|| match &item.turn_item {
-                        devo_core::TurnItem::UserMessage(text) => Some(text.text.clone()),
-                        _ => None,
-                    })
-                    .flatten()
+                if item.turn_id != turn_id || item.item_id.to_string() != user_item_id.as_str() {
+                    return None;
+                }
+                let devo_core::TurnItem::UserMessage(text) = &item.turn_item else {
+                    return None;
+                };
+                Some(text.text.clone())
             })
             .ok_or(CurrentUserItemError::ItemMismatch)
     }

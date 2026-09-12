@@ -215,23 +215,6 @@ impl MemoryAgentHarness {
             .with_context(|| format!("decode memory/remember response: {response}"))
     }
 
-    async fn native_forget(&self, entry_id: &MemoryEntryId) -> Result<MemoryForgetResult> {
-        let response = self
-            .runtime
-            .handle_incoming(
-                self.connection_id,
-                serde_json::json!({
-                    "id": 5,
-                    "method": "memory/forget",
-                    "params": { "entryId": entry_id }
-                }),
-            )
-            .await
-            .context("memory/forget response")?;
-        serde_json::from_value::<MemoryForgetResult>(response["result"].clone())
-            .with_context(|| format!("decode memory/forget response: {response}"))
-    }
-
     async fn run_turn(&mut self, text: &str) -> Result<()> {
         start_turn_with_approval_policy(
             &self.runtime,
@@ -582,7 +565,20 @@ async fn default_search_includes_restored_entries() -> Result<()> {
     let original = harness
         .remember("I prefer dark mode", MemoryScope::User)
         .await?;
-    harness.native_forget(&original.entry_id).await?;
+    let response = harness
+        .runtime
+        .handle_incoming(
+            harness.connection_id,
+            serde_json::json!({
+                "id": 5,
+                "method": "memory/forget",
+                "params": { "entryId": original.entry_id }
+            }),
+        )
+        .await
+        .context("memory/forget response")?;
+    serde_json::from_value::<MemoryForgetResult>(response["result"].clone())
+        .with_context(|| format!("decode memory/forget response: {response}"))?;
     let restored = harness
         .remember("I prefer dark mode", MemoryScope::User)
         .await?;
@@ -726,12 +722,15 @@ fn tool_result<'a>(request: &'a ModelRequest, tool_use_id: &str) -> Option<&'a s
         .messages
         .iter()
         .flat_map(|message| &message.content)
-        .find_map(|content| match content {
-            RequestContent::ToolResult {
+        .find_map(|content| {
+            let RequestContent::ToolResult {
                 tool_use_id: result_id,
                 content,
                 ..
-            } if result_id == tool_use_id => Some(content.as_str()),
-            _ => None,
+            } = content
+            else {
+                return None;
+            };
+            (result_id == tool_use_id).then_some(content.as_str())
         })
 }

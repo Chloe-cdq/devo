@@ -157,13 +157,21 @@ impl MemoryForgetAuthorizations {
         entry_id: &MemoryEntryId,
         now: Instant,
     ) -> Result<MemoryForgetGrant<'_>, ToolCallError> {
-        if strict_forget_names(ForgetCommandGrammar::Direct, user_text, entry_id) {
-            return Ok(MemoryForgetGrant::Direct);
-        }
         let mut pending = self.lock_pending()?;
         pending.retain(|_, selection| {
             selection.status != PendingForgetStatus::Pending || selection.expires_at > now
         });
+        if pending
+            .get(&invocation.session_id)
+            .is_some_and(|selection| matches!(selection.status, PendingForgetStatus::InFlight(_)))
+        {
+            return Err(ToolCallError::InvalidInput(
+                "memory_forget selection is already in flight".to_string(),
+            ));
+        }
+        if strict_forget_names(ForgetCommandGrammar::Direct, user_text, entry_id) {
+            return Ok(MemoryForgetGrant::Direct);
+        }
         let Some(selection) = pending.get_mut(&invocation.session_id) else {
             return Err(ToolCallError::InvalidInput(
                 "memory_forget requires a strict exact stable-ID command or a pending selection"
@@ -485,6 +493,55 @@ mod tests {
             ),
             Ok(MemoryForgetGrant::Direct)
         ));
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-12
+    /// Verifies: an in-flight Pending mutation blocks a concurrent direct exact-ID mutation in the same session.
+    #[test]
+    fn inflight_selection_blocks_direct_exact_id_authority() {
+        let authorizations = MemoryForgetAuthorizations::default();
+        let search = invocation();
+        let selected_id = MemoryEntryId::from("mem_pending");
+        authorizations
+            .record_search(
+                &search,
+                &[candidate(selected_id.clone(), MemoryScope::User)],
+            )
+            .expect("record pending search");
+        let selection = MemoryToolInvocation {
+            turn_id: devo_protocol::TurnId::new(),
+            user_item_id: devo_protocol::native::ids::ItemId::new(),
+            ..search
+        };
+        let _reservation = match authorizations
+            .authorize(
+                &selection,
+                &format!("Confirm forget memory entry {selected_id}"),
+                &selected_id,
+            )
+            .expect("reserve selected candidate")
+        {
+            MemoryForgetGrant::Direct => panic!("pending selection returned a direct grant"),
+            MemoryForgetGrant::Pending { reservation, .. } => reservation,
+        };
+        let direct = MemoryToolInvocation {
+            turn_id: devo_protocol::TurnId::new(),
+            user_item_id: devo_protocol::native::ids::ItemId::new(),
+            ..selection
+        };
+        let direct_id = MemoryEntryId::from("mem_direct");
+
+        assert_eq!(
+            authorizations
+                .authorize(
+                    &direct,
+                    &format!("Forget memory entry {direct_id}"),
+                    &direct_id,
+                )
+                .expect_err("in-flight selection must block direct mutation")
+                .to_string(),
+            "invalid input: memory_forget selection is already in flight"
+        );
     }
 
     /// Trace: L2-DES-MEM-001 DD-12
