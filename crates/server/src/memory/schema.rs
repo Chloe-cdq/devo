@@ -3,6 +3,7 @@ use rusqlite::{Connection, OptionalExtension};
 use super::{MEMORY_SCHEMA_VERSION, MemoryError, migration};
 
 pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> {
+    reject_unsupported_existing_schema(connection)?;
     connection.execute_batch(
         "
         PRAGMA foreign_keys = ON;
@@ -112,21 +113,7 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
         [],
         |row| row.get::<_, String>(0),
     )?;
-    let current_version = MEMORY_SCHEMA_VERSION.parse::<u64>().map_err(|_| {
-        MemoryError::InvalidStoredValue(format!(
-            "invalid current memory schema version {MEMORY_SCHEMA_VERSION}"
-        ))
-    })?;
-    let previous_version_number = previous_version.parse::<u64>().map_err(|_| {
-        MemoryError::InvalidStoredValue(format!(
-            "invalid stored memory schema version {previous_version}"
-        ))
-    })?;
-    if previous_version_number > current_version {
-        return Err(MemoryError::InvalidStoredValue(format!(
-            "memory schema version {previous_version} is newer than supported version {MEMORY_SCHEMA_VERSION}"
-        )));
-    }
+    let (previous_version_number, current_version) = supported_schema_version(&previous_version)?;
     ensure_column(
         &transaction,
         "memory_jobs",
@@ -211,6 +198,52 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+fn reject_unsupported_existing_schema(connection: &Connection) -> Result<(), MemoryError> {
+    let metadata_table_exists = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema
+             WHERE type = 'table' AND name = 'memory_schema_meta'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    if !metadata_table_exists {
+        return Ok(());
+    }
+    let stored_version = connection
+        .query_row(
+            "SELECT value FROM memory_schema_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            MemoryError::InvalidStoredValue("memory schema version is missing".to_string())
+        })?;
+    supported_schema_version(&stored_version)?;
+    Ok(())
+}
+
+fn supported_schema_version(stored_version: &str) -> Result<(u64, u64), MemoryError> {
+    let current_version = MEMORY_SCHEMA_VERSION.parse::<u64>().map_err(|_| {
+        MemoryError::InvalidStoredValue(format!(
+            "invalid current memory schema version {MEMORY_SCHEMA_VERSION}"
+        ))
+    })?;
+    let stored_version_number = stored_version.parse::<u64>().map_err(|_| {
+        MemoryError::InvalidStoredValue(format!(
+            "invalid stored memory schema version {stored_version}"
+        ))
+    })?;
+    if stored_version_number > current_version {
+        return Err(MemoryError::InvalidStoredValue(format!(
+            "memory schema version {stored_version} is newer than supported version {MEMORY_SCHEMA_VERSION}"
+        )));
+    }
+    Ok((stored_version_number, current_version))
 }
 
 fn ensure_column(

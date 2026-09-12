@@ -266,33 +266,46 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
     assert_eq!(schema_version, "4");
 }
 
+/// Trace: L2-DES-MEM-001 DD-4, DD-8
+/// Verifies: future and malformed schema versions are rejected before any schema mutation.
 #[test]
 fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
     for unsupported_version in ["5", "future"] {
         let data_root = TempDir::new()?;
         let memory_root = data_root.path().join("memory");
-        drop(MemoryRuntime::open(
-            memory_root.clone(),
-            MemoryConfig::default(),
-        )?);
+        std::fs::create_dir_all(&memory_root)?;
 
         let database_path = memory_root.join("memory.sqlite3");
         let connection = Connection::open(&database_path)?;
         connection.execute_batch(
-            "INSERT INTO memory_entries (
-                 entry_id, scope_type, scope_id, kind, normalized_key, body,
-                 origin, state, created_at, updated_at
-             ) VALUES (
-                 'future-entry', 'user', 'user', 'preference',
-                 'please remember that i prefer compact responses',
-                 'Please remember that I prefer compact responses',
-                 'explicit_user', 'active', '2030-01-01T00:00:00Z', '2030-01-01T00:00:00Z'
-             );",
+            "CREATE TABLE memory_schema_meta (
+                 key TEXT PRIMARY KEY NOT NULL,
+                 value TEXT NOT NULL
+             );
+             CREATE TABLE future_memory_layout (
+                 marker TEXT PRIMARY KEY NOT NULL
+             );
+             INSERT INTO future_memory_layout (marker) VALUES ('untouched');",
         )?;
         connection.execute(
-            "UPDATE memory_schema_meta SET value = ?1 WHERE key = 'schema_version'",
+            "INSERT INTO memory_schema_meta (key, value) VALUES ('schema_version', ?1)",
             [unsupported_version],
         )?;
+        let schema_before = connection
+            .prepare(
+                "SELECT type, name, tbl_name, sql
+                 FROM sqlite_schema
+                 ORDER BY type, name",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         drop(connection);
 
         let error = match MemoryRuntime::open(memory_root, MemoryConfig::default()) {
@@ -302,27 +315,32 @@ fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
         assert!(matches!(error, MemoryError::InvalidStoredValue(_)));
 
         let connection = Connection::open(database_path)?;
-        let stored = connection.query_row(
-            "SELECT
-                 (SELECT value FROM memory_schema_meta WHERE key = 'schema_version'),
-                 (SELECT normalized_key FROM memory_entries WHERE entry_id = 'future-entry'),
-                 (SELECT COUNT(*) FROM memory_entries)",
-            [],
-            |row| {
+        let schema_after = connection
+            .prepare(
+                "SELECT type, name, tbl_name, sql
+                 FROM sqlite_schema
+                 ORDER BY type, name",
+            )?
+            .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
-            },
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(schema_after, schema_before);
+        let stored = connection.query_row(
+            "SELECT
+                 (SELECT value FROM memory_schema_meta WHERE key = 'schema_version'),
+                 (SELECT marker FROM future_memory_layout)",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?;
         assert_eq!(
             stored,
-            (
-                unsupported_version.to_string(),
-                "please remember that i prefer compact responses".to_string(),
-                1,
-            )
+            (unsupported_version.to_string(), "untouched".to_string())
         );
     }
     Ok(())
