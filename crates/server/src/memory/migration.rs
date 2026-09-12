@@ -10,6 +10,7 @@ struct StoredEntry {
     scope_type: String,
     scope_id: String,
     kind: String,
+    normalized_key: String,
     body: String,
     origin: String,
     state: String,
@@ -26,7 +27,11 @@ pub(super) fn migrate_explicit_equivalence(
     let entries = load_entries(transaction)?;
     let mut groups = BTreeMap::<(String, String, String), Vec<StoredEntry>>::new();
     for entry in entries {
-        let normalized_key = equivalence::explicit_memory_key(&entry.body);
+        let normalized_key = if entry.origin == "explicit_user" {
+            equivalence::explicit_memory_key(&entry.body)
+        } else {
+            entry.normalized_key.clone()
+        };
         groups
             .entry((
                 entry.scope_type.clone(),
@@ -54,7 +59,7 @@ pub(super) fn migrate_explicit_equivalence(
 
 fn load_entries(transaction: &Transaction<'_>) -> Result<Vec<StoredEntry>, MemoryError> {
     let mut statement = transaction.prepare(
-        "SELECT entry_id, scope_type, scope_id, kind, body, origin, state,
+        "SELECT entry_id, scope_type, scope_id, kind, normalized_key, body, origin, state,
                 created_at, updated_at, last_recalled_at, replacement_entry_id, expires_at
          FROM memory_entries",
     )?;
@@ -65,14 +70,15 @@ fn load_entries(transaction: &Transaction<'_>) -> Result<Vec<StoredEntry>, Memor
                 scope_type: row.get(1)?,
                 scope_id: row.get(2)?,
                 kind: row.get(3)?,
-                body: row.get(4)?,
-                origin: row.get(5)?,
-                state: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                last_recalled_at: row.get(9)?,
-                replacement_entry_id: row.get(10)?,
-                expires_at: row.get(11)?,
+                normalized_key: row.get(4)?,
+                body: row.get(5)?,
+                origin: row.get(6)?,
+                state: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                last_recalled_at: row.get(10)?,
+                replacement_entry_id: row.get(11)?,
+                expires_at: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -94,10 +100,18 @@ fn merge_group(
         .ok_or_else(|| MemoryError::InvalidStoredValue("empty migration group".into()))?;
     let current = entries
         .iter()
+        .filter(|entry| entry.origin == "explicit_user")
         .max_by(|left, right| {
             left.updated_at
                 .cmp(&right.updated_at)
                 .then_with(|| left.entry_id.cmp(&right.entry_id))
+        })
+        .or_else(|| {
+            entries.iter().max_by(|left, right| {
+                left.updated_at
+                    .cmp(&right.updated_at)
+                    .then_with(|| left.entry_id.cmp(&right.entry_id))
+            })
         })
         .ok_or_else(|| MemoryError::InvalidStoredValue("empty migration group".into()))?;
 

@@ -133,8 +133,8 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
             rusqlite::params![
                 "legacy-duplicate",
                 oldest.scope_id,
-                "i prefer compact responses",
-                "I prefer compact responses",
+                "remember that i prefer compact responses",
+                "Remember that I prefer compact responses",
                 "2030-01-01T00:00:00Z",
             ],
         )
@@ -160,6 +160,32 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
         )
         .expect("insert replayed duplicate provenance");
     connection
+        .execute(
+            "INSERT INTO memory_entries (
+                 entry_id, scope_type, scope_id, kind, normalized_key, body,
+                 origin, state, created_at, updated_at
+             ) VALUES (?1, 'user', ?2, 'fact', ?3, ?4,
+                       'inferred_session', 'conflicted', ?5, ?5)",
+            rusqlite::params![
+                "legacy-inferred",
+                oldest.scope_id,
+                "i prefer compact responses",
+                "Model inferred a compact-response preference",
+                "2040-01-01T00:00:00Z",
+            ],
+        )
+        .expect("insert colliding inferred memory");
+    connection
+        .execute(
+            "INSERT INTO memory_evidence (
+                 evidence_id, entry_id, session_id, turn_id, source_user_item_id,
+                 observed_at, source_watermark
+             ) VALUES ('legacy-evidence-inferred', 'legacy-inferred', 'inferred-session',
+                       'inferred-turn', NULL, ?1, ?1)",
+            ["2040-01-01T00:00:00Z"],
+        )
+        .expect("insert inferred provenance");
+    connection
         .execute_batch(
             "DELETE FROM memory_entries_fts;
              INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
@@ -178,7 +204,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
         MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("upgrade memory runtime");
     let mut expected = oldest;
     expected.normalized_key = "i prefer compact responses".to_string();
-    expected.body = "I prefer compact responses".to_string();
+    expected.body = "Remember that I prefer compact responses".to_string();
     expected.updated_at = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
         .expect("parse fixture timestamp")
         .with_timezone(&Utc);
@@ -192,6 +218,11 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
             source_session_id: Some("new-session".to_string()),
             source_turn_id: Some("new-turn".to_string()),
             source_user_item_id: Some(ItemId::from_string("new-item".to_string())),
+        },
+        MemoryProvenance {
+            source_session_id: Some("inferred-session".to_string()),
+            source_turn_id: Some("inferred-turn".to_string()),
+            source_user_item_id: None,
         },
     ];
     let expected_entries = vec![expected];
@@ -223,6 +254,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     assert_eq!(stored, ("4".to_string(), 1, 1));
     let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
         .expect("read migrated projection");
-    assert!(projection.contains("I prefer compact responses"));
+    assert!(projection.contains("Remember that I prefer compact responses"));
+    assert!(!projection.contains("Model inferred a compact-response preference"));
     assert!(!projection.contains("stale legacy projection"));
 }

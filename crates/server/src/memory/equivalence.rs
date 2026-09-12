@@ -61,18 +61,22 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
 }
 
 fn normalize_token(token: &str) -> Option<String> {
-    let token = token
-        .chars()
-        .flat_map(char::to_lowercase)
-        .collect::<String>();
     let trimmed = token.trim_matches(is_boundary_punctuation);
     if trimmed.is_empty() {
         return None;
     }
-    if is_structured_token(&token, trimmed) {
-        Some(token)
+    if is_structured_token(token, trimmed) {
+        let structured = token
+            .trim_matches(is_structured_wrapper_punctuation)
+            .trim_end_matches('.');
+        (!structured.is_empty()).then(|| structured.to_string())
     } else {
-        Some(trimmed.to_string())
+        Some(
+            trimmed
+                .chars()
+                .flat_map(char::to_lowercase)
+                .collect::<String>(),
+        )
     }
 }
 
@@ -108,6 +112,32 @@ fn is_boundary_punctuation(character: char) -> bool {
             | '！'
             | '？'
             | '：'
+            | '；'
+    )
+}
+
+fn is_structured_wrapper_punctuation(character: char) -> bool {
+    matches!(
+        character,
+        ',' | '!'
+            | '?'
+            | ';'
+            | '\''
+            | '"'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '‘'
+            | '’'
+            | '“'
+            | '”'
+            | '。'
+            | '，'
+            | '！'
+            | '？'
             | '；'
     )
 }
@@ -224,6 +254,26 @@ mod tests {
         assert_ne!(
             explicit_memory_key("Read config.toml"),
             explicit_memory_key("Read configtoml")
+        );
+        assert_ne!(
+            explicit_memory_key("Use FOO=1"),
+            explicit_memory_key("Use foo=1")
+        );
+        assert_ne!(
+            explicit_memory_key("Remember https://example.com/Docs"),
+            explicit_memory_key("Remember https://example.com/docs")
+        );
+        assert_ne!(
+            explicit_memory_key("Use /Config"),
+            explicit_memory_key("Use /config")
+        );
+        assert_eq!(
+            explicit_memory_key("Remember “https://example.com/Docs”"),
+            explicit_memory_key("Remember https://example.com/Docs")
+        );
+        assert_eq!(
+            explicit_memory_key("Use config.toml."),
+            explicit_memory_key("Use config.toml")
         );
     }
 }

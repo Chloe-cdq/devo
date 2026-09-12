@@ -108,12 +108,14 @@ Uniqueness is evaluated by `(scope, memory_key)`:
 4. Incompatible inferred content marks the canonical entry `Conflicted` and retains the competing claim as a candidate; the key remains inspectable but is excluded from recall.
 
 For explicit writes, `memory_key` uses a deterministic equivalence contract. The
-accepted display body is whitespace-normalized first. The key then lowercases
-Unicode characters, collapses whitespace, and removes sentence, quotation, and
-bracketing punctuation only at plain-prose token boundaries. Tokens that carry
-path, file-name, URL, address, identifier, or assignment punctuation retain the
-complete token; for example, `.env`, `env`, `../config`, and `/config` remain
-four distinct identities. It removes only these
+accepted display body is whitespace-normalized first. The key lowercases
+Unicode characters in plain-prose tokens, collapses whitespace, and removes
+sentence, quotation, and bracketing punctuation only at token boundaries.
+Tokens that carry path, file-name, URL, address, identifier, or assignment
+punctuation preserve case and internal punctuation while harmless surrounding
+quotes, brackets, and sentence terminators are ignored. For example, `.env`,
+`env`, `../config`, `/config`, `FOO=1`, and `foo=1` remain distinct where their
+identity-bearing content differs. It removes only these
 case-insensitive leading intent frames, repeatedly and longest-first:
 `please remember that`, `please remember this`, `please remember`, `remember
 that`, `remember this`, `remember`, `please keep in mind that`, `please keep in
@@ -141,12 +143,13 @@ atomically replaced. Runtime startup regenerates Markdown from the authoritative
 SQLite state, so an interruption after commit cannot expose the superseded body
 after restart.
 
-Schema version 4 applies this equivalence contract to existing canonical rows in
-one idempotent transaction. Within each `(scope, new memory_key)` collision group
-it retains the oldest entry ID and `created_at`, takes the most recently updated
-body and metadata, merges evidence with null-safe tuple deduplication, removes
-the redundant rows, and rebuilds the FTS table before recreating the uniqueness
-index. Startup projection regeneration then publishes the migrated state.
+Schema version 4 applies this equivalence contract only to existing explicit
+rows in one idempotent transaction; inferred rows retain their stored key. Within
+each `(scope, new memory_key)` collision group it retains the oldest entry ID and
+`created_at`, prefers the most recently updated explicit body and metadata over
+inferred content, merges evidence with null-safe tuple deduplication, removes the
+redundant rows, and rebuilds the FTS table before recreating the uniqueness index.
+Startup projection regeneration then publishes the migrated state.
 
 An extractor never resolves inferred conflicts by itself. A later explicit request may resolve the key.
 
