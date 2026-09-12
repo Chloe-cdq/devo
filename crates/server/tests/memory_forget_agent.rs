@@ -315,7 +315,7 @@ async fn pending_selection_rejects_an_id_outside_its_candidates() -> Result<()> 
 
     harness.run_turn("Forget my indentation preference").await?;
     harness
-        .run_turn(&format!("Forget memory entry {}", outside.entry_id))
+        .run_turn(&format!("Confirm forget memory entry {}", outside.entry_id))
         .await?;
 
     assert_eq!(
@@ -480,6 +480,54 @@ async fn exact_stable_id_command_can_delete_directly() -> Result<()> {
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
+/// Verifies: a prior unrelated search does not prevent a later strict direct exact-ID deletion.
+#[tokio::test]
+async fn pending_search_does_not_shadow_direct_exact_id_command() -> Result<()> {
+    let provider = Arc::new(MemoryAgentProvider::new([
+        ProviderAction::Search("tabs"),
+        ProviderAction::CaptureSearch,
+        ProviderAction::ForgetTarget,
+        ProviderAction::Complete("direct memory forgotten"),
+    ]));
+    let mut harness = MemoryAgentHarness::new(Arc::clone(&provider)).await?;
+    let pending = harness.remember("I prefer tabs", MemoryScope::User).await?;
+    let direct = harness
+        .remember("My timezone is UTC", MemoryScope::User)
+        .await?;
+    provider.set_target(direct.entry_id.clone());
+
+    harness.run_turn("Find my tab preference").await?;
+    assert_eq!(
+        provider.search_result(),
+        Page {
+            data: vec![search_entry(&pending)],
+            next_cursor: None,
+        }
+    );
+    harness
+        .run_turn(&format!("Forget memory entry {}", direct.entry_id))
+        .await?;
+
+    let requests = provider.requests();
+    let result: MemoryForgetResult = serde_json::from_str(
+        tool_result(&requests[3], "memory-forget").context("memory forget result")?,
+    )?;
+    let forgotten = result.forgotten.clone().context("forgotten entry")?;
+    assert_eq!(
+        result,
+        MemoryForgetResult {
+            forgotten: Some(MemoryEntry {
+                state: MemoryState::Retired,
+                updated_at: forgotten.updated_at,
+                ..direct
+            }),
+            candidates: Vec::new(),
+        }
+    );
+    Ok(())
+}
+
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-6, DD-12
 /// Verifies: punctuation, whitespace, connectors, and bilingual task rewrites never authorize an arbitrary stable ID.
 #[tokio::test]
@@ -576,7 +624,10 @@ async fn pending_selection_does_not_cross_memory_scopes() -> Result<()> {
 
     harness.run_turn("Forget my tabs preference").await?;
     harness
-        .run_turn(&format!("Forget memory entry {}", project_entry.entry_id))
+        .run_turn(&format!(
+            "Confirm forget memory entry {}",
+            project_entry.entry_id
+        ))
         .await?;
 
     assert_eq!(

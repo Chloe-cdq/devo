@@ -126,6 +126,7 @@ mod connection_selectors;
 pub(crate) mod context_occupancy;
 mod context_usage;
 mod control_requests;
+mod current_user_item;
 mod goal_accounting;
 mod goal_continuation;
 mod goal_handlers;

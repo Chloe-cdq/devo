@@ -31,48 +31,6 @@ impl MemoryMutationContext {
     }
 }
 
-async fn current_user_item_text(
-    runtime: &ServerRuntime,
-    invocation: &MemoryToolInvocation,
-) -> Result<String, ToolCallError> {
-    let stream = runtime
-        .active_stream_state(invocation.session_id)
-        .await
-        .ok_or_else(|| {
-            ToolCallError::InvalidInput(
-                "memory tool requires an active turn with a current user message".to_string(),
-            )
-        })?;
-    let stream = stream.lock().await;
-    let inline = stream.turn_inline.as_ref().ok_or_else(|| {
-        ToolCallError::InvalidInput(
-            "memory tool requires an active turn with a current user message".to_string(),
-        )
-    })?;
-    if inline.turn_id != invocation.turn_id {
-        return Err(ToolCallError::InvalidInput(
-            "memory tool turn context does not match the active turn".to_string(),
-        ));
-    }
-    inline
-        .persisted_turn_items
-        .iter()
-        .find_map(|item| {
-            (item.turn_id == invocation.turn_id
-                && item.item_id.to_string() == invocation.user_item_id.as_str())
-            .then(|| match &item.turn_item {
-                devo_core::TurnItem::UserMessage(text) => Some(text.text.clone()),
-                _ => None,
-            })
-            .flatten()
-        })
-        .ok_or_else(|| {
-            ToolCallError::InvalidInput(
-                "memory tool source must be the current user message".to_string(),
-            )
-        })
-}
-
 pub(super) async fn remember(
     runtime: Arc<ServerRuntime>,
     invocation: MemoryToolInvocation,
@@ -83,7 +41,14 @@ pub(super) async fn remember(
             "memory_remember source must match the current user message context".to_string(),
         ));
     }
-    let user_text = current_user_item_text(&runtime, &invocation).await?;
+    let user_text = runtime
+        .current_user_item_text(
+            invocation.session_id,
+            invocation.turn_id,
+            &invocation.user_item_id,
+        )
+        .await
+        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
     if !has_explicit_memory_intent(&user_text) {
         return Err(ToolCallError::InvalidInput(
             "memory_remember requires explicit intent in the current user message".to_string(),
@@ -132,7 +97,14 @@ pub(super) async fn forget(
             ));
         }
     };
-    let user_text = current_user_item_text(&runtime, &invocation).await?;
+    let user_text = runtime
+        .current_user_item_text(
+            invocation.session_id,
+            invocation.turn_id,
+            &invocation.user_item_id,
+        )
+        .await
+        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
     let grant =
         runtime
             .memory_forget_authorizations
@@ -179,7 +151,14 @@ pub(super) async fn search(
     invocation: MemoryToolInvocation,
     params: devo_protocol::native::rpc_memory::MemorySearchParams,
 ) -> Result<devo_protocol::native::rpc_memory::MemorySearchResult, ToolCallError> {
-    current_user_item_text(&runtime, &invocation).await?;
+    runtime
+        .current_user_item_text(
+            invocation.session_id,
+            invocation.turn_id,
+            &invocation.user_item_id,
+        )
+        .await
+        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
     let memory = runtime.memory.clone().ok_or_else(|| {
         ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
     })?;
@@ -246,7 +225,18 @@ pub(super) async fn search(
                     scope: entry.scope,
                     kind: entry.kind,
                     state: entry.state,
-                    summary: bounded_memory_summary(&entry.body),
+                    summary: {
+                        const MAX_SUMMARY_CHARS: usize = 240;
+                        let mut summary = entry
+                            .body
+                            .chars()
+                            .take(MAX_SUMMARY_CHARS)
+                            .collect::<String>();
+                        if entry.body.chars().count() > MAX_SUMMARY_CHARS {
+                            summary.push('…');
+                        }
+                        summary
+                    },
                 },
             )
             .collect::<Vec<_>>(),
@@ -256,15 +246,6 @@ pub(super) async fn search(
         .memory_forget_authorizations
         .record_search(&invocation, &result.data)?;
     Ok(result)
-}
-
-fn bounded_memory_summary(body: &str) -> String {
-    const MAX_SUMMARY_CHARS: usize = 240;
-    let mut summary = body.chars().take(MAX_SUMMARY_CHARS).collect::<String>();
-    if body.chars().count() > MAX_SUMMARY_CHARS {
-        summary.push('…');
-    }
-    summary
 }
 
 fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {

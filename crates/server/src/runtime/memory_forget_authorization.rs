@@ -157,19 +157,18 @@ impl MemoryForgetAuthorizations {
         entry_id: &MemoryEntryId,
         now: Instant,
     ) -> Result<MemoryForgetGrant<'_>, ToolCallError> {
+        if strict_forget_names(ForgetCommandGrammar::Direct, user_text, entry_id) {
+            return Ok(MemoryForgetGrant::Direct);
+        }
         let mut pending = self.lock_pending()?;
         pending.retain(|_, selection| {
             selection.status != PendingForgetStatus::Pending || selection.expires_at > now
         });
         let Some(selection) = pending.get_mut(&invocation.session_id) else {
-            return strict_forget_names(ForgetCommandGrammar::Direct, user_text, entry_id)
-                .then_some(MemoryForgetGrant::Direct)
-                .ok_or_else(|| {
-                    ToolCallError::InvalidInput(
-                    "memory_forget requires a strict exact stable-ID command or a pending selection"
-                        .to_string(),
-                )
-                });
+            return Err(ToolCallError::InvalidInput(
+                "memory_forget requires a strict exact stable-ID command or a pending selection"
+                    .to_string(),
+            ));
         };
         if selection.source_turn_id == invocation.turn_id
             || selection.source_user_item_id == invocation.user_item_id
@@ -454,6 +453,38 @@ mod tests {
                 .to_string(),
             "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
         );
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-12
+    /// Verifies: an unrelated Pending selection never shadows an independently authorized direct exact-ID command.
+    #[test]
+    fn pending_selection_does_not_shadow_direct_exact_id_authority() {
+        let authorizations = MemoryForgetAuthorizations::default();
+        let search = invocation();
+        authorizations
+            .record_search(
+                &search,
+                &[candidate(
+                    MemoryEntryId::from("mem_pending"),
+                    MemoryScope::User,
+                )],
+            )
+            .expect("record pending search");
+        let direct = MemoryToolInvocation {
+            turn_id: devo_protocol::TurnId::new(),
+            user_item_id: devo_protocol::native::ids::ItemId::new(),
+            ..search
+        };
+        let direct_id = MemoryEntryId::from("mem_direct");
+
+        assert!(matches!(
+            authorizations.authorize(
+                &direct,
+                &format!("Forget memory entry {direct_id}"),
+                &direct_id,
+            ),
+            Ok(MemoryForgetGrant::Direct)
+        ));
     }
 
     /// Trace: L2-DES-MEM-001 DD-12

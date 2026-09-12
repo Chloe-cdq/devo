@@ -32,23 +32,10 @@ impl ServerRuntime {
             };
             let mut active_source = None;
             for (session_id, turn) in &active_turns {
-                let item_matches = if let Some(stream) = self.active_stream_state(*session_id).await
-                {
-                    let stream = stream.lock().await;
-                    stream.turn_inline.as_ref().is_some_and(|inline| {
-                        inline.turn_id == turn.turn_id
-                            && inline.persisted_turn_items.iter().any(|item| {
-                                item.turn_id == turn.turn_id
-                                    && item.item_id.to_string() == source_user_item_id.as_str()
-                                    && matches!(
-                                        &item.turn_item,
-                                        devo_core::TurnItem::UserMessage(_)
-                                    )
-                            })
-                    })
-                } else {
-                    false
-                };
+                let item_matches = self
+                    .current_user_item_text(*session_id, turn.turn_id, source_user_item_id)
+                    .await
+                    .is_ok();
                 if item_matches {
                     active_source = Some((
                         *session_id,
