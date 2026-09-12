@@ -61,11 +61,26 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
 }
 
 fn normalize_token(token: &str) -> Option<String> {
-    let token = token.trim_matches(is_boundary_punctuation);
-    if token.is_empty() {
+    let token = token
+        .chars()
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    let trimmed = token.trim_matches(is_boundary_punctuation);
+    if trimmed.is_empty() {
         return None;
     }
-    Some(token.chars().flat_map(char::to_lowercase).collect())
+    if is_structured_token(&token, trimmed) {
+        Some(token)
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn is_structured_token(original: &str, trimmed: &str) -> bool {
+    original.starts_with('.')
+        || trimmed
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':' | '@' | '#' | '=' | '.'))
 }
 
 fn is_boundary_punctuation(character: char) -> bool {
@@ -103,4 +118,112 @@ fn starts_with(tokens: &[String], prefix: &[&str]) -> bool {
             .iter()
             .zip(prefix)
             .all(|(token, expected)| token == expected)
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::{assert_eq, assert_ne};
+
+    use super::explicit_memory_key;
+
+    #[test]
+    fn explicit_intent_and_preference_frames_have_a_fixed_equivalence_table() {
+        let cases = [
+            (
+                "Please remember that I prefer compact responses.",
+                "i prefer compact responses",
+            ),
+            (
+                "Please remember this: I prefer compact responses!",
+                "i prefer compact responses",
+            ),
+            (
+                "Please remember I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Remember that I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Remember this: I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Remember I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Please keep in mind that I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Please keep in mind I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Keep in mind that I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Keep in mind I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "For future reference: I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Please note that I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Please note I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Note that I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Note I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "My preference is compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "I would prefer compact responses",
+                "i prefer compact responses",
+            ),
+            ("I'd prefer compact responses", "i prefer compact responses"),
+            ("I’d prefer compact responses", "i prefer compact responses"),
+            (
+                "Remember that please note I prefer compact responses please",
+                "i prefer compact responses",
+            ),
+            ("Remember!", "remember"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(explicit_memory_key(input), expected);
+        }
+    }
+
+    #[test]
+    fn structured_tokens_remain_identity_bearing() {
+        assert_ne!(
+            explicit_memory_key("Use .env for configuration"),
+            explicit_memory_key("Use env for configuration")
+        );
+        assert_ne!(
+            explicit_memory_key("Use ../config"),
+            explicit_memory_key("Use /config")
+        );
+        assert_ne!(
+            explicit_memory_key("Read config.toml"),
+            explicit_memory_key("Read configtoml")
+        );
+    }
 }

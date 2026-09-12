@@ -111,7 +111,13 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
         ]
     );
     assert_eq!(
-        list(&runtime, MemoryScope::User, data_root.path(), None).await,
+        list(
+            &runtime,
+            MemoryScope::User,
+            data_root.path(),
+            /*text*/ None,
+        )
+        .await,
         vec![replayed]
     );
 }
@@ -194,18 +200,92 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
         },
     )
     .await;
+    let project_dot_env = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use .env for configuration".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source_user_item_id: Some("project-dot-env".to_string()),
+            source_session_id: "session-project".to_string(),
+            source_turn_id: None,
+            workspace_root: data_root.path().to_path_buf(),
+        },
+    )
+    .await;
+    let project_env = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use env for configuration".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source_user_item_id: Some("project-env".to_string()),
+            source_session_id: "session-project".to_string(),
+            source_turn_id: None,
+            workspace_root: data_root.path().to_path_buf(),
+        },
+    )
+    .await;
+    let project_parent_config = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use ../config".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source_user_item_id: Some("project-parent-config".to_string()),
+            source_session_id: "session-project".to_string(),
+            source_turn_id: None,
+            workspace_root: data_root.path().to_path_buf(),
+        },
+    )
+    .await;
+    let project_root_config = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use /config".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source_user_item_id: Some("project-root-config".to_string()),
+            source_session_id: "session-project".to_string(),
+            source_turn_id: None,
+            workspace_root: data_root.path().to_path_buf(),
+        },
+    )
+    .await;
 
     assert_ne!(user_rust.entry_id, project_rust.entry_id);
     assert_eq!(project_rust_updated.entry_id, project_rust.entry_id);
+    assert_ne!(project_dot_env.entry_id, project_env.entry_id);
+    assert_ne!(project_parent_config.entry_id, project_root_config.entry_id);
     assert_eq!(
-        list(&runtime, MemoryScope::User, data_root.path(), None).await,
+        list(
+            &runtime,
+            MemoryScope::User,
+            data_root.path(),
+            /*text*/ None,
+        )
+        .await,
         vec![user_rust]
     );
-    let project_entries = list(&runtime, MemoryScope::Project, data_root.path(), None).await;
-    assert_eq!(project_entries.len(), 3);
-    assert!(project_entries.contains(&project_rust_updated));
-    assert!(project_entries.contains(&project_python));
-    assert!(project_entries.contains(&project_not_rust));
+    let mut project_entries = list(
+        &runtime,
+        MemoryScope::Project,
+        data_root.path(),
+        /*text*/ None,
+    )
+    .await;
+    project_entries.sort_by(|left, right| left.entry_id.as_str().cmp(right.entry_id.as_str()));
+    let mut expected = vec![
+        project_root_config,
+        project_parent_config,
+        project_env,
+        project_dot_env,
+        project_not_rust,
+        project_python,
+        project_rust_updated,
+    ];
+    expected.sort_by(|left, right| left.entry_id.as_str().cmp(right.entry_id.as_str()));
+    assert_eq!(project_entries, expected);
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
@@ -294,6 +374,14 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
             "My preference is compact responses!".to_string(),
         )
     );
+    let fts_matches: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM memory_entries_fts WHERE memory_entries_fts MATCH 'compact'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query memory FTS index");
+    assert_eq!(fts_matches, 1);
     drop(connection);
 
     let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
@@ -311,7 +399,13 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
     )
     .expect("reopen memory runtime");
     assert_eq!(
-        list(&reopened, MemoryScope::User, data_root.path(), None).await,
+        list(
+            &reopened,
+            MemoryScope::User,
+            data_root.path(),
+            /*text*/ None,
+        )
+        .await,
         vec![updated]
     );
 }

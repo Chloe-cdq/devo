@@ -74,7 +74,7 @@ Project identity in the first release is the hash of the canonical Git common di
 
 A dedicated local SQLite database is the canonical truth. It provides transactions, FTS lexical retrieval, evidence joins, revocation checks, reset watermarks, and idempotent jobs.
 
-Each User or Project scope has one generated, read-only `MEMORY.md` projection for inspection and export. Projection generation occurs after a successful transaction using atomic replacement. Manual edits are overwritten and never imported. The memory directory is not Git-initialized.
+Each User or Project scope has one generated, read-only `MEMORY.md` projection for inspection and export. Projection generation occurs after a successful transaction using atomic replacement. Runtime startup regenerates every stored scope from SQLite, closing the recoverable crash window between database commit and projection replacement. Manual edits are overwritten and never imported. The memory directory is not Git-initialized.
 
 This decision is recorded in `docs/adr/0001-sqlite-authority-for-general-persistent-memory.md`.
 
@@ -110,7 +110,10 @@ Uniqueness is evaluated by `(scope, memory_key)`:
 For explicit writes, `memory_key` uses a deterministic equivalence contract. The
 accepted display body is whitespace-normalized first. The key then lowercases
 Unicode characters, collapses whitespace, and removes sentence, quotation, and
-bracketing punctuation only at token boundaries. It removes only these
+bracketing punctuation only at plain-prose token boundaries. Tokens that carry
+path, file-name, URL, address, identifier, or assignment punctuation retain the
+complete token; for example, `.env`, `env`, `../config`, and `/config` remain
+four distinct identities. It removes only these
 case-insensitive leading intent frames, repeatedly and longest-first:
 `please remember that`, `please remember this`, `please remember`, `remember
 that`, `remember this`, `remember`, `please keep in mind that`, `please keep in
@@ -133,8 +136,17 @@ entry ID and original `created_at`, receives the latest validated body and kind,
 advances `updated_at`, and adds the new evidence tuple. Evidence identity is
 `(entry_id, session_id, turn_id, source_user_item_id)` with null-safe equality;
 replaying the same tuple does not duplicate provenance. The entry row, FTS row,
-returned projection, and generated Markdown are updated in the same commit and
-projection cycle so a restart cannot expose the superseded body.
+and evidence rows update in one SQLite transaction; generated Markdown is then
+atomically replaced. Runtime startup regenerates Markdown from the authoritative
+SQLite state, so an interruption after commit cannot expose the superseded body
+after restart.
+
+Schema version 4 applies this equivalence contract to existing canonical rows in
+one idempotent transaction. Within each `(scope, new memory_key)` collision group
+it retains the oldest entry ID and `created_at`, takes the most recently updated
+body and metadata, merges evidence with null-safe tuple deduplication, removes
+the redundant rows, and rebuilds the FTS table before recreating the uniqueness
+index. Startup projection regeneration then publishes the migrated state.
 
 An extractor never resolves inferred conflicts by itself. A later explicit request may resolve the key.
 
@@ -412,4 +424,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
 | 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
-| 3 | 2026-09-12 | Assistant | Clarification | Defined the deterministic explicit-memory equivalence key, scope boundary, canonical-entry update semantics, and evidence identity required by DD-8. |
+| 3 | 2026-09-12 | Assistant | Clarification | Defined the deterministic explicit-memory equivalence key, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v4 upgrade, and startup projection recovery required by DD-4 and DD-8. |

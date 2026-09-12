@@ -263,7 +263,7 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             |row| row.get(0),
         )
         .expect("read memory schema version");
-    assert_eq!(schema_version, "3");
+    assert_eq!(schema_version, "4");
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(schema_version, "3");
+    assert_eq!(schema_version, "4");
     Ok(())
 }
 

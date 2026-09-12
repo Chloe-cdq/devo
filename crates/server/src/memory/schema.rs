@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension};
 
-use super::{MEMORY_SCHEMA_VERSION, MemoryError};
+use super::{MEMORY_SCHEMA_VERSION, MemoryError, migration};
 
 pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> {
     connection.execute_batch(
@@ -107,6 +107,11 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
 
 fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
     let transaction = connection.unchecked_transaction()?;
+    let previous_version = transaction.query_row(
+        "SELECT value FROM memory_schema_meta WHERE key = 'schema_version'",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
     ensure_column(
         &transaction,
         "memory_jobs",
@@ -180,6 +185,9 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
          ON memory_revocations (scope_type, scope_id, normalized_key)",
         [],
     )?;
+    if previous_version != MEMORY_SCHEMA_VERSION {
+        migration::migrate_explicit_equivalence(&transaction)?;
+    }
     transaction.execute(
         "INSERT INTO memory_schema_meta (key, value)
          VALUES ('schema_version', ?1)

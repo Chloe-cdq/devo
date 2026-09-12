@@ -6,6 +6,7 @@
 mod entries;
 mod equivalence;
 mod identity;
+mod migration;
 mod projection;
 mod schema;
 
@@ -31,7 +32,7 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "3";
+const MEMORY_SCHEMA_VERSION: &str = "4";
 const USER_SCOPE_ID: &str = "user";
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 100;
@@ -136,11 +137,13 @@ impl MemoryRuntime {
         fs::create_dir_all(&memory_root)?;
         let connection = Connection::open(memory_root.join(MEMORY_DATABASE_FILENAME))?;
         schema::create_schema(&connection)?;
-        Ok(Self {
+        let runtime = Self {
             config,
             memory_root,
             connection: Mutex::new(connection),
-        })
+        };
+        runtime.rebuild_projections()?;
+        Ok(runtime)
     }
 
     /// Prepares an immutable memory snapshot for a turn.

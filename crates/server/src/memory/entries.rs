@@ -19,6 +19,28 @@ use super::{
 };
 
 impl MemoryRuntime {
+    pub(super) fn rebuild_projections(&self) -> Result<(), MemoryError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| MemoryError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT scope_type, scope_id
+             FROM memory_entries
+             ORDER BY scope_type ASC, scope_id ASC",
+        )?;
+        let scopes = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for (scope, scope_id) in scopes {
+            self.refresh_projection(&connection, parse_scope(&scope)?, &scope_id)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn remember(
         &self,
         request: MemoryRememberRequest,
