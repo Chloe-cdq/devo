@@ -6,7 +6,7 @@ active_baseline: yes
 supersedes: revision 1 draft
 superseded_by:
 owner: Human + Assistant
-last_updated: 2026-08-25
+last_updated: 2026-09-12
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -29,14 +29,17 @@ This document defines:
 - Session deletion, reset, rebuild, retention, failure, and observability behavior
 - Server module seam, rollout plan, and verification requirements
 
-It replaces revision 1's Git-backed, two-model extraction/consolidation workspace. It does not implement the design.
+It replaces revision 1's Git-backed, two-model extraction/consolidation workspace. The implementation-status audit below records independently shipped slices without changing the remaining design authority.
 
 ## Current-State Audit
 
-- `crates/core/src/memory.rs` contains types, path helpers, and traits, but no production `MemoryStore` adapter, server configuration, job runner, Native methods, tools, or recall integration. It is not a working general memory mechanism.
+- The storage foundation is implemented: the server owns `MemoryRuntime`, a dedicated SQLite schema and migrations, configuration gating, safe status reporting, and generated Markdown projections.
+- Explicit control currently implements status, remember, and list through Native/root-agent paths for User and Project scopes. Forget, export, reset, rebuild, and lifecycle closeout remain pending.
+- The session-settings slice is implemented: canonical `memory_recall` and `memory_contribution` patch fields, global-default resolution, field-level rollout persistence and replay, and best-effort actor synchronization.
+- The runtime `prepare_turn` seam can construct a prototype User-scope snapshot bounded by entry count. Project retrieval, token budgeting, production root-turn query-loop recall/advisory injection, and the Memory Recall item/event remain pending.
+- The runtime `enqueue_source` seam currently applies contribution gating only; background source discovery, external-context eligibility, extraction, jobs/retries, and passive contribution remain pending.
 - Session JSONL persistence, resume, replay, and compaction implement Session History, not General Persistent Memory.
 - Desktop automations maintain a separate per-automation `memory.md`; this is Automation Run Memory and remains separate.
-- The production model loop is assembled through `crates/core/src/query/mod.rs`. A memory design wired only through unused context-pipeline helpers would not affect real turns.
 - Native is the single retained protocol surface per L2-DES-APP-008. Memory behavior must not be implemented independently in legacy or ACP handlers.
 
 ## Design Decisions
@@ -363,8 +366,8 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | refines | L1-REQ-MEM-001 | 2 | specs/L1/L1-REQ-MEM-001-persistent-memory.md | Implements the approved user-controlled General Persistent Memory requirement. |
 | related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | Defines local storage, export, deletion, redaction, and telemetry boundaries. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | Session JSONL supplies eligibility facts and evidence references without storing memory entries. |
-| related-to | L2-DES-CONV-002 | 1 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings.md | Recall and contribution use canonical persist-first session settings and declared decision points. |
-| related-to | L2-DES-APP-008 | 1 | specs/L2/app/L2-DES-APP-008-protocol-unification.md | Management methods and recall events land on Native only. |
+| related-to | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | Recall and contribution use canonical persist-first session settings and declared decision points. |
+| related-to | L2-DES-APP-008 | 5 | specs/L2/app/L2-DES-APP-008-protocol-unification-rev-5.md | Management methods and recall events land on Native only. |
 | related-to | L2-DES-AGENT-003 | 1 | specs/L2/agent/L2-DES-AGENT-003-subagent-architecture.md | Subagents inherit a read-only parent snapshot and cannot mutate memory. |
 | related-to | L2-DES-LLM-003 | 1 | specs/L2/llm/L2-DES-LLM-003-model-usage-observability.md | Background extraction usage is metered without logging memory content. |
 
@@ -379,3 +382,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 |---:|---|---|---|---|
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
+| 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |

@@ -110,8 +110,8 @@ None for the first-release design.
 | refined-by | L2-DES-MEM-001 | 2 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture.md | Defines storage, extraction, retrieval, protocol, settings, lifecycle, and module boundaries. |
 | related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | General Persistent Memory is locally stored user data with export and deletion controls. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | Session records supply provenance and source-eligibility facts without becoming the memory store. |
-| related-to | L2-DES-CONV-002 | 1 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings.md | Recall and contribution controls use the canonical session-settings path. |
-| related-to | L2-DES-APP-008 | 1 | specs/L2/app/L2-DES-APP-008-protocol-unification.md | Memory management is added to Native only; external protocols remain adapters. |
+| related-to | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | Recall and contribution controls use the canonical session-settings path. |
+| related-to | L2-DES-APP-008 | 5 | specs/L2/app/L2-DES-APP-008-protocol-unification-rev-5.md | Memory management is added to Native only; external protocols remain adapters. |
 
 ## Revision Notes
 

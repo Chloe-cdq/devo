@@ -80,7 +80,7 @@ The TUI's devo-envelope consumption (`worker.rs` main `ServerEvent` loop) alread
 | Relationship | Target ID | Target Revision | Target Path | Rationale |
 |---|---|---:|---|---|
 | refines | L1-REQ-APP-001 | 1 | specs/L1/L1-REQ-APP-001-client-server-arch.md | Event cutover refines the client-server event architecture onto the canonical surface. |
-| related-to | L2-DES-APP-008 | 1 | specs/L2/app/L2-DES-APP-008-protocol-unification.md | Implements DD-3 (event protocol convergence) of the protocol unification. |
+| related-to | L2-DES-APP-008 | 5 | specs/L2/app/L2-DES-APP-008-protocol-unification-rev-5.md | Implements DD-3 (event protocol convergence) of the protocol unification. |
 
 ## Revision Notes
 
