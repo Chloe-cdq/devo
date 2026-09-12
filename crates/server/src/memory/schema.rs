@@ -112,6 +112,21 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
         [],
         |row| row.get::<_, String>(0),
     )?;
+    let current_version = MEMORY_SCHEMA_VERSION.parse::<u64>().map_err(|_| {
+        MemoryError::InvalidStoredValue(format!(
+            "invalid current memory schema version {MEMORY_SCHEMA_VERSION}"
+        ))
+    })?;
+    let previous_version_number = previous_version.parse::<u64>().map_err(|_| {
+        MemoryError::InvalidStoredValue(format!(
+            "invalid stored memory schema version {previous_version}"
+        ))
+    })?;
+    if previous_version_number > current_version {
+        return Err(MemoryError::InvalidStoredValue(format!(
+            "memory schema version {previous_version} is newer than supported version {MEMORY_SCHEMA_VERSION}"
+        )));
+    }
     ensure_column(
         &transaction,
         "memory_jobs",
@@ -185,7 +200,7 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
          ON memory_revocations (scope_type, scope_id, normalized_key)",
         [],
     )?;
-    if previous_version != MEMORY_SCHEMA_VERSION {
+    if previous_version_number < current_version {
         migration::migrate_explicit_equivalence(&transaction)?;
     }
     transaction.execute(

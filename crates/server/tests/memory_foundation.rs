@@ -31,8 +31,8 @@ use devo_server::ClientTransportKind;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
 use devo_server::memory::{
-    EnqueueOutcome, MemoryCommand, MemoryCommandResult, MemoryRuntime, PrepareMemoryRequest,
-    PreparedMemory, SessionMemorySource,
+    EnqueueOutcome, MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime,
+    PrepareMemoryRequest, PreparedMemory, SessionMemorySource,
 };
 use futures::Stream;
 use futures::stream;
@@ -264,6 +264,68 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
         )
         .expect("read memory schema version");
     assert_eq!(schema_version, "4");
+}
+
+#[test]
+fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
+    for unsupported_version in ["5", "future"] {
+        let data_root = TempDir::new()?;
+        let memory_root = data_root.path().join("memory");
+        drop(MemoryRuntime::open(
+            memory_root.clone(),
+            MemoryConfig::default(),
+        )?);
+
+        let database_path = memory_root.join("memory.sqlite3");
+        let connection = Connection::open(&database_path)?;
+        connection.execute_batch(
+            "INSERT INTO memory_entries (
+                 entry_id, scope_type, scope_id, kind, normalized_key, body,
+                 origin, state, created_at, updated_at
+             ) VALUES (
+                 'future-entry', 'user', 'user', 'preference',
+                 'please remember that i prefer compact responses',
+                 'Please remember that I prefer compact responses',
+                 'explicit_user', 'active', '2030-01-01T00:00:00Z', '2030-01-01T00:00:00Z'
+             );",
+        )?;
+        connection.execute(
+            "UPDATE memory_schema_meta SET value = ?1 WHERE key = 'schema_version'",
+            [unsupported_version],
+        )?;
+        drop(connection);
+
+        let error = match MemoryRuntime::open(memory_root, MemoryConfig::default()) {
+            Ok(_) => panic!("unsupported memory schema must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, MemoryError::InvalidStoredValue(_)));
+
+        let connection = Connection::open(database_path)?;
+        let stored = connection.query_row(
+            "SELECT
+                 (SELECT value FROM memory_schema_meta WHERE key = 'schema_version'),
+                 (SELECT normalized_key FROM memory_entries WHERE entry_id = 'future-entry'),
+                 (SELECT COUNT(*) FROM memory_entries)",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            stored,
+            (
+                unsupported_version.to_string(),
+                "please remember that i prefer compact responses".to_string(),
+                1,
+            )
+        );
+    }
+    Ok(())
 }
 
 #[test]

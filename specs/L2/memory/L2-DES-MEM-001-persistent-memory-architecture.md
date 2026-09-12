@@ -430,4 +430,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
 | 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
-| 3 | 2026-09-12 | Assistant | Clarification | Defined the deterministic explicit-memory equivalence key, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v4 upgrade, and startup projection recovery required by DD-4 and DD-8. |
+| 2 | 2026-09-12 | Assistant | Clarification | Defined the deterministic explicit-memory equivalence key, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v4 upgrade, and startup projection recovery required by DD-4 and DD-8. |
