@@ -190,18 +190,37 @@ mod tests {
             epoch,
         };
         let expected = if entries.first()
-            == Some(&setting(SessionSettingsField::MemoryRecall, on.clone(), 1))
-        {
+            == Some(&setting(
+                SessionSettingsField::MemoryRecall,
+                on.clone(),
+                /*epoch*/ 1,
+            )) {
             vec![
-                setting(SessionSettingsField::MemoryRecall, on.clone(), 1),
-                setting(SessionSettingsField::MemoryRecall, off.clone(), 2),
-                setting(SessionSettingsField::MemoryContribution, on, 3),
+                setting(
+                    SessionSettingsField::MemoryRecall,
+                    on.clone(),
+                    /*epoch*/ 1,
+                ),
+                setting(
+                    SessionSettingsField::MemoryRecall,
+                    off.clone(),
+                    /*epoch*/ 2,
+                ),
+                setting(
+                    SessionSettingsField::MemoryContribution,
+                    on,
+                    /*epoch*/ 3,
+                ),
             ]
         } else {
             vec![
-                setting(SessionSettingsField::MemoryRecall, off, 1),
-                setting(SessionSettingsField::MemoryContribution, on.clone(), 2),
-                setting(SessionSettingsField::MemoryRecall, on, 3),
+                setting(SessionSettingsField::MemoryRecall, off, /*epoch*/ 1),
+                setting(
+                    SessionSettingsField::MemoryContribution,
+                    on.clone(),
+                    /*epoch*/ 2,
+                ),
+                setting(SessionSettingsField::MemoryRecall, on, /*epoch*/ 3),
             ]
         };
         assert_eq!(entries, expected);
