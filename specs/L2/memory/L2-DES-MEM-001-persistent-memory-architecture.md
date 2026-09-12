@@ -107,6 +107,35 @@ Uniqueness is evaluated by `(scope, memory_key)`:
 3. Newer explicit content replaces older explicit content and preserves the replacement lineage.
 4. Incompatible inferred content marks the canonical entry `Conflicted` and retains the competing claim as a candidate; the key remains inspectable but is excluded from recall.
 
+For explicit writes, `memory_key` uses a deterministic equivalence contract. The
+accepted display body is whitespace-normalized first. The key then lowercases
+Unicode characters, collapses whitespace, and removes sentence, quotation, and
+bracketing punctuation only at token boundaries. It removes only these
+case-insensitive leading intent frames, repeatedly and longest-first:
+`please remember that`, `please remember this`, `please remember`, `remember
+that`, `remember this`, `remember`, `please keep in mind that`, `please keep in
+mind`, `keep in mind that`, `keep in mind`, `for future reference`, `please note
+that`, `please note`, `note that`, and `note`. A final standalone `please` is
+also removed. For preference wording, leading `my preference is`, `i would
+prefer`, and `i'd prefer` are rewritten to `i prefer`. If these transformations
+would remove every token, the pre-frame normalized key is retained.
+
+This equivalence contract is implemented locally and must not call a model, use
+embeddings or fuzzy thresholds, stem words, substitute open-ended synonyms, or
+reorder tokens. Kind is not part of the identity key: a later equivalent
+explicit request may correct the projected kind. All other tokens, including
+negation and claim values, remain identity-bearing, so distinct or incompatible
+claims remain separate. Equivalence is evaluated only after resolving the User
+or Project scope; the same key in different scopes never aliases.
+
+When an equivalent explicit write is committed, the canonical entry retains its
+entry ID and original `created_at`, receives the latest validated body and kind,
+advances `updated_at`, and adds the new evidence tuple. Evidence identity is
+`(entry_id, session_id, turn_id, source_user_item_id)` with null-safe equality;
+replaying the same tuple does not duplicate provenance. The entry row, FTS row,
+returned projection, and generated Markdown are updated in the same commit and
+projection cycle so a restart cannot expose the superseded body.
+
 An extractor never resolves inferred conflicts by itself. A later explicit request may resolve the key.
 
 ### DD-9: Revocation and reset prevent resurrection
@@ -383,3 +412,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
 | 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
+| 3 | 2026-09-12 | Assistant | Clarification | Defined the deterministic explicit-memory equivalence key, scope boundary, canonical-entry update semantics, and evidence identity required by DD-8. |

@@ -4,6 +4,7 @@
 //! tables are an implementation detail and are never returned to callers.
 
 mod entries;
+mod equivalence;
 mod identity;
 mod projection;
 mod schema;
