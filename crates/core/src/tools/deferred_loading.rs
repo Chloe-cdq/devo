@@ -106,6 +106,10 @@ const SUBAGENT_PROHIBITED_AGENT_COORDINATION_TOOLS: &[&str] = &[
     "closeagent",
     "memory_remember",
     "memory-remember",
+    "memory_forget",
+    "memory-forget",
+    "memory_search",
+    "memory-search",
 ];
 
 impl ToolSearchResult {
@@ -167,6 +171,8 @@ pub fn hide_subagent_agent_coordination_tools(config: &mut DeferredLoadingConfig
         "list_agents",
         "close_agent",
         "memory_remember",
+        "memory_forget",
+        "memory_search",
     ] {
         config.hidden.insert(name.to_string());
     }

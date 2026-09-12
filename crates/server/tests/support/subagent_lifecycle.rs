@@ -267,6 +267,21 @@ pub fn build_runtime(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
+    build_runtime_with_workspace_root(data_root, provider, /*workspace_root*/ None)
+}
+
+pub fn build_runtime_with_workspace_config(
+    data_root: &std::path::Path,
+    provider: Arc<dyn ModelProviderSDK>,
+) -> Result<Arc<ServerRuntime>> {
+    build_runtime_with_workspace_root(data_root, provider, Some(data_root))
+}
+
+fn build_runtime_with_workspace_root(
+    data_root: &std::path::Path,
+    provider: Arc<dyn ModelProviderSDK>,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<Arc<ServerRuntime>> {
     let db_path = data_root.join("subagent_lifecycle.db");
     let db = Arc::new(devo_server::db::Database::open(db_path).expect("open test database"));
     Ok(ServerRuntime::new(
@@ -286,7 +301,8 @@ pub fn build_runtime(
             devo_core::AgentsMdConfig::default(),
             db,
             Arc::new(std::sync::Mutex::new(
-                AppConfigStore::load(data_root.to_path_buf(), None).expect("load app config store"),
+                AppConfigStore::load(data_root.to_path_buf(), workspace_root)
+                    .expect("load app config store"),
             )),
         ),
     ))

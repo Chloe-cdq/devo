@@ -5,6 +5,38 @@ use crate::execution::RuntimeSession;
 use crate::runtime::session_actor::SessionActorState;
 
 impl ServerRuntime {
+    pub(super) async fn clear_deleted_session_runtime_state(&self, session_id: SessionId) {
+        self.signal_active_turn_interrupt(session_id).await;
+        self.active_turns.clear_runtime_handles(session_id).await;
+        if let Err(error) = self.memory_forget_authorizations.remove_session(session_id) {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %error,
+                "failed to clear pending memory forget authorization"
+            );
+        }
+        if let Some(turn_id) = self
+            .active_goal_continuation_turns
+            .lock()
+            .await
+            .remove(&session_id)
+        {
+            self.goal_continuation_turn_goals
+                .lock()
+                .await
+                .remove(&turn_id);
+        }
+        self.goal_stores.lock().await.remove(&session_id);
+        self.agent_mailboxes.lock().await.remove(&session_id);
+        self.agent_output_buffers.lock().await.remove(&session_id);
+        self.agent_wait_cursors.lock().await.remove(&session_id);
+        let mut registries = self.agent_registries.lock().await;
+        registries.remove(&session_id);
+        for registry in registries.values_mut() {
+            registry.unregister(session_id);
+        }
+    }
+
     /// Replays one rollout file and applies SQLite side effects for a single session.
     pub(crate) async fn hydrate_runtime_session(
         self: &Arc<Self>,

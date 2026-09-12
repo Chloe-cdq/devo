@@ -118,6 +118,14 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
         idempotency: Idempotency::None,
     },
     MethodSpec {
+        name: "memory/forget",
+        params_schema: schema_of::<MemoryForgetParams>,
+        result_schema: schema_of::<MemoryForgetResult>,
+        error_codes: &[],
+        required_capability: None,
+        idempotency: Idempotency::None,
+    },
+    MethodSpec {
         name: "memory/list",
         params_schema: schema_of::<MemoryListParams>,
         result_schema: schema_of::<MemoryListResult>,

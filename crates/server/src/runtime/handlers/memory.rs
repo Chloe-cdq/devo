@@ -35,7 +35,9 @@ impl ServerRuntime {
         let status = match self.memory.as_ref() {
             Some(memory) => match memory.execute_command(MemoryCommand::Status).await {
                 Ok(MemoryCommandResult::Status(status)) => status,
-                Ok(MemoryCommandResult::Remember(_)) | Ok(MemoryCommandResult::List(_)) => {
+                Ok(MemoryCommandResult::Remember(_))
+                | Ok(MemoryCommandResult::Forget(_))
+                | Ok(MemoryCommandResult::List(_)) => {
                     tracing::error!("memory status command returned an unexpected result");
                     unavailable_memory_status(configured_enabled)
                 }
@@ -79,146 +81,25 @@ impl ServerRuntime {
                 "memory runtime is unavailable",
             );
         };
-        let active_turns = self.active_turns.turns_for_connection(connection_id).await;
-        let active_session_ids = active_turns
-            .iter()
-            .map(|(session_id, _)| *session_id)
-            .collect::<Vec<_>>();
-        let active_source = if active_turns.is_empty() {
-            None
-        } else {
-            let Some(source_user_item_id) = params.source_user_item_id.as_ref() else {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    "memory/remember in an active turn requires sourceUserItemId",
-                );
-            };
-            let mut active_source = None;
-            for (session_id, turn) in &active_turns {
-                let item_matches = if let Some(stream) = self.active_stream_state(*session_id).await
-                {
-                    let stream = stream.lock().await;
-                    stream.turn_inline.as_ref().is_some_and(|inline| {
-                        inline.turn_id == turn.turn_id
-                            && inline.persisted_turn_items.iter().any(|item| {
-                                item.turn_id == turn.turn_id
-                                    && item.item_id.to_string() == source_user_item_id.to_string()
-                                    && matches!(
-                                        &item.turn_item,
-                                        devo_core::TurnItem::UserMessage(_)
-                                    )
-                            })
-                    })
-                } else {
-                    false
-                };
-                if item_matches {
-                    active_source = Some((
-                        *session_id,
-                        Some(turn.turn_id.to_string()),
-                        Some(source_user_item_id.to_string()),
-                    ));
-                    break;
-                }
-            }
-            let Some(active_source) = active_source else {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    "memory/remember source item is not the current user message",
-                );
-            };
-            Some(active_source)
+        let source = match self
+            .resolve_memory_mutation_source(
+                connection_id,
+                params.scope,
+                params.source_user_item_id.as_ref(),
+                "memory/remember",
+                &request_id,
+            )
+            .await
+        {
+            Ok(source) => source,
+            Err(response) => return response,
         };
-        let (source_session_id, source_turn_id, source_user_item_id, workspace_root) =
-            match params.scope {
-                devo_protocol::native::rpc_memory::MemoryScope::Project => {
-                    if active_source.is_none() && params.source_user_item_id.is_some() {
-                        return self.error_response(
-                            request_id,
-                            ProtocolErrorCode::InvalidParams,
-                            "direct memory/remember commands must omit sourceUserItemId",
-                        );
-                    }
-                    let context = match self
-                        .project_memory_context(connection_id, &active_session_ids)
-                        .await
-                    {
-                        Ok(context) => context,
-                        Err(error) => {
-                            return self.project_memory_context_error_response(
-                                request_id,
-                                "memory/remember",
-                                error,
-                            );
-                        }
-                    };
-                    let (source_turn_id, source_user_item_id) = active_source
-                        .as_ref()
-                        .map(|source| (source.1.clone(), source.2.clone()))
-                        .unwrap_or((None, None));
-                    let source_session_id = active_source
-                        .as_ref()
-                        .map(|source| source.0)
-                        .unwrap_or(context.session_id);
-                    (
-                        source_session_id,
-                        source_turn_id,
-                        source_user_item_id,
-                        context.workspace_root,
-                    )
-                }
-                devo_protocol::native::rpc_memory::MemoryScope::User => {
-                    let (source_session_id, source_turn_id, source_user_item_id) =
-                        if let Some(source) = active_source {
-                            source
-                        } else if let Some(session_id) =
-                            self.subscribed_session_for_connection(connection_id).await
-                        {
-                            if params.source_user_item_id.is_some() {
-                                return self.error_response(
-                                    request_id,
-                                    ProtocolErrorCode::InvalidParams,
-                                    "direct memory/remember commands must omit sourceUserItemId",
-                                );
-                            }
-                            (session_id, None, None)
-                        } else {
-                            return self.error_response(
-                                request_id,
-                                ProtocolErrorCode::InvalidParams,
-                                "memory/remember requires a session-bound connection",
-                            );
-                        };
-                    let Some(workspace_root) = self
-                        .session_summary_snapshot(source_session_id)
-                        .await
-                        .map(|summary| summary.cwd)
-                    else {
-                        return self.error_response(
-                            request_id,
-                            ProtocolErrorCode::InvalidParams,
-                            "memory/remember requires a session with a workspace root",
-                        );
-                    };
-                    (
-                        source_session_id,
-                        source_turn_id,
-                        source_user_item_id,
-                        workspace_root,
-                    )
-                }
-            };
         let result = memory
             .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
                 text: params.text,
                 scope: params.scope,
                 kind: params.kind,
-                source_user_item_id,
-                source_session_id: source_session_id.to_string(),
-                source_turn_id,
-                workspace_root,
+                source,
             }))
             .await;
         match result {
@@ -227,12 +108,13 @@ impl ServerRuntime {
                 result: entry,
             })
             .expect("serialize memory/remember response"),
-            Ok(MemoryCommandResult::Status(_)) | Ok(MemoryCommandResult::List(_)) => self
-                .error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    "memory/remember returned an unexpected result",
-                ),
+            Ok(MemoryCommandResult::Status(_))
+            | Ok(MemoryCommandResult::Forget(_))
+            | Ok(MemoryCommandResult::List(_)) => self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                "memory/remember returned an unexpected result",
+            ),
             Err(error) => self.memory_error_response(request_id, error),
         }
     }
@@ -307,17 +189,18 @@ impl ServerRuntime {
                 result: page,
             })
             .expect("serialize memory/list response"),
-            Ok(MemoryCommandResult::Status(_)) | Ok(MemoryCommandResult::Remember(_)) => self
-                .error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    "memory/list returned an unexpected result",
-                ),
+            Ok(MemoryCommandResult::Status(_))
+            | Ok(MemoryCommandResult::Remember(_))
+            | Ok(MemoryCommandResult::Forget(_)) => self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                "memory/list returned an unexpected result",
+            ),
             Err(error) => self.memory_error_response(request_id, error),
         }
     }
 
-    fn memory_error_response(
+    pub(super) fn memory_error_response(
         &self,
         request_id: serde_json::Value,
         error: MemoryError,
@@ -346,7 +229,7 @@ impl ServerRuntime {
         self.error_response(request_id, code, message)
     }
 
-    fn project_memory_context_error_response(
+    pub(super) fn project_memory_context_error_response(
         &self,
         request_id: serde_json::Value,
         method: &str,

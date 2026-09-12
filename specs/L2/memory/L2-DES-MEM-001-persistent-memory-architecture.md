@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-MEM-001
-revision: 2
+revision: 3
 status: Approved
 active_baseline: yes
-supersedes: revision 1 draft
+supersedes: revision 2 approved
 superseded_by:
 owner: Human + Assistant
-last_updated: 2026-08-25
+last_updated: 2026-09-12
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -77,7 +77,7 @@ This decision is recorded in `docs/adr/0001-sqlite-authority-for-general-persist
 
 ### DD-5: Flat typed entries with lightweight provenance
 
-Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired`), timestamps, and zero or more evidence links.
+Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired | Restored`), timestamps, and zero or more evidence links.
 
 Provenance records source session and turn IDs when available. The first release has no floating confidence value or trust graph. Explicit user origin has higher authority than inferred origin but remains advisory relative to current instructions and policy.
 
@@ -114,7 +114,7 @@ Reset clears one scope and advances `ignore_sources_before` for that scope. Auto
 
 ### DD-10: Recall is lexical, bounded, stable per turn, and advisory
 
-At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` entries are automatically recalled.
+At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` and explicitly `Restored` entries are automatically recalled; other lifecycle states are excluded.
 
 The result is capped at 12 entries and approximately 2,000 tokens. It is rendered as a distinct advisory memory context block, never concatenated into system policy, project instructions, or `AGENTS.md`. The block explicitly states that current instructions and observed repository state take precedence.
 
@@ -138,7 +138,14 @@ The Native protocol adds:
 - `memory/reset`
 - `memory/rebuild`
 
-`memory/list` supports scope, kind, state, origin, text, and pagination filters and returns safe provenance summaries. Exact Entry ID deletion is immediate; text-based forgetting first returns matches, and multiple matches require user selection. Clients confirm reset and rebuild before issuing the command.
+`memory/list` supports scope, kind, state, origin, text, and pagination filters and returns safe provenance summaries. Direct Native exact Entry ID deletion is immediate. A root-agent exact-ID deletion is immediate only when the current user item is a strict exact-ID forget command containing the same stable ID; open-ended natural-language classification is not a mutation authority.
+
+A root-agent natural-language forget request is a server-enforced two-stage operation:
+
+1. `memory_search` records a short-lived `PendingForgetSelection` containing the session ID, source turn and user-item IDs, ordered candidate IDs, and their scopes. Search never grants mutation authority in the same user turn.
+2. A later user item explicitly confirms one displayed stable ID using the closed confirmation grammar `Confirm forget memory entry <entry_id>` or `确认删除记忆条目 <entry_id>`. A bare ID is not mutation authority. `memory_forget` succeeds only when its ID is in the unexpired candidate set and the current user item names that same ID with the confirmation grammar. The server rejects same-turn mutation, IDs outside the candidate set, and cross-scope substitution. It reserves the selection as `InFlight` while the storage mutation runs, consumes it only after success, and releases it back to `Pending` after failure or cancellation. Concurrent mutation and concurrent replacement of an `InFlight` selection are rejected.
+
+Pending selection is ephemeral authorization state, not memory data. It expires after a bounded interval, is removed with its session, and is pruned when later searches or authorization checks inspect the store. Losing it on restart is fail-closed and requires a new search. Clients confirm reset and rebuild before issuing the command.
 
 Recall and contribution toggles are fields of canonical `SessionSettingsPatch` on `session/metadata/update`; no per-concern settings method is introduced. No legacy or ACP memory implementation is added. An external protocol may later project canonical behavior without owning memory logic.
 
@@ -232,6 +239,7 @@ candidate -> Active -> Stale -> Active
                   \-> Retired
 
 forget: any state -> durable revocation + Retired
+explicit remember of a revoked identity -> Restored
 ```
 
 - Explicit entries do not expire automatically.
@@ -239,6 +247,7 @@ forget: any state -> durable revocation + Retired
 - Deleting a source session removes pending candidates, completed source-job detail, and evidence links for that session. An inferred entry retires when its final evidence disappears. An explicit entry remains unless related-memory deletion was selected.
 - A duplicate evidence observation updates the existing entry rather than creating a duplicate.
 - Retired and revoked records remain only as long as required to enforce provenance, reset, and resurrection rules; user export distinguishes live entries from lifecycle metadata.
+- Restored identities are recallable like Active entries, but retain a public `restored` lifecycle state in list and Markdown projections; revocation timestamps remain internal.
 
 ## Session Settings Contract
 
@@ -268,9 +277,9 @@ Root agents may receive:
 - `memory_search(query, scope?, kind?, state?)` — return bounded summaries and stable IDs.
 - `memory_read(entry_id)` — return one safe entry and provenance summary.
 - `memory_remember(text, scope?, kind?, source_user_item_id)` — mutate only when tied to explicit current-user intent.
-- `memory_forget(entry_id, source_user_item_id)` — mutate only when tied to explicit current-user intent.
+- `memory_forget(entry_id, source_user_item_id)` — mutate only for a strict current-user exact-ID command or a later server-bound pending selection.
 
-Ambiguous natural-language forget requests use search first. Subagents receive none of the mutation tools and do not independently receive read tools; the parent can delegate relevant context in the task message or inherited snapshot.
+Natural-language forget requests use search first and cannot mutate in the search turn. Subagents receive none of the mutation tools and do not independently receive read tools; the parent can delegate relevant context in the task message or inherited snapshot.
 
 ## Background Scheduling and Failure Policy
 
@@ -328,6 +337,7 @@ Module and integration tests must cover:
 - deterministic ranking, Project tie priority, token/entry caps, and stable per-turn snapshots
 - duplicate merging, explicit-over-inferred replacement, inferred conflict withholding, and explicit conflict resolution
 - forgetting, old-source replay prevention, reset watermarks, deliberate rebuild, and idempotent job replay
+- root-agent forget authorization: same-turn rejection, pending candidate membership, later exact-ID selection, expiry, and User/Project scope isolation
 - session deletion with final and non-final evidence and explicit-memory retention
 - setting patch partial semantics, persist-first replay, and next-turn/next-scan decision points
 - external-context monotonic marking and exclusion for Web, MCP, and Tool Search
@@ -379,3 +389,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 |---:|---|---|---|---|
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
+| 3 | 2026-09-12 | Human + Assistant | Security revision | Defined server-bound two-stage root-agent forget authorization and removed open-ended natural-language classification from the mutation boundary. |
