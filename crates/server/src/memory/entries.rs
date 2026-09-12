@@ -10,6 +10,7 @@ use devo_protocol::native::rpc_memory::MemoryState;
 use devo_safety::{InMemorySecretDetectorRegistry, SecretDetectorRegistry};
 use rusqlite::{Connection, OptionalExtension};
 
+use super::equivalence;
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
 use super::{
@@ -18,6 +19,28 @@ use super::{
 };
 
 impl MemoryRuntime {
+    pub(super) fn rebuild_projections(&self) -> Result<(), MemoryError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| MemoryError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT scope_type, scope_id
+             FROM memory_entries
+             ORDER BY scope_type ASC, scope_id ASC",
+        )?;
+        let scopes = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for (scope, scope_id) in scopes {
+            self.refresh_projection(&connection, parse_scope(&scope)?, &scope_id)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn remember(
         &self,
         request: MemoryRememberRequest,
@@ -26,8 +49,10 @@ impl MemoryRuntime {
         if contains_secret(&body) {
             return Err(MemoryError::SecretContentRejected);
         }
-        let kind = request.kind.unwrap_or_else(|| classify_kind(&body));
-        let normalized_key = normalize_key(&body);
+        let normalized_key = equivalence::explicit_memory_key(&body);
+        let kind = request
+            .kind
+            .unwrap_or_else(|| classify_kind(&normalized_key));
         let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
         let now = Utc::now().to_rfc3339();
         let entry_id = MemoryEntryId::new();
@@ -213,21 +238,11 @@ fn normalize_body(text: &str) -> Result<String, MemoryError> {
     Ok(body)
 }
 
-fn normalize_key(body: &str) -> String {
-    body.chars()
-        .filter(|character| character.is_alphanumeric() || character.is_whitespace())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
-}
-
 fn classify_kind(body: &str) -> MemoryKind {
     let body = body.to_ascii_lowercase();
     if body.starts_with("i prefer ") || body.starts_with("i like ") {
         MemoryKind::Preference
-    } else if body.starts_with("feedback:") {
+    } else if body == "feedback" || body.starts_with("feedback ") {
         MemoryKind::Feedback
     } else if body.starts_with("http://") || body.starts_with("https://") {
         MemoryKind::Reference
