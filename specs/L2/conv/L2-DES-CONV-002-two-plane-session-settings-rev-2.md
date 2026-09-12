@@ -33,16 +33,28 @@ This document does **not** cover:
 
 ## Current State (Audit Summary)
 
-Settings writes today flow through the session actor mailbox, which is blocked for the entire duration of an active turn (`crates/server/src/runtime/session_actor/actor_loop.rs`, `ExecuteTurn` awaits `execute_turn_in_actor` inline). Consequences:
+`session/metadata/update` is the unified settings write. Its durable-session path
+is persist-first and actor-independent: the handler appends field-level
+`SessionSettings` rollout lines synchronously, then notifies the actor
+best-effort without waiting for an active turn to finish. Memory recall and
+contribution changes are persisted as one batch before that notification.
 
-- `session/metadata/update` is the unified settings write. It persists first,
-  notifies the actor best-effort, and returns without waiting for an active turn
-  to finish.
-- Persistence is record-level and actor-dependent: the handler waits for the actor, then appends a full-record `SessionMeta` rollout line (`crates/server/src/runtime/handlers/session.rs:391`). The crash-loss window equals the turn duration.
-- The same setting has up to five independently captured copies with no synchronization discipline: actor `state.config` / `state.core.config`, `TurnInlineState.hook_context.config` (turn-start snapshot; updated by approval grants but not by preset changes), the by-value `permission_mode` captured in `build_permission_checker` (`crates/server/src/runtime/turn_exec/query.rs:98`), the by-value `TurnConfig` in the core query loop, and `ToolRuntimeContext.sandbox_profile` (consumed per tool call at `crates/core/src/tools/router.rs:277`).
-- The implicit, undocumented promise for every setting is: *blocks until turn end; effective next turn; persisted after actor processing.*
+Ephemeral sessions have no rollout file by definition. Their settings path is
+an explicit non-durable degrade that updates the actor and may therefore wait
+behind active actor work; it is not evidence that durable settings writes
+depend on the actor.
 
-Already aligned with the target model: queue (session plane, durable) vs steer (turn plane, ephemeral channel); the two-level session/turn approval caches; mid-turn approval grants applied directly to `TurnInlineState` (`crates/server/src/runtime/approval.rs:512`); per-turn cancellation tokens.
+Runtime copies are synchronized according to their declared plane. The actor
+holds session-runtime caches, while `TurnInlineState.live_turn_settings` and
+`sandbox_profile_live` carry the settings that have approved mid-turn effects.
+Memory recall and contribution deliberately do not alter an active turn:
+their decision points remain the next root-turn preparation and the next
+eligible background scan, respectively.
+
+Queue (session plane, durable) vs steer (turn plane, ephemeral channel), the
+two-level session/turn approval caches, mid-turn approval grants applied
+directly to `TurnInlineState`, and per-turn cancellation tokens already follow
+the target model.
 
 ## Design Decisions
 

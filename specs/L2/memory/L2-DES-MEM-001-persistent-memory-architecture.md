@@ -36,7 +36,7 @@ It replaces revision 1's Git-backed, two-model extraction/consolidation workspac
 - The storage foundation is implemented: the server owns `MemoryRuntime`, a dedicated SQLite schema and migrations, configuration gating, safe status reporting, and generated Markdown projections.
 - Explicit control currently implements status, remember, and list through Native/root-agent paths for User and Project scopes. Forget, export, reset, rebuild, and lifecycle closeout remain pending.
 - The session-settings slice is implemented: canonical `memory_recall` and `memory_contribution` patch fields, global-default resolution, field-level rollout persistence and replay, and best-effort actor synchronization.
-- The runtime `prepare_turn` seam can construct a bounded snapshot, but production root-turn query-loop recall/advisory injection and the Memory Recall item/event remain pending.
+- The runtime `prepare_turn` seam can construct a prototype User-scope snapshot bounded by entry count. Project retrieval, token budgeting, production root-turn query-loop recall/advisory injection, and the Memory Recall item/event remain pending.
 - The runtime `enqueue_source` seam currently applies contribution gating only; background source discovery, external-context eligibility, extraction, jobs/retries, and passive contribution remain pending.
 - Session JSONL persistence, resume, replay, and compaction implement Session History, not General Persistent Memory.
 - Desktop automations maintain a separate per-automation `memory.md`; this is Automation Run Memory and remains separate.
