@@ -452,6 +452,9 @@ fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
         | crate::memory::MemoryError::LockPoisoned
         | crate::memory::MemoryError::InvalidCount(_)
         | crate::memory::MemoryError::InvalidTimestamp(_)
+        | crate::memory::MemoryError::AmbiguousProjectScope
+        | crate::memory::MemoryError::ProjectSessionRequired
+        | crate::memory::MemoryError::ProjectSessionUnavailable
         | crate::memory::MemoryError::ProjectIdentity(_)
         | crate::memory::MemoryError::InvalidStoredValue(_) => {
             ToolCallError::InternalError("memory operation is unavailable".to_string())

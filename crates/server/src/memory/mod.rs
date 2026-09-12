@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use chrono::DateTime;
 use chrono::Utc;
 use devo_core::MemoryConfig;
+use devo_core::SessionId;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryKind;
@@ -72,6 +73,12 @@ pub enum MemoryError {
     InvalidTimestamp(String),
     #[error("failed to resolve memory project identity: {0}")]
     ProjectIdentity(String),
+    #[error("Project scope has ambiguous Native Session selectors")]
+    AmbiguousProjectScope,
+    #[error("Project scope requires a Native Session selector")]
+    ProjectSessionRequired,
+    #[error("Project scope requires a Session with a workspace root")]
+    ProjectSessionUnavailable,
     #[error("memory is disabled")]
     Disabled,
     #[error("invalid memory request: {0}")]
@@ -174,15 +181,6 @@ impl MemoryRuntime {
         })
     }
 
-    /// Resolves the canonical Project scope ID used to bind runtime session
-    /// selectors to the memory projection.
-    pub(crate) fn project_scope_id(
-        &self,
-        workspace_root: &std::path::Path,
-    ) -> Result<String, MemoryError> {
-        self.scope_id(MemoryScope::Project, workspace_root)
-    }
-
     /// Executes one memory command through the public runtime seam.
     pub async fn execute_command(
         &self,
@@ -204,6 +202,96 @@ impl MemoryRuntime {
                     }));
                 }
                 Ok(MemoryCommandResult::List(self.list(request)?))
+            }
+            MemoryCommand::Project {
+                candidates,
+                operation,
+            } => {
+                if !self.config.enabled {
+                    return match operation {
+                        ProjectMemoryOperation::Remember { .. } => Err(MemoryError::Disabled),
+                        ProjectMemoryOperation::List { .. } => {
+                            Ok(MemoryCommandResult::List(Page {
+                                data: Vec::new(),
+                                next_cursor: None,
+                            }))
+                        }
+                    };
+                }
+                let mut selected: Option<(
+                    SessionId,
+                    PathBuf,
+                    ProjectMemorySessionActivity,
+                    String,
+                )> = None;
+                for candidate in candidates {
+                    let workspace_root = candidate
+                        .workspace_root
+                        .ok_or(MemoryError::ProjectSessionUnavailable)?;
+                    let identity = identity::resolve_project_memory_identity(&workspace_root)
+                        .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
+                    if let Some((_, _, current_activity, current_scope_id)) = selected.as_ref() {
+                        if *current_scope_id != identity.scope_id {
+                            return Err(MemoryError::AmbiguousProjectScope);
+                        }
+                        if candidate.activity == ProjectMemorySessionActivity::Active
+                            && *current_activity == ProjectMemorySessionActivity::Inactive
+                        {
+                            selected = Some((
+                                candidate.session_id,
+                                workspace_root,
+                                candidate.activity,
+                                identity.scope_id,
+                            ));
+                        }
+                    } else {
+                        selected = Some((
+                            candidate.session_id,
+                            workspace_root,
+                            candidate.activity,
+                            identity.scope_id,
+                        ));
+                    }
+                }
+                let (selected_session_id, workspace_root, _, _) =
+                    selected.ok_or(MemoryError::ProjectSessionRequired)?;
+                match operation {
+                    ProjectMemoryOperation::Remember {
+                        text,
+                        kind,
+                        source_user_item_id,
+                        source_session_id,
+                        source_turn_id,
+                    } => Ok(MemoryCommandResult::Remember(self.remember(
+                        MemoryRememberRequest {
+                            text,
+                            scope: MemoryScope::Project,
+                            kind,
+                            source_user_item_id,
+                            source_session_id:
+                                source_session_id.unwrap_or(selected_session_id).to_string(),
+                            source_turn_id,
+                            workspace_root,
+                        },
+                    )?)),
+                    ProjectMemoryOperation::List {
+                        kind,
+                        state,
+                        origin,
+                        text,
+                        cursor,
+                        limit,
+                    } => Ok(MemoryCommandResult::List(self.list(ListMemoryRequest {
+                        scope: Some(MemoryScope::Project),
+                        kind,
+                        state,
+                        origin,
+                        text,
+                        cursor,
+                        limit,
+                        workspace_root,
+                    })?)),
+                }
             }
         }
     }
@@ -245,6 +333,53 @@ pub enum MemoryCommand {
     Remember(MemoryRememberRequest),
     /// Return a filtered, paginated view of canonical memory entries.
     List(ListMemoryRequest),
+    /// Resolve Native Session candidates to one canonical Project scope and
+    /// execute the requested management operation within that scope.
+    Project {
+        candidates: Vec<ProjectMemorySession>,
+        operation: ProjectMemoryOperation,
+    },
+}
+
+/// Project-scoped management operations accepted by [`MemoryCommand::Project`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectMemoryOperation {
+    /// Validate, commit, and project an explicit Project memory request.
+    Remember {
+        text: String,
+        kind: Option<MemoryKind>,
+        source_user_item_id: Option<String>,
+        /// Active-turn source Session; direct commands fall back to the
+        /// selected Project Session when absent.
+        source_session_id: Option<SessionId>,
+        source_turn_id: Option<String>,
+    },
+    /// Return a filtered, paginated Project memory view.
+    List {
+        kind: Option<MemoryKind>,
+        state: Option<MemoryState>,
+        origin: Option<MemoryOrigin>,
+        text: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    },
+}
+
+/// Runtime-owned Native Session facts needed to resolve a Project scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectMemorySession {
+    pub session_id: SessionId,
+    /// The Session summary workspace, or `None` when that summary is
+    /// unavailable. Command execution applies the global gate before rejecting it.
+    pub workspace_root: Option<PathBuf>,
+    pub activity: ProjectMemorySessionActivity,
+}
+
+/// Whether a Project candidate owns an active turn or is only selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectMemorySessionActivity {
+    Active,
+    Inactive,
 }
 
 /// Result returned by [`MemoryRuntime::execute_command`].
