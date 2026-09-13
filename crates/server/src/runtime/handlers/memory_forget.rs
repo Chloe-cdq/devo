@@ -1,6 +1,5 @@
 use super::super::*;
 
-use crate::memory::MemoryCommand;
 use crate::memory::MemoryCommandResult;
 use crate::memory::MemoryForgetRequest;
 use crate::memory::MemoryForgetSelector;
@@ -51,19 +50,50 @@ impl ServerRuntime {
             Ok(source) => source,
             Err(response) => return response,
         };
-        let result = memory
-            .execute_command(MemoryCommand::Forget(MemoryForgetRequest {
-                selector,
-                scope: params.scope,
-                source,
-            }))
+        let entry_id = match &selector {
+            MemoryForgetSelector::EntryId(entry_id) => Some(entry_id),
+            MemoryForgetSelector::Text(_) => None,
+        };
+        let reservation = match self
+            .memory_forget_coordinator
+            .authorize_native(source.session_id, entry_id)
+        {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    error.to_string(),
+                );
+            }
+        };
+        let result = self
+            .deps
+            .memory_forget_executor
+            .execute(
+                memory,
+                MemoryForgetRequest {
+                    selector,
+                    scope: params.scope,
+                    source,
+                },
+            )
             .await;
         match result {
-            Ok(MemoryCommandResult::Forget(result)) => serde_json::to_value(SuccessResponse {
-                id: request_id,
-                result,
-            })
-            .expect("serialize memory/forget response"),
+            Ok(MemoryCommandResult::Forget(result)) => {
+                if let Err(error) = reservation.commit(result.forgotten.as_ref()) {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InternalError,
+                        error.to_string(),
+                    );
+                }
+                serde_json::to_value(SuccessResponse {
+                    id: request_id,
+                    result,
+                })
+                .expect("serialize memory/forget response")
+            }
             Ok(MemoryCommandResult::Status(_))
             | Ok(MemoryCommandResult::Remember(_))
             | Ok(MemoryCommandResult::List(_)) => self.error_response(

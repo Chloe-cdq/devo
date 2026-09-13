@@ -5,6 +5,7 @@
 
 mod entries;
 mod forget;
+mod forget_execution;
 mod identity;
 mod projection;
 mod queries;
@@ -40,6 +41,9 @@ use devo_protocol::native::rpc_memory::MemoryStatus;
 use devo_protocol::native::session::MemorySetting;
 use rusqlite::Connection;
 use thiserror::Error;
+
+pub use forget_execution::MemoryForgetExecutor;
+pub(crate) use forget_execution::RuntimeMemoryForgetExecutor;
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
 const MEMORY_SCHEMA_VERSION: &str = "3";

@@ -148,6 +148,8 @@ pub struct ServerRuntimeDependencies {
     pub(crate) config_store: Arc<std::sync::Mutex<AppConfigStore>>,
     /// User-level process context used before a concrete session exists.
     pub(crate) process_context: Arc<SessionRuntimeContext>,
+    /// Execution seam used to keep forget authorization live through storage.
+    pub(crate) memory_forget_executor: Arc<dyn crate::memory::MemoryForgetExecutor>,
     /// LRU of workspace-scoped contexts (canonical cwd → context).
     ///
     /// Avoids rebuilding MCP/tool registry/skill catalog on every
@@ -201,10 +203,20 @@ impl ServerRuntimeDependencies {
             db,
             config_store,
             process_context,
+            memory_forget_executor: Arc::new(crate::memory::RuntimeMemoryForgetExecutor),
             workspace_contexts: StdMutex::new(workspace_context_cache(
                 WORKSPACE_CONTEXT_CACHE_CAPACITY,
             )),
         }
+    }
+
+    /// Replaces the memory-forget executor while preserving all other runtime dependencies.
+    pub fn with_memory_forget_executor(
+        mut self,
+        executor: Arc<dyn crate::memory::MemoryForgetExecutor>,
+    ) -> Self {
+        self.memory_forget_executor = executor;
+        self
     }
 
     pub(crate) async fn context_for_workspace(

@@ -105,37 +105,29 @@ pub(super) async fn forget(
         )
         .await
         .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
-    let grant =
-        runtime
-            .memory_forget_authorizations
-            .authorize(&invocation, &user_text, &entry_id)?;
-    let scope = match &grant {
-        crate::runtime::memory_forget_authorization::MemoryForgetGrant::Direct => params.scope,
-        crate::runtime::memory_forget_authorization::MemoryForgetGrant::Pending {
-            scope, ..
-        } => *scope,
-    };
     let context = MemoryMutationContext::new(&runtime, &invocation).await?;
-    let result = context
-        .memory
-        .execute_command(crate::memory::MemoryCommand::Forget(
+    let authorized = runtime.memory_forget_coordinator.authorize_agent(
+        &invocation,
+        &user_text,
+        &entry_id,
+        params.scope,
+    )?;
+    let result = runtime
+        .deps
+        .memory_forget_executor
+        .execute(
+            &context.memory,
             crate::memory::MemoryForgetRequest {
                 selector: crate::memory::MemoryForgetSelector::EntryId(entry_id),
-                scope,
+                scope: authorized.scope,
                 source: context.source,
             },
-        ))
+        )
         .await
         .map_err(memory_tool_error)?;
     match result {
         crate::memory::MemoryCommandResult::Forget(result) => {
-            if let crate::runtime::memory_forget_authorization::MemoryForgetGrant::Pending {
-                reservation,
-                ..
-            } = grant
-            {
-                reservation.commit()?;
-            }
+            authorized.reservation.commit(result.forgotten.as_ref())?;
             Ok(result)
         }
         crate::memory::MemoryCommandResult::Status(_)
@@ -243,7 +235,7 @@ pub(super) async fn search(
         next_cursor: None,
     };
     runtime
-        .memory_forget_authorizations
+        .memory_forget_coordinator
         .record_search(&invocation, &result.data)?;
     Ok(result)
 }

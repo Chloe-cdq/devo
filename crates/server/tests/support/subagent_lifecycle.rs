@@ -39,6 +39,7 @@ use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
+use devo_server::memory::MemoryForgetExecutor;
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -267,45 +268,69 @@ pub fn build_runtime(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
-    build_runtime_with_workspace_root(data_root, provider, /*workspace_root*/ None)
+    build_runtime_with_workspace_root(
+        data_root, provider, /*workspace_root*/ None, /*memory_forget_executor*/ None,
+    )
 }
 
 pub fn build_runtime_with_workspace_config(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
-    build_runtime_with_workspace_root(data_root, provider, Some(data_root))
+    build_runtime_with_workspace_root(
+        data_root,
+        provider,
+        Some(data_root),
+        /*memory_forget_executor*/ None,
+    )
+}
+
+pub fn build_runtime_with_workspace_config_and_memory_forget_executor(
+    data_root: &std::path::Path,
+    provider: Arc<dyn ModelProviderSDK>,
+    memory_forget_executor: Arc<dyn MemoryForgetExecutor>,
+) -> Result<Arc<ServerRuntime>> {
+    build_runtime_with_workspace_root(
+        data_root,
+        provider,
+        Some(data_root),
+        Some(memory_forget_executor),
+    )
 }
 
 fn build_runtime_with_workspace_root(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
     workspace_root: Option<&std::path::Path>,
+    memory_forget_executor: Option<Arc<dyn MemoryForgetExecutor>>,
 ) -> Result<Arc<ServerRuntime>> {
     let db_path = data_root.join("subagent_lifecycle.db");
     let db = Arc::new(devo_server::db::Database::open(db_path).expect("open test database"));
-    Ok(ServerRuntime::new(
-        data_root.to_path_buf(),
-        ServerRuntimeDependencies::new(
-            Arc::clone(&provider),
-            Arc::new(SingleProviderRouter::new(provider)),
-            Arc::new(create_default_tool_registry()),
-            devo_server::empty_mcp_manager(),
-            "test-model".to_string(),
-            Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
-            Box::new(FileSystemSkillCatalog::new(SkillsConfig {
-                bundled: Some(BundledSkillsConfig { enabled: false }),
-                ..SkillsConfig::default()
-            })),
-            devo_core::AgentsMdConfig::default(),
-            db,
-            Arc::new(std::sync::Mutex::new(
-                AppConfigStore::load(data_root.to_path_buf(), workspace_root)
-                    .expect("load app config store"),
-            )),
-        ),
-    ))
+    let dependencies = ServerRuntimeDependencies::new(
+        Arc::clone(&provider),
+        Arc::new(SingleProviderRouter::new(provider)),
+        Arc::new(create_default_tool_registry()),
+        devo_server::empty_mcp_manager(),
+        "test-model".to_string(),
+        Arc::new(PresetModelCatalog::default()),
+        Arc::new(ProviderVendorCatalog::default()),
+        Box::new(FileSystemSkillCatalog::new(SkillsConfig {
+            bundled: Some(BundledSkillsConfig { enabled: false }),
+            ..SkillsConfig::default()
+        })),
+        devo_core::AgentsMdConfig::default(),
+        db,
+        Arc::new(std::sync::Mutex::new(
+            AppConfigStore::load(data_root.to_path_buf(), workspace_root)
+                .expect("load app config store"),
+        )),
+    );
+    let dependencies = if let Some(executor) = memory_forget_executor {
+        dependencies.with_memory_forget_executor(executor)
+    } else {
+        dependencies
+    };
+    Ok(ServerRuntime::new(data_root.to_path_buf(), dependencies))
 }
 
 pub async fn initialize_connection(
