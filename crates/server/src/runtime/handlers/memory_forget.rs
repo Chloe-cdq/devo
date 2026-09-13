@@ -69,14 +69,14 @@ impl ServerRuntime {
         };
         let result = self
             .deps
-            .memory_forget_executor
+            .memory_command_executor
             .execute(
                 memory,
-                MemoryForgetRequest {
+                crate::memory::MemoryCommand::Forget(MemoryForgetRequest {
                     selector,
                     scope: params.scope,
                     source,
-                },
+                }),
             )
             .await;
         match result {

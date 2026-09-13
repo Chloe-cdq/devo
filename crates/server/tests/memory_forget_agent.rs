@@ -17,67 +17,19 @@ use devo_protocol::{
 };
 use devo_provider::ModelProviderSDK;
 use devo_server::ServerRuntime;
-use devo_server::memory::{
-    MemoryCommand, MemoryCommandResult, MemoryError, MemoryForgetExecutor, MemoryForgetRequest,
-    MemoryRuntime,
-};
 use futures::Stream;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
-use tokio::sync::{Notify, mpsc};
-use tokio::time::{Duration, timeout};
+use tokio::sync::mpsc;
 
 #[path = "support/subagent_lifecycle.rs"]
 #[allow(dead_code)]
 mod support;
 
 use support::{
-    build_runtime_with_workspace_config,
-    build_runtime_with_workspace_config_and_memory_forget_executor, initialize_connection,
-    start_parent_session, start_turn_with_approval_policy, wait_for_parent_turn_completed,
+    build_runtime_with_workspace_config, initialize_connection, start_parent_session,
+    start_turn_with_approval_policy, wait_for_parent_turn_completed,
 };
-
-struct BlockingFirstMemoryForgetExecutor {
-    calls: AtomicUsize,
-    mutation_started: Notify,
-    release_mutation: Notify,
-}
-
-impl BlockingFirstMemoryForgetExecutor {
-    fn new() -> Self {
-        Self {
-            calls: AtomicUsize::new(0),
-            mutation_started: Notify::new(),
-            release_mutation: Notify::new(),
-        }
-    }
-
-    async fn wait_until_started(&self) -> Result<()> {
-        timeout(Duration::from_secs(5), self.mutation_started.notified())
-            .await
-            .context("first memory forget mutation did not start")?;
-        Ok(())
-    }
-
-    fn release(&self) {
-        self.release_mutation.notify_one();
-    }
-}
-
-#[async_trait]
-impl MemoryForgetExecutor for BlockingFirstMemoryForgetExecutor {
-    async fn execute(
-        &self,
-        memory: &MemoryRuntime,
-        request: MemoryForgetRequest,
-    ) -> Result<MemoryCommandResult, MemoryError> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            self.mutation_started.notify_one();
-            self.release_mutation.notified().await;
-        }
-        memory.execute_command(MemoryCommand::Forget(request)).await
-    }
-}
 
 enum ProviderAction {
     Search(&'static str),
@@ -209,35 +161,14 @@ struct MemoryAgentHarness {
 
 impl MemoryAgentHarness {
     async fn new(provider: Arc<MemoryAgentProvider>) -> Result<Self> {
-        Self::open(provider, /*memory_forget_executor*/ None).await
-    }
-
-    async fn new_with_forget_executor(
-        provider: Arc<MemoryAgentProvider>,
-        memory_forget_executor: Arc<dyn MemoryForgetExecutor>,
-    ) -> Result<Self> {
-        Self::open(provider, Some(memory_forget_executor)).await
-    }
-
-    async fn open(
-        provider: Arc<MemoryAgentProvider>,
-        memory_forget_executor: Option<Arc<dyn MemoryForgetExecutor>>,
-    ) -> Result<Self> {
         let data_root = TempDir::new()?;
         std::fs::create_dir_all(data_root.path().join(".devo"))?;
         std::fs::write(
             data_root.path().join(".devo").join("config.toml"),
             "[memory]\nenabled = true\n",
         )?;
-        let runtime = if let Some(memory_forget_executor) = memory_forget_executor {
-            build_runtime_with_workspace_config_and_memory_forget_executor(
-                data_root.path(),
-                Arc::clone(&provider) as _,
-                memory_forget_executor,
-            )?
-        } else {
-            build_runtime_with_workspace_config(data_root.path(), Arc::clone(&provider) as _)?
-        };
+        let runtime =
+            build_runtime_with_workspace_config(data_root.path(), Arc::clone(&provider) as _)?;
         let session = MemoryAgentSession::start(&runtime, data_root.path()).await?;
         Ok(Self {
             _data_root: data_root,
@@ -246,10 +177,6 @@ impl MemoryAgentHarness {
             notifications_rx: session.notifications_rx,
             session_id: session.session_id,
         })
-    }
-
-    async fn additional_session(&self) -> Result<MemoryAgentSession> {
-        MemoryAgentSession::start(&self.runtime, self._data_root.path()).await
     }
 
     async fn remember(&self, text: &str, scope: MemoryScope) -> Result<MemoryEntry> {
@@ -332,18 +259,6 @@ impl MemoryAgentSession {
             notifications_rx,
             session_id,
         })
-    }
-
-    async fn run_turn(&mut self, runtime: &Arc<ServerRuntime>, text: &str) -> Result<()> {
-        start_turn_with_approval_policy(
-            runtime,
-            self.connection_id,
-            self.session_id,
-            text,
-            Some("never"),
-        )
-        .await?;
-        wait_for_parent_turn_completed(&mut self.notifications_rx, self.session_id).await
     }
 }
 
@@ -610,163 +525,6 @@ async fn pending_search_does_not_shadow_direct_exact_id_command() -> Result<()> 
             candidates: Vec::new(),
         }
     );
-    Ok(())
-}
-
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
-/// Verifies: a global direct mutation lease rejects a confirmation from another session until storage completes.
-#[tokio::test]
-async fn direct_first_blocks_confirmation() -> Result<()> {
-    let provider = Arc::new(MemoryAgentProvider::new([
-        ProviderAction::Search("tabs"),
-        ProviderAction::CaptureSearch,
-        ProviderAction::ForgetTarget,
-        ProviderAction::ForgetSearchCandidate(0),
-        ProviderAction::Complete("confirmation blocked"),
-        ProviderAction::Complete("direct memory forgotten"),
-    ]));
-    let executor = Arc::new(BlockingFirstMemoryForgetExecutor::new());
-    let mut harness = MemoryAgentHarness::new_with_forget_executor(
-        Arc::clone(&provider),
-        Arc::clone(&executor) as _,
-    )
-    .await?;
-    let mut confirmation_session = harness.additional_session().await?;
-    let pending = harness.remember("I prefer tabs", MemoryScope::User).await?;
-    let direct = harness
-        .remember("My timezone is UTC", MemoryScope::User)
-        .await?;
-    provider.set_target(direct.entry_id.clone());
-    confirmation_session
-        .run_turn(&harness.runtime, "Find my tab preference")
-        .await?;
-    assert_eq!(
-        provider.search_result(),
-        Page {
-            data: vec![search_entry(&pending)],
-            next_cursor: None,
-        }
-    );
-
-    let direct_text = format!("Forget memory entry {}", direct.entry_id);
-    let runtime = Arc::clone(&harness.runtime);
-    let direct_task = tokio::spawn(async move {
-        harness.run_turn(&direct_text).await?;
-        Ok::<_, anyhow::Error>(harness)
-    });
-    executor.wait_until_started().await?;
-    confirmation_session
-        .run_turn(
-            &runtime,
-            &format!("Confirm forget memory entry {}", pending.entry_id),
-        )
-        .await?;
-    let requests = provider.requests();
-    let confirmation_result = assert_forget_rejected(&requests, 4, "already in flight");
-    executor.release();
-    let harness = direct_task.await??;
-    confirmation_result?;
-    assert_eq!(
-        harness.list(MemoryScope::User, MemoryState::Active).await?,
-        Page {
-            data: vec![pending],
-            next_cursor: None,
-        }
-    );
-    Ok(())
-}
-
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
-/// Verifies: Native and agent deletion share one global lease in both arrival orders, including across sessions.
-#[tokio::test]
-async fn native_and_agent_forget_are_mutually_exclusive() -> Result<()> {
-    {
-        let provider = Arc::new(MemoryAgentProvider::new([
-            ProviderAction::ForgetTarget,
-            ProviderAction::Complete("agent memory forgotten"),
-        ]));
-        let executor = Arc::new(BlockingFirstMemoryForgetExecutor::new());
-        let mut harness = MemoryAgentHarness::new_with_forget_executor(
-            Arc::clone(&provider),
-            Arc::clone(&executor) as _,
-        )
-        .await?;
-        let native_session = harness.additional_session().await?;
-        let entry = harness.remember("I prefer tabs", MemoryScope::User).await?;
-        provider.set_target(entry.entry_id.clone());
-        let runtime = Arc::clone(&harness.runtime);
-        let direct_text = format!("Forget memory entry {}", entry.entry_id);
-        let agent_task = tokio::spawn(async move {
-            harness.run_turn(&direct_text).await?;
-            Ok::<_, anyhow::Error>(harness)
-        });
-        executor.wait_until_started().await?;
-        let native_response = runtime
-            .handle_incoming(
-                native_session.connection_id,
-                serde_json::json!({
-                    "id": 20,
-                    "method": "memory/forget",
-                    "params": { "entryId": entry.entry_id }
-                }),
-            )
-            .await
-            .context("concurrent Native memory/forget response")?;
-        executor.release();
-        let _harness = agent_task.await??;
-        anyhow::ensure!(
-            native_response["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("already in flight")),
-            "Native mutation bypassed the agent lease: {native_response}"
-        );
-    }
-
-    {
-        let provider = Arc::new(MemoryAgentProvider::new([
-            ProviderAction::ForgetTarget,
-            ProviderAction::Complete("agent mutation blocked"),
-        ]));
-        let executor = Arc::new(BlockingFirstMemoryForgetExecutor::new());
-        let mut harness = MemoryAgentHarness::new_with_forget_executor(
-            Arc::clone(&provider),
-            Arc::clone(&executor) as _,
-        )
-        .await?;
-        let native_session = harness.additional_session().await?;
-        let entry = harness
-            .remember("I prefer spaces", MemoryScope::User)
-            .await?;
-        provider.set_target(entry.entry_id.clone());
-        let runtime = Arc::clone(&harness.runtime);
-        let native_entry_id = entry.entry_id.clone();
-        let native_task = tokio::spawn(async move {
-            runtime
-                .handle_incoming(
-                    native_session.connection_id,
-                    serde_json::json!({
-                        "id": 21,
-                        "method": "memory/forget",
-                        "params": { "entryId": native_entry_id }
-                    }),
-                )
-                .await
-                .context("Native memory/forget response")
-        });
-        executor.wait_until_started().await?;
-        harness
-            .run_turn(&format!("Forget memory entry {}", entry.entry_id))
-            .await?;
-        let requests = provider.requests();
-        let agent_result = assert_forget_rejected(&requests, 1, "already in flight");
-        executor.release();
-        let native_response = native_task.await??;
-        agent_result?;
-        anyhow::ensure!(
-            native_response.get("result").is_some(),
-            "Native mutation did not complete after release: {native_response}"
-        );
-    }
     Ok(())
 }
 

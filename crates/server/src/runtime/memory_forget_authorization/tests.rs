@@ -419,6 +419,49 @@ fn successful_forget_removes_entry_from_all_pending_selections() {
 }
 
 /// Trace: L2-DES-MEM-001 DD-12
+/// Verifies: a search snapshot captured before deletion cannot reintroduce the deleted ID as pending authority.
+#[test]
+fn stale_search_snapshot_cannot_reintroduce_forgotten_candidate() {
+    let authorizations = MemoryForgetCoordinator::default();
+    let search = invocation();
+    let deleted_id = MemoryEntryId::from("mem_deleted");
+    let stale_candidates = vec![candidate(deleted_id.clone(), MemoryScope::User)];
+    let search_epoch = authorizations
+        .begin_search()
+        .expect("begin search snapshot");
+    let native_session = devo_protocol::SessionId::new();
+    authorizations
+        .authorize_native(native_session, Some(&deleted_id))
+        .expect("reserve Native deletion")
+        .commit(Some(&forgotten_entry(deleted_id.clone())))
+        .expect("commit Native deletion");
+
+    assert_eq!(
+        authorizations
+            .record_search_snapshot(&search, &stale_candidates, search_epoch)
+            .expect_err("stale search snapshot must be rejected")
+            .to_string(),
+        "invalid input: memory_search snapshot was invalidated by a completed forget mutation"
+    );
+    let confirmation = MemoryToolInvocation {
+        turn_id: devo_protocol::TurnId::new(),
+        user_item_id: devo_protocol::native::ids::ItemId::new(),
+        ..search
+    };
+    assert_eq!(
+        authorizations
+            .authorize(
+                &confirmation,
+                &format!("Confirm forget memory entry {deleted_id}"),
+                &deleted_id,
+            )
+            .expect_err("stale search must not restore deletion authority")
+            .to_string(),
+        "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+    );
+}
+
+/// Trace: L2-DES-MEM-001 DD-12
 /// Verifies: an in-flight selection excludes concurrent mutation and returns to Pending when mutation does not commit.
 #[test]
 fn abandoned_inflight_selection_can_be_retried() {
@@ -562,6 +605,7 @@ fn active_confirmation_protects_its_selection_from_search_and_expiry() {
                 kind: ActiveForgetKind::AgentConfirmed { selection_id: 0 },
                 entry_id: Some(selected_id.clone()),
             }),
+            mutation_epoch: 0,
             next_reservation_id: 1,
             next_selection_id: 2,
         }
@@ -711,6 +755,7 @@ fn recording_search_prunes_expired_pending_selections() {
                 },
             )]),
             active: None::<ActiveForgetMutation>,
+            mutation_epoch: 0,
             next_reservation_id: 0,
             next_selection_id: 2,
         }

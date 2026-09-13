@@ -114,14 +114,14 @@ pub(super) async fn forget(
     )?;
     let result = runtime
         .deps
-        .memory_forget_executor
+        .memory_command_executor
         .execute(
             &context.memory,
-            crate::memory::MemoryForgetRequest {
+            crate::memory::MemoryCommand::Forget(crate::memory::MemoryForgetRequest {
                 selector: crate::memory::MemoryForgetSelector::EntryId(entry_id),
                 scope: authorized.scope,
                 source: context.source,
-            },
+            }),
         )
         .await
         .map_err(memory_tool_error)?;
@@ -173,11 +173,15 @@ pub(super) async fn search(
         },
         |state| vec![state],
     );
+    let search_epoch = runtime.memory_forget_coordinator.begin_search()?;
     let mut entries = Vec::new();
     for state in states {
-        let result = memory
-            .execute_command(crate::memory::MemoryCommand::List(
-                crate::memory::ListMemoryRequest {
+        let result = runtime
+            .deps
+            .memory_command_executor
+            .execute(
+                &memory,
+                crate::memory::MemoryCommand::List(crate::memory::ListMemoryRequest {
                     scope: Some(scope),
                     kind: params.kind,
                     state: Some(state),
@@ -186,8 +190,8 @@ pub(super) async fn search(
                     cursor: None,
                     limit: Some(20),
                     workspace_root: workspace_root.clone(),
-                },
-            ))
+                }),
+            )
             .await
             .map_err(memory_tool_error)?;
         match result {
@@ -234,9 +238,11 @@ pub(super) async fn search(
             .collect::<Vec<_>>(),
         next_cursor: None,
     };
-    runtime
-        .memory_forget_coordinator
-        .record_search(&invocation, &result.data)?;
+    runtime.memory_forget_coordinator.record_search_snapshot(
+        &invocation,
+        &result.data,
+        search_epoch,
+    )?;
     Ok(result)
 }
 

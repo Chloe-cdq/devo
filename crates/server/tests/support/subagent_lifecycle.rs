@@ -39,7 +39,7 @@ use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
-use devo_server::memory::MemoryForgetExecutor;
+use devo_server::memory::MemoryCommandExecutor;
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -75,6 +75,10 @@ impl ScriptedProvider {
 
     pub fn completed_after(delay: Duration, text: &str) -> StreamScript {
         StreamScript::Delayed(delay, text_response_events(text))
+    }
+
+    pub fn push_scripts(&self, scripts: impl IntoIterator<Item = StreamScript>) {
+        self.scripts.lock().expect("scripts lock").extend(scripts);
     }
 
     pub fn completed_with_deltas(deltas: &[&str]) -> StreamScript {
@@ -268,8 +272,8 @@ pub fn build_runtime(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
-    build_runtime_with_workspace_root(
-        data_root, provider, /*workspace_root*/ None, /*memory_forget_executor*/ None,
+    build_runtime_with_overrides(
+        data_root, provider, /*workspace_root*/ None, /*memory_command_executor*/ None,
     )
 }
 
@@ -277,32 +281,19 @@ pub fn build_runtime_with_workspace_config(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
-    build_runtime_with_workspace_root(
+    build_runtime_with_overrides(
         data_root,
         provider,
         Some(data_root),
-        /*memory_forget_executor*/ None,
+        /*memory_command_executor*/ None,
     )
 }
 
-pub fn build_runtime_with_workspace_config_and_memory_forget_executor(
-    data_root: &std::path::Path,
-    provider: Arc<dyn ModelProviderSDK>,
-    memory_forget_executor: Arc<dyn MemoryForgetExecutor>,
-) -> Result<Arc<ServerRuntime>> {
-    build_runtime_with_workspace_root(
-        data_root,
-        provider,
-        Some(data_root),
-        Some(memory_forget_executor),
-    )
-}
-
-fn build_runtime_with_workspace_root(
+pub fn build_runtime_with_overrides(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
     workspace_root: Option<&std::path::Path>,
-    memory_forget_executor: Option<Arc<dyn MemoryForgetExecutor>>,
+    memory_command_executor: Option<Arc<dyn MemoryCommandExecutor>>,
 ) -> Result<Arc<ServerRuntime>> {
     let db_path = data_root.join("subagent_lifecycle.db");
     let db = Arc::new(devo_server::db::Database::open(db_path).expect("open test database"));
@@ -325,8 +316,8 @@ fn build_runtime_with_workspace_root(
                 .expect("load app config store"),
         )),
     );
-    let dependencies = if let Some(executor) = memory_forget_executor {
-        dependencies.with_memory_forget_executor(executor)
+    let dependencies = if let Some(executor) = memory_command_executor {
+        dependencies.with_memory_command_executor(executor)
     } else {
         dependencies
     };

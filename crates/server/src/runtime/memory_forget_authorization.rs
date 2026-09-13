@@ -27,9 +27,13 @@ struct PendingForgetSelection {
 struct ForgetState {
     pending_by_session: HashMap<devo_protocol::SessionId, PendingForgetSelection>,
     active: Option<ActiveForgetMutation>,
+    mutation_epoch: u64,
     next_reservation_id: u64,
     next_selection_id: u64,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MemorySearchEpoch(u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActiveForgetMutation {
@@ -91,18 +95,45 @@ impl Drop for MemoryForgetReservation<'_> {
 }
 
 impl MemoryForgetCoordinator {
-    pub(super) fn record_search(
+    pub(super) fn begin_search(&self) -> Result<MemorySearchEpoch, ToolCallError> {
+        Ok(MemorySearchEpoch(self.lock_state()?.mutation_epoch))
+    }
+
+    pub(super) fn record_search_snapshot(
+        &self,
+        invocation: &MemoryToolInvocation,
+        candidates: &[MemorySearchEntry],
+        epoch: MemorySearchEpoch,
+    ) -> Result<(), ToolCallError> {
+        self.record_search_snapshot_at(invocation, candidates, epoch, Instant::now())
+    }
+
+    #[cfg(test)]
+    fn record_search(
         &self,
         invocation: &MemoryToolInvocation,
         candidates: &[MemorySearchEntry],
     ) -> Result<(), ToolCallError> {
-        self.record_search_at(invocation, candidates, Instant::now())
+        let epoch = self.begin_search()?;
+        self.record_search_snapshot(invocation, candidates, epoch)
     }
 
+    #[cfg(test)]
     fn record_search_at(
         &self,
         invocation: &MemoryToolInvocation,
         candidates: &[MemorySearchEntry],
+        now: Instant,
+    ) -> Result<(), ToolCallError> {
+        let epoch = self.begin_search()?;
+        self.record_search_snapshot_at(invocation, candidates, epoch, now)
+    }
+
+    fn record_search_snapshot_at(
+        &self,
+        invocation: &MemoryToolInvocation,
+        candidates: &[MemorySearchEntry],
+        epoch: MemorySearchEpoch,
         now: Instant,
     ) -> Result<(), ToolCallError> {
         let mut state = self.lock_state()?;
@@ -112,6 +143,11 @@ impl MemoryForgetCoordinator {
         }) {
             return Err(ToolCallError::InvalidInput(
                 "memory_forget selection mutation is already in flight".to_string(),
+            ));
+        }
+        if epoch.0 != state.mutation_epoch {
+            return Err(ToolCallError::InvalidInput(
+                "memory_search snapshot was invalidated by a completed forget mutation".to_string(),
             ));
         }
         Self::prune_expired(&mut state, now);
@@ -303,6 +339,9 @@ impl MemoryForgetCoordinator {
             state.pending_by_session.remove(&active.session_id);
         }
         if let Some(forgotten) = forgotten {
+            state.mutation_epoch = state.mutation_epoch.checked_add(1).ok_or_else(|| {
+                ToolCallError::InternalError("memory forget mutation epoch overflow".to_string())
+            })?;
             state.pending_by_session.retain(|_, selection| {
                 selection
                     .candidates
