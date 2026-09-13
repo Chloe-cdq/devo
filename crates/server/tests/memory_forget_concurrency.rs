@@ -5,15 +5,12 @@ use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryForgetResult, MemoryScope, MemoryState,
 };
-use devo_protocol::{
-    ErrorResponse, ModelRequest, ModelResponse, ProtocolError, ProtocolErrorCode, RequestContent,
-    ResponseContent, ResponseMetadata, SessionId, StopReason, StreamEvent, Usage,
-};
-use devo_server::ServerRuntime;
+use devo_protocol::{ErrorResponse, ProtocolError, ProtocolErrorCode};
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
-use tokio::sync::mpsc;
 
+#[path = "support/memory_forget_runtime.rs"]
+mod memory_forget_runtime_support;
 #[path = "support/memory_forget.rs"]
 #[allow(dead_code)]
 mod memory_forget_support;
@@ -21,10 +18,14 @@ mod memory_forget_support;
 #[allow(dead_code)]
 mod support;
 
+use memory_forget_runtime_support::{
+    configured_data_root, remember, run_turn, start_subscribed_session, tool_call_script,
+    tool_result,
+};
 use memory_forget_support::{BlockingFirstMemoryCommandExecutor, BlockingSecondMemoryListExecutor};
 use support::{
-    ScriptedProvider, StreamScript, build_runtime_with_overrides, initialize_connection,
-    start_parent_session, start_turn_with_approval_policy, wait_for_parent_turn_completed,
+    ScriptedProvider, build_runtime_with_overrides, initialize_connection, start_parent_session,
+    start_turn_with_approval_policy, wait_for_parent_turn_completed,
 };
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
@@ -226,27 +227,7 @@ async fn aborted_native_forget_releases_global_lease() -> Result<()> {
 async fn deletion_invalidates_search_snapshot_before_pending_publish() -> Result<()> {
     let search_input = serde_json::json!({ "query": "tabs" });
     let provider = Arc::new(ScriptedProvider::new([
-        StreamScript::Events(vec![
-            StreamEvent::ToolCallStart {
-                index: 0,
-                id: "memory-search".to_string(),
-                name: "memory_search".to_string(),
-                input: search_input.clone(),
-            },
-            StreamEvent::MessageDone {
-                response: ModelResponse {
-                    id: "memory-search-response".to_string(),
-                    content: vec![ResponseContent::ToolUse {
-                        id: "memory-search".to_string(),
-                        name: "memory_search".to_string(),
-                        input: search_input,
-                    }],
-                    stop_reason: Some(StopReason::ToolUse),
-                    usage: Usage::default(),
-                    metadata: ResponseMetadata::default(),
-                },
-            },
-        ]),
+        tool_call_script("memory-search", "memory_search", search_input),
         ScriptedProvider::completed("stale search rejected"),
     ]));
     let data_root = TempDir::new()?;
@@ -256,6 +237,7 @@ async fn deletion_invalidates_search_snapshot_before_pending_publish() -> Result
         "[memory]\nenabled = true\n",
     )?;
     let executor = Arc::new(BlockingSecondMemoryListExecutor::new());
+    executor.block_next_search();
     let runtime = build_runtime_with_overrides(
         data_root.path(),
         Arc::clone(&provider) as _,
@@ -338,27 +320,328 @@ async fn deletion_invalidates_search_snapshot_before_pending_publish() -> Result
     wait_for_parent_turn_completed(&mut notifications_rx, session_id).await?;
 
     let requests = provider.requests();
-    let tool_result = requests
-        .get(1)
-        .context("model request after memory_search")?
-        .messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .find_map(|content| {
-            let RequestContent::ToolResult {
-                tool_use_id,
-                content,
-                ..
-            } = content
-            else {
-                return None;
-            };
-            (tool_use_id == "memory-search").then_some(content.as_str())
-        })
-        .context("memory_search tool result")?;
+    let tool_result = tool_result(
+        requests
+            .get(1)
+            .context("model request after memory_search")?,
+        "memory-search",
+    )
+    .context("memory_search tool result")?;
     assert_eq!(
         tool_result,
         "invalid input: memory_search snapshot was invalidated by a completed forget mutation"
+    );
+    Ok(())
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev4 DD-12
+/// Verifies: a durable forget commit invalidates older search snapshots and consumes confirmation even when projection refresh fails.
+#[tokio::test]
+async fn durable_commit_with_projection_failure_invalidates_search_and_confirmation() -> Result<()>
+{
+    let data_root = configured_data_root()?;
+    let provider = Arc::new(ScriptedProvider::new([]));
+    let executor = Arc::new(BlockingSecondMemoryListExecutor::new());
+    let runtime = build_runtime_with_overrides(
+        data_root.path(),
+        Arc::clone(&provider) as _,
+        /*workspace_root*/ Some(data_root.path()),
+        /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
+    )?;
+    let (confirmation_connection, mut confirmation_notifications, confirmation_session) =
+        start_subscribed_session(&runtime, data_root.path(), 40).await?;
+    let (search_connection, mut search_notifications, search_session) =
+        start_subscribed_session(&runtime, data_root.path(), 41).await?;
+    let entry = remember(&runtime, confirmation_connection, 42, "I prefer tabs").await?;
+    let entry_id = entry.entry_id.clone();
+    provider.push_scripts([
+        tool_call_script(
+            "initial-search",
+            "memory_search",
+            serde_json::json!({ "query": "tabs" }),
+        ),
+        ScriptedProvider::completed("candidate recorded"),
+        tool_call_script(
+            "stale-search",
+            "memory_search",
+            serde_json::json!({ "query": "tabs" }),
+        ),
+        tool_call_script(
+            "confirmed-forget",
+            "memory_forget",
+            serde_json::json!({ "entry_id": entry_id }),
+        ),
+        ScriptedProvider::completed("projection failure reported"),
+        ScriptedProvider::completed("stale search rejected"),
+        tool_call_script(
+            "retry-forget",
+            "memory_forget",
+            serde_json::json!({ "entry_id": entry_id }),
+        ),
+        ScriptedProvider::completed("retry rejected"),
+    ]);
+    run_turn(
+        &runtime,
+        confirmation_connection,
+        confirmation_session,
+        &mut confirmation_notifications,
+        "Find my tab preference",
+    )
+    .await?;
+    let projection = data_root
+        .path()
+        .join("memory")
+        .join("user")
+        .join("MEMORY.md");
+    std::fs::remove_file(&projection)?;
+    std::fs::create_dir(&projection)?;
+    executor.block_next_search();
+    start_turn_with_approval_policy(
+        &runtime,
+        search_connection,
+        search_session,
+        "Find my tab preference again",
+        Some("never"),
+    )
+    .await?;
+    executor.wait_until_snapshot_ready().await?;
+
+    let confirmation = format!("Confirm forget memory entry {entry_id}");
+    run_turn(
+        &runtime,
+        confirmation_connection,
+        confirmation_session,
+        &mut confirmation_notifications,
+        &confirmation,
+    )
+    .await?;
+    executor.release();
+    wait_for_parent_turn_completed(&mut search_notifications, search_session).await?;
+    run_turn(
+        &runtime,
+        confirmation_connection,
+        confirmation_session,
+        &mut confirmation_notifications,
+        &confirmation,
+    )
+    .await?;
+
+    let requests = provider.requests();
+    let projection_failure = tool_result(
+        requests
+            .get(4)
+            .context("projection failure result request")?,
+        "confirmed-forget",
+    )
+    .context("confirmed memory_forget result")?;
+    anyhow::ensure!(
+        projection_failure
+            .starts_with("internal error: memory forget committed but projection refresh failed:"),
+        "unexpected projection failure result: {projection_failure}"
+    );
+    assert_eq!(
+        tool_result(
+            requests.get(5).context("stale search result request")?,
+            "stale-search"
+        ),
+        Some(
+            "invalid input: memory_search snapshot was invalidated by a completed forget mutation"
+        )
+    );
+    assert_eq!(
+        tool_result(
+            requests.get(7).context("retry result request")?,
+            "retry-forget"
+        ),
+        Some(
+            "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+        )
+    );
+    let retired_response = runtime
+        .handle_incoming(
+            confirmation_connection,
+            serde_json::json!({
+                "id": 43,
+                "method": "memory/list",
+                "params": { "scope": MemoryScope::User, "state": MemoryState::Retired }
+            }),
+        )
+        .await
+        .context("memory/list retired response")?;
+    let retired: Page<MemoryEntry> = serde_json::from_value(retired_response["result"].clone())?;
+    let retired_updated_at = retired
+        .data
+        .first()
+        .context("durably forgotten entry")?
+        .updated_at;
+    assert_eq!(
+        retired,
+        Page {
+            data: vec![MemoryEntry {
+                state: MemoryState::Retired,
+                updated_at: retired_updated_at,
+                ..entry
+            }],
+            next_cursor: None,
+        }
+    );
+    Ok(())
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev4 DD-12
+/// Verifies: a Native durable forget commit advances authorization state even when projection refresh fails.
+#[tokio::test]
+async fn native_durable_commit_with_projection_failure_invalidates_search_and_confirmation()
+-> Result<()> {
+    let data_root = configured_data_root()?;
+    let provider = Arc::new(ScriptedProvider::new([]));
+    let executor = Arc::new(BlockingSecondMemoryListExecutor::new());
+    let runtime = build_runtime_with_overrides(
+        data_root.path(),
+        Arc::clone(&provider) as _,
+        /*workspace_root*/ Some(data_root.path()),
+        /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
+    )?;
+    let (pending_connection, mut pending_notifications, pending_session) =
+        start_subscribed_session(&runtime, data_root.path(), 50).await?;
+    let (search_connection, mut search_notifications, search_session) =
+        start_subscribed_session(&runtime, data_root.path(), 51).await?;
+    let (native_connection, _native_notifications, _native_session) =
+        start_subscribed_session(&runtime, data_root.path(), 52).await?;
+    let entry = remember(&runtime, pending_connection, 53, "I prefer tabs").await?;
+    let entry_id = entry.entry_id.clone();
+    provider.push_scripts([
+        tool_call_script(
+            "initial-search",
+            "memory_search",
+            serde_json::json!({ "query": "tabs" }),
+        ),
+        ScriptedProvider::completed("candidate recorded"),
+        tool_call_script(
+            "stale-search",
+            "memory_search",
+            serde_json::json!({ "query": "tabs" }),
+        ),
+        ScriptedProvider::completed("stale search rejected"),
+        tool_call_script(
+            "retry-forget",
+            "memory_forget",
+            serde_json::json!({ "entry_id": entry_id }),
+        ),
+        ScriptedProvider::completed("retry rejected"),
+    ]);
+    run_turn(
+        &runtime,
+        pending_connection,
+        pending_session,
+        &mut pending_notifications,
+        "Find my tab preference",
+    )
+    .await?;
+    let projection = data_root
+        .path()
+        .join("memory")
+        .join("user")
+        .join("MEMORY.md");
+    std::fs::remove_file(&projection)?;
+    std::fs::create_dir(&projection)?;
+    executor.block_next_search();
+    start_turn_with_approval_policy(
+        &runtime,
+        search_connection,
+        search_session,
+        "Find my tab preference again",
+        Some("never"),
+    )
+    .await?;
+    executor.wait_until_snapshot_ready().await?;
+
+    let native_response = runtime
+        .handle_incoming(
+            native_connection,
+            serde_json::json!({
+                "id": 54,
+                "method": "memory/forget",
+                "params": { "entryId": entry_id }
+            }),
+        )
+        .await
+        .context("Native memory/forget response")?;
+    let native_error: ErrorResponse = serde_json::from_value(native_response)?;
+    let projection_failure = native_error.error.message.clone();
+    assert_eq!(
+        native_error,
+        ErrorResponse {
+            id: serde_json::json!(54),
+            error: ProtocolError {
+                code: ProtocolErrorCode::InternalError,
+                message: projection_failure.clone(),
+                data: serde_json::json!({}),
+            },
+        }
+    );
+    anyhow::ensure!(
+        projection_failure.starts_with("memory forget committed but projection refresh failed:"),
+        "unexpected Native projection failure: {projection_failure}"
+    );
+    executor.release();
+    wait_for_parent_turn_completed(&mut search_notifications, search_session).await?;
+    let confirmation = format!("Confirm forget memory entry {entry_id}");
+    run_turn(
+        &runtime,
+        pending_connection,
+        pending_session,
+        &mut pending_notifications,
+        &confirmation,
+    )
+    .await?;
+
+    let requests = provider.requests();
+    assert_eq!(
+        tool_result(
+            requests.get(3).context("stale search result request")?,
+            "stale-search"
+        ),
+        Some(
+            "invalid input: memory_search snapshot was invalidated by a completed forget mutation"
+        )
+    );
+    assert_eq!(
+        tool_result(
+            requests.get(5).context("retry result request")?,
+            "retry-forget"
+        ),
+        Some(
+            "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+        )
+    );
+    let retired_response = runtime
+        .handle_incoming(
+            native_connection,
+            serde_json::json!({
+                "id": 55,
+                "method": "memory/list",
+                "params": { "scope": MemoryScope::User, "state": MemoryState::Retired }
+            }),
+        )
+        .await
+        .context("memory/list retired response")?;
+    let retired: Page<MemoryEntry> = serde_json::from_value(retired_response["result"].clone())?;
+    let retired_updated_at = retired
+        .data
+        .first()
+        .context("durably forgotten Native entry")?
+        .updated_at;
+    assert_eq!(
+        retired,
+        Page {
+            data: vec![MemoryEntry {
+                state: MemoryState::Retired,
+                updated_at: retired_updated_at,
+                ..entry
+            }],
+            next_cursor: None,
+        }
     );
     Ok(())
 }
@@ -497,117 +780,4 @@ async fn native_first_blocks_agent() -> Result<()> {
         }
     );
     Ok(())
-}
-
-fn configured_data_root() -> Result<TempDir> {
-    let data_root = TempDir::new()?;
-    std::fs::create_dir_all(data_root.path().join(".devo"))?;
-    std::fs::write(
-        data_root.path().join(".devo").join("config.toml"),
-        "[memory]\nenabled = true\n",
-    )?;
-    Ok(data_root)
-}
-
-async fn start_subscribed_session(
-    runtime: &Arc<ServerRuntime>,
-    workspace_root: &std::path::Path,
-    request_id: u64,
-) -> Result<(u64, mpsc::Receiver<serde_json::Value>, SessionId)> {
-    let (connection_id, notifications) = initialize_connection(runtime).await?;
-    let session_id = start_parent_session(runtime, connection_id, workspace_root).await?;
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": request_id,
-                "method": "subscription/create",
-                "params": {
-                    "selectors": [{ "kind": "session", "sessionId": session_id }],
-                    "includeSnapshot": false
-                }
-            }),
-        )
-        .await
-        .context("subscription/create response")?;
-    anyhow::ensure!(
-        response.get("result").is_some(),
-        "subscription/create failed: {response}"
-    );
-    Ok((connection_id, notifications, session_id))
-}
-
-async fn run_turn(
-    runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
-    session_id: SessionId,
-    notifications: &mut mpsc::Receiver<serde_json::Value>,
-    text: &str,
-) -> Result<()> {
-    start_turn_with_approval_policy(runtime, connection_id, session_id, text, Some("never"))
-        .await?;
-    wait_for_parent_turn_completed(notifications, session_id).await
-}
-
-async fn remember(
-    runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
-    request_id: u64,
-    text: &str,
-) -> Result<MemoryEntry> {
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": request_id,
-                "method": "memory/remember",
-                "params": { "text": text, "scope": MemoryScope::User }
-            }),
-        )
-        .await
-        .context("memory/remember response")?;
-    serde_json::from_value(response["result"].clone())
-        .with_context(|| format!("decode memory/remember response: {response}"))
-}
-
-fn tool_call_script(id: &str, name: &str, input: serde_json::Value) -> StreamScript {
-    StreamScript::Events(vec![
-        StreamEvent::ToolCallStart {
-            index: 0,
-            id: id.to_string(),
-            name: name.to_string(),
-            input: input.clone(),
-        },
-        StreamEvent::MessageDone {
-            response: ModelResponse {
-                id: format!("response-{id}"),
-                content: vec![ResponseContent::ToolUse {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    input,
-                }],
-                stop_reason: Some(StopReason::ToolUse),
-                usage: Usage::default(),
-                metadata: ResponseMetadata::default(),
-            },
-        },
-    ])
-}
-
-fn tool_result<'a>(request: &'a ModelRequest, tool_use_id: &str) -> Option<&'a str> {
-    request
-        .messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .find_map(|content| {
-            let RequestContent::ToolResult {
-                tool_use_id: result_id,
-                content,
-                ..
-            } = content
-            else {
-                return None;
-            };
-            (result_id == tool_use_id).then_some(content.as_str())
-        })
 }

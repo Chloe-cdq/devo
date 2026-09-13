@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-MEM-001
-revision: 3
+revision: 4
 status: Approved
 active_baseline: yes
-supersedes: revision 2 approved
+supersedes: revision 3 approved
 superseded_by:
 owner: Human + Assistant
-last_updated: 2026-09-12
+last_updated: 2026-09-13
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -143,9 +143,17 @@ The Native protocol adds:
 A root-agent natural-language forget request is a server-enforced two-stage operation:
 
 1. `memory_search` records a short-lived `PendingForgetSelection` containing the session ID, source turn and user-item IDs, ordered candidate IDs, and their scopes. Search never grants mutation authority in the same user turn.
-2. A later user item explicitly confirms one displayed stable ID using the closed confirmation grammar `Confirm forget memory entry <entry_id>` or `确认删除记忆条目 <entry_id>`. A bare ID is not mutation authority. `memory_forget` succeeds only when its ID is in the unexpired candidate set and the current user item names that same ID with the confirmation grammar. The server rejects same-turn mutation, IDs outside the candidate set, and cross-scope substitution. It reserves the selection as `InFlight` while the storage mutation runs, consumes it only after success, and releases it back to `Pending` after failure or cancellation. Concurrent mutation and concurrent replacement of an `InFlight` selection are rejected.
+2. A later user item explicitly confirms one displayed stable ID using the closed confirmation grammar `Confirm forget memory entry <entry_id>` or `确认删除记忆条目 <entry_id>`. A bare ID is not mutation authority. `memory_forget` succeeds only when its ID is in the unexpired candidate set and the current user item names that same ID with the confirmation grammar. The server rejects same-turn mutation, IDs outside the candidate set, and cross-scope substitution.
 
-Pending selection is ephemeral authorization state, not memory data. It expires after a bounded interval, is removed with its session, and is pruned when later searches or authorization checks inspect the store. Losing it on restart is fail-closed and requires a new search. Clients confirm reset and rebuild before issuing the command.
+All Agent Direct, Agent Confirmed, and Native forget mutations acquire one server-global, fail-fast deletion lease from `MemoryForgetCoordinator`. User Memory is shared across sessions, Native and Agent can target the same record, and a Native text selector may not resolve its final Entry ID before storage. Consequently, session-local exclusion is insufficient. The coordinator owns pending selections and the one active mutation under a single mutex; checking for an active mutation, validating Agent authority, allocating a monotonic reservation ID, and publishing the active reservation are one atomic operation. A strict Agent Direct command remains independent of unrelated Pending state, but it is rejected while any deletion lease is active.
+
+The RAII reservation lives across the complete asynchronous storage operation. Agent and Native handlers resolve every fallible prerequisite before acquiring it, then immediately execute the forget command. Cancellation, unexpected results, and storage errors before the SQLite transaction commits release only the matching reservation ID through `Drop`; a stale reservation can never clear a newer lease. The SQLite durable commit is the authorization commit boundary. If a later projection refresh fails, the memory layer returns a typed committed outcome containing the forget result and projection error; the handler commits the reservation before reporting the derived-layer failure or scheduling repair. A durable deletion must never be represented as an uncommitted failure.
+
+Commit semantics depend on the typed active mutation kind. Agent Confirmed consumes only its matching selection; Agent Direct and Native preserve unrelated pending selections. Every successful deletion removes the forgotten Entry ID from all sessions' pending candidate sets, dropping sets that become empty, and then clears the active lease. Failed or cancelled Agent Confirmed mutations retain their pending selection for retry while it remains within its ordinary TTL.
+
+Search captures the coordinator's `mutation_epoch` before reading memory storage. `record_search` uses the coordinator's same mutex and atomically rejects a snapshot whose epoch differs from the current epoch. Every successful deletion advances the epoch before removing the forgotten Entry ID from existing Pending selections, so a search that read before that commit cannot publish stale candidates afterward. `record_search` also rejects replacement of a selection currently used by an active Agent Confirmed mutation. Empty search results remove the session's Pending selection, and each non-empty search receives a distinct monotonic selection ID. TTL pruning never removes the selection protected by an active Agent Confirmed mutation; after lease release, normal TTL rules resume.
+
+Pending selection and active leases are ephemeral authorization state, not memory data. Pending state expires after a bounded interval and is removed with its session. Losing either state on restart is fail-closed and requires a new search or retry. The single lease does not reduce an existing concurrency guarantee because `MemoryRuntime` already serializes commands through its process-global SQLite connection mutex. Clients confirm reset and rebuild before issuing the command.
 
 Recall and contribution toggles are fields of canonical `SessionSettingsPatch` on `session/metadata/update`; no per-concern settings method is introduced. No legacy or ACP memory implementation is added. An external protocol may later project canonical behavior without owning memory logic.
 
@@ -338,6 +346,8 @@ Module and integration tests must cover:
 - duplicate merging, explicit-over-inferred replacement, inferred conflict withholding, and explicit conflict resolution
 - forgetting, old-source replay prevention, reset watermarks, deliberate rebuild, and idempotent job replay
 - root-agent forget authorization: same-turn rejection, pending candidate membership, later exact-ID selection, expiry, and User/Project scope isolation
+- global forget exclusion across Agent Direct, Agent Confirmed, Native, and different sessions, including deterministic cancellation/failure release through aborted real handler futures and stale-reservation safety
+- stale-search exclusion with this deterministic interleaving: search completes its storage read and pauses, deletion commits and advances the mutation epoch, then search resumes and fails to publish its old candidates, including when the post-commit projection refresh fails
 - session deletion with final and non-final evidence and explicit-memory retention
 - setting patch partial semantics, persist-first replay, and next-turn/next-scan decision points
 - external-context monotonic marking and exclusion for Web, MCP, and Tool Search
@@ -390,3 +400,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
 | 3 | 2026-09-12 | Human + Assistant | Security revision | Defined server-bound two-stage root-agent forget authorization and removed open-ended natural-language classification from the mutation boundary. |
+| 4 | 2026-09-13 | Human + Assistant | Concurrency revision | Human-approved design unifies Agent Direct, Agent Confirmed, and Native deletion behind one server-global RAII lease with atomic authority checks, candidate cleanup, deterministic failure/cancellation semantics, and search coordination. |

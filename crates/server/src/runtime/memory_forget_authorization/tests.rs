@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use devo_core::tools::{MemoryToolInvocation, ToolCallError};
+use devo_core::tools::MemoryToolInvocation;
 use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryKind, MemoryOrigin, MemoryProvenance, MemoryScope, MemorySearchEntry,
@@ -10,48 +10,10 @@ use devo_protocol::native::rpc_memory::{
 use pretty_assertions::assert_eq;
 
 use super::{
-    ActiveForgetKind, ActiveForgetMutation, AuthorizedForget, ForgetCommandGrammar, ForgetState,
+    ActiveForgetKind, ActiveForgetMutation, ForgetCommandGrammar, ForgetState,
     MemoryForgetCoordinator, PENDING_SELECTION_TTL, PendingForgetCandidate, PendingForgetSelection,
     strict_forget_names,
 };
-
-trait AuthorizeForTest {
-    fn authorize<'a>(
-        &'a self,
-        invocation: &MemoryToolInvocation,
-        user_text: &str,
-        entry_id: &MemoryEntryId,
-    ) -> Result<AuthorizedForget<'a>, ToolCallError>;
-
-    fn authorize_at<'a>(
-        &'a self,
-        invocation: &MemoryToolInvocation,
-        user_text: &str,
-        entry_id: &MemoryEntryId,
-        now: Instant,
-    ) -> Result<AuthorizedForget<'a>, ToolCallError>;
-}
-
-impl AuthorizeForTest for MemoryForgetCoordinator {
-    fn authorize<'a>(
-        &'a self,
-        invocation: &MemoryToolInvocation,
-        user_text: &str,
-        entry_id: &MemoryEntryId,
-    ) -> Result<AuthorizedForget<'a>, ToolCallError> {
-        self.authorize_agent(invocation, user_text, entry_id, MemoryScope::User)
-    }
-
-    fn authorize_at<'a>(
-        &'a self,
-        invocation: &MemoryToolInvocation,
-        user_text: &str,
-        entry_id: &MemoryEntryId,
-        now: Instant,
-    ) -> Result<AuthorizedForget<'a>, ToolCallError> {
-        self.authorize_agent_at(invocation, user_text, entry_id, MemoryScope::User, now)
-    }
-}
 
 fn invocation() -> MemoryToolInvocation {
     MemoryToolInvocation {
@@ -178,10 +140,11 @@ fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
 
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &search,
                 &format!("Confirm forget memory entry {selected_id}"),
                 &selected_id,
+                MemoryScope::User,
             )
             .expect_err("same-turn forget must fail")
             .to_string(),
@@ -194,10 +157,11 @@ fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
     };
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &selection,
                 &format!("Confirm forget memory entry {outside_id}"),
                 &outside_id,
+                MemoryScope::User,
             )
             .expect_err("outside candidate must fail")
             .to_string(),
@@ -205,16 +169,22 @@ fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
     );
     assert_eq!(
         authorizations
-            .authorize(&selection, selected_id.as_str(), &selected_id)
+            .authorize_agent(
+                &selection,
+                selected_id.as_str(),
+                &selected_id,
+                MemoryScope::User,
+            )
             .expect_err("bare candidate ID must not authorize mutation")
             .to_string(),
         "invalid input: memory_forget pending selection must explicitly confirm the selected stable ID"
     );
     let authorized = authorizations
-        .authorize(
+        .authorize_agent(
             &selection,
             &format!("Confirm forget memory entry {selected_id}"),
             &selected_id,
+            MemoryScope::User,
         )
         .expect("selected candidate is authorized");
     let forgotten = forgotten_entry(selected_id.clone());
@@ -224,10 +194,11 @@ fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
         .expect("successful mutation consumes selection");
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &selection,
                 &format!("Confirm forget memory entry {selected_id}"),
                 &selected_id,
+                MemoryScope::User,
             )
             .expect_err("consumed selection must fail")
             .to_string(),
@@ -258,10 +229,11 @@ fn pending_selection_does_not_shadow_direct_exact_id_authority() {
     let direct_id = MemoryEntryId::from("mem_direct");
 
     let authorized = authorizations
-        .authorize(
+        .authorize_agent(
             &direct,
             &format!("Forget memory entry {direct_id}"),
             &direct_id,
+            MemoryScope::User,
         )
         .expect("direct command is authorized despite unrelated pending state");
     assert_eq!(authorized.scope, MemoryScope::User);
@@ -275,10 +247,11 @@ fn direct_inflight_blocks_pending_confirmation() {
     let direct = invocation();
     let direct_id = MemoryEntryId::from("mem_direct");
     let _direct_grant = authorizations
-        .authorize(
+        .authorize_agent(
             &direct,
             &format!("Forget memory entry {direct_id}"),
             &direct_id,
+            MemoryScope::User,
         )
         .expect("direct mutation is authorized");
     let search = invocation();
@@ -296,10 +269,11 @@ fn direct_inflight_blocks_pending_confirmation() {
     };
 
     let blocked = authorizations
-        .authorize(
+        .authorize_agent(
             &confirmation,
             &format!("Confirm forget memory entry {selected_id}"),
             &selected_id,
+            MemoryScope::User,
         )
         .expect_err("direct mutation must block pending confirmation")
         .to_string();
@@ -309,10 +283,11 @@ fn direct_inflight_blocks_pending_confirmation() {
     );
     drop(_direct_grant);
     authorizations
-        .authorize(
+        .authorize_agent(
             &confirmation,
             &format!("Confirm forget memory entry {selected_id}"),
             &selected_id,
+            MemoryScope::User,
         )
         .expect("dropping a failed direct mutation releases the pending confirmation");
 }
@@ -336,10 +311,11 @@ fn inflight_selection_blocks_direct_exact_id_authority() {
         ..search
     };
     let _reservation = authorizations
-        .authorize(
+        .authorize_agent(
             &selection,
             &format!("Confirm forget memory entry {selected_id}"),
             &selected_id,
+            MemoryScope::User,
         )
         .expect("reserve selected candidate")
         .reservation;
@@ -348,10 +324,11 @@ fn inflight_selection_blocks_direct_exact_id_authority() {
 
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &direct,
                 &format!("Forget memory entry {direct_id}"),
                 &direct_id,
+                MemoryScope::User,
             )
             .expect_err("in-flight selection must block direct mutation")
             .to_string(),
@@ -388,10 +365,11 @@ fn successful_forget_removes_entry_from_all_pending_selections() {
         ..confirming_search
     };
     let authorized = authorizations
-        .authorize(
+        .authorize_agent(
             &confirmation,
             &format!("Confirm forget memory entry {deleted_id}"),
             &deleted_id,
+            MemoryScope::User,
         )
         .expect("reserve confirmed candidate");
     let forgotten = forgotten_entry(deleted_id.clone());
@@ -407,10 +385,11 @@ fn successful_forget_removes_entry_from_all_pending_selections() {
 
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &other_confirmation,
                 &format!("Confirm forget memory entry {deleted_id}"),
                 &deleted_id,
+                MemoryScope::User,
             )
             .expect_err("deleted ID must be removed from other pending selections")
             .to_string(),
@@ -450,10 +429,11 @@ fn stale_search_snapshot_cannot_reintroduce_forgotten_candidate() {
     };
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &confirmation,
                 &format!("Confirm forget memory entry {deleted_id}"),
                 &deleted_id,
+                MemoryScope::User,
             )
             .expect_err("stale search must not restore deletion authority")
             .to_string(),
@@ -478,18 +458,20 @@ fn abandoned_inflight_selection_can_be_retried() {
     };
 
     let reservation = authorizations
-        .authorize(
+        .authorize_agent(
             &selection,
             &format!("Confirm forget memory entry {entry_id}"),
             &entry_id,
+            MemoryScope::User,
         )
         .expect("reserve selected candidate");
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &selection,
                 &format!("Confirm forget memory entry {entry_id}"),
                 &entry_id,
+                MemoryScope::User,
             )
             .expect_err("concurrent selection must fail")
             .to_string(),
@@ -497,10 +479,11 @@ fn abandoned_inflight_selection_can_be_retried() {
     );
     drop(reservation);
     authorizations
-        .authorize(
+        .authorize_agent(
             &selection,
             &format!("Confirm forget memory entry {entry_id}"),
             &entry_id,
+            MemoryScope::User,
         )
         .expect("abandoned selection returns to pending");
 }
@@ -529,10 +512,11 @@ fn active_confirmation_protects_its_selection_from_search_and_expiry() {
         ..search
     };
     let reservation = authorizations
-        .authorize_at(
+        .authorize_agent_at(
             &confirmation,
             &format!("Confirm forget memory entry {selected_id}"),
             &selected_id,
+            MemoryScope::User,
             started_at,
         )
         .expect("reserve confirmed candidate");
@@ -613,10 +597,11 @@ fn active_confirmation_protects_its_selection_from_search_and_expiry() {
     drop(reservation);
     assert_eq!(
         authorizations
-            .authorize_at(
+            .authorize_agent_at(
                 &confirmation,
                 &format!("Confirm forget memory entry {selected_id}"),
                 &selected_id,
+                MemoryScope::User,
                 started_at + PENDING_SELECTION_TTL + Duration::from_secs(1),
             )
             .expect_err("expired selection is pruned after cancellation releases its lease")
@@ -633,10 +618,11 @@ fn stale_reservation_cannot_clear_new_active_lease() {
     let first = invocation();
     let first_id = MemoryEntryId::from("mem_first");
     let stale = authorizations
-        .authorize(
+        .authorize_agent(
             &first,
             &format!("Forget memory entry {first_id}"),
             &first_id,
+            MemoryScope::User,
         )
         .expect("reserve first direct mutation")
         .reservation;
@@ -644,10 +630,11 @@ fn stale_reservation_cannot_clear_new_active_lease() {
     let second = invocation();
     let second_id = MemoryEntryId::from("mem_second");
     let current = authorizations
-        .authorize(
+        .authorize_agent(
             &second,
             &format!("Forget memory entry {second_id}"),
             &second_id,
+            MemoryScope::User,
         )
         .expect("reserve replacement direct mutation")
         .reservation;
@@ -663,10 +650,11 @@ fn stale_reservation_cannot_clear_new_active_lease() {
     let third_id = MemoryEntryId::from("mem_third");
     assert_eq!(
         authorizations
-            .authorize(
+            .authorize_agent(
                 &third,
                 &format!("Forget memory entry {third_id}"),
                 &third_id,
+                MemoryScope::User,
             )
             .expect_err("stale reservation must not clear current mutation")
             .to_string(),
@@ -693,10 +681,11 @@ fn pending_selection_expires_fail_closed() {
 
     assert_eq!(
         authorizations
-            .authorize_at(
+            .authorize_agent_at(
                 &selection,
                 &format!("Confirm forget memory entry {entry_id}"),
                 &entry_id,
+                MemoryScope::User,
                 Instant::now() + PENDING_SELECTION_TTL + Duration::from_secs(1),
             )
             .expect_err("expired selection must fail")

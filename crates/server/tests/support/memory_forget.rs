@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -15,6 +15,7 @@ pub struct BlockingFirstMemoryCommandExecutor {
 }
 
 pub struct BlockingSecondMemoryListExecutor {
+    armed: AtomicBool,
     list_calls: AtomicUsize,
     snapshot_ready: Notify,
     release_snapshot: Notify,
@@ -23,10 +24,16 @@ pub struct BlockingSecondMemoryListExecutor {
 impl BlockingSecondMemoryListExecutor {
     pub fn new() -> Self {
         Self {
+            armed: AtomicBool::new(false),
             list_calls: AtomicUsize::new(0),
             snapshot_ready: Notify::new(),
             release_snapshot: Notify::new(),
         }
+    }
+
+    pub fn block_next_search(&self) {
+        self.list_calls.store(0, Ordering::SeqCst);
+        self.armed.store(true, Ordering::SeqCst);
     }
 
     pub async fn wait_until_snapshot_ready(&self) -> Result<()> {
@@ -88,9 +95,13 @@ impl MemoryCommandExecutor for BlockingSecondMemoryListExecutor {
     ) -> Result<MemoryCommandResult, MemoryError> {
         let is_list = matches!(command, MemoryCommand::List(_));
         let result = memory.execute_command(command).await?;
-        if is_list && self.list_calls.fetch_add(1, Ordering::SeqCst) == 1 {
+        if is_list
+            && self.armed.load(Ordering::SeqCst)
+            && self.list_calls.fetch_add(1, Ordering::SeqCst) == 1
+        {
             self.snapshot_ready.notify_one();
             self.release_snapshot.notified().await;
+            self.armed.store(false, Ordering::SeqCst);
         }
         Ok(result)
     }

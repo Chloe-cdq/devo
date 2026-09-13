@@ -221,7 +221,8 @@ impl ServerRuntime {
             | MemoryError::InvalidCount(_)
             | MemoryError::InvalidTimestamp(_)
             | MemoryError::ProjectIdentity(_)
-            | MemoryError::InvalidStoredValue(_) => (
+            | MemoryError::InvalidStoredValue(_)
+            | MemoryError::ForgetCommitted { .. } => (
                 ProtocolErrorCode::InternalError,
                 "memory operation is unavailable".to_string(),
             ),

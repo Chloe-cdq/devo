@@ -112,7 +112,7 @@ pub(super) async fn forget(
         &entry_id,
         params.scope,
     )?;
-    let result = runtime
+    let execution = runtime
         .deps
         .memory_command_executor
         .execute(
@@ -123,16 +123,25 @@ pub(super) async fn forget(
                 source: context.source,
             }),
         )
-        .await
-        .map_err(memory_tool_error)?;
-    match result {
-        crate::memory::MemoryCommandResult::Forget(result) => {
+        .await;
+    match execution {
+        Ok(crate::memory::MemoryCommandResult::Forget(result)) => {
             authorized.reservation.commit(result.forgotten.as_ref())?;
             Ok(result)
         }
-        crate::memory::MemoryCommandResult::Status(_)
-        | crate::memory::MemoryCommandResult::Remember(_)
-        | crate::memory::MemoryCommandResult::List(_) => Err(ToolCallError::InternalError(
+        Err(crate::memory::MemoryError::ForgetCommitted {
+            result,
+            projection_error,
+        }) => {
+            authorized.reservation.commit(result.forgotten.as_ref())?;
+            Err(ToolCallError::InternalError(format!(
+                "memory forget committed but projection refresh failed: {projection_error}"
+            )))
+        }
+        Err(error) => Err(memory_tool_error(error)),
+        Ok(crate::memory::MemoryCommandResult::Status(_))
+        | Ok(crate::memory::MemoryCommandResult::Remember(_))
+        | Ok(crate::memory::MemoryCommandResult::List(_)) => Err(ToolCallError::InternalError(
             "memory_forget returned an unexpected result".to_string(),
         )),
     }
@@ -261,7 +270,8 @@ fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
         | crate::memory::MemoryError::InvalidCount(_)
         | crate::memory::MemoryError::InvalidTimestamp(_)
         | crate::memory::MemoryError::ProjectIdentity(_)
-        | crate::memory::MemoryError::InvalidStoredValue(_) => {
+        | crate::memory::MemoryError::InvalidStoredValue(_)
+        | crate::memory::MemoryError::ForgetCommitted { .. } => {
             ToolCallError::InternalError("memory operation is unavailable".to_string())
         }
     }

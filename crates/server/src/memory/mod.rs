@@ -97,6 +97,12 @@ pub enum MemoryError {
     SecretContentRejected,
     #[error("memory database contains an invalid value: {0}")]
     InvalidStoredValue(String),
+    #[error("memory forget committed but projection refresh failed: {projection_error}")]
+    ForgetCommitted {
+        result: Box<MemoryForgetResult>,
+        #[source]
+        projection_error: Box<MemoryError>,
+    },
 }
 
 /// Server-owned runtime for General Persistent Memory.

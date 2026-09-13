@@ -94,6 +94,25 @@ impl ServerRuntime {
                 })
                 .expect("serialize memory/forget response")
             }
+            Err(crate::memory::MemoryError::ForgetCommitted {
+                result,
+                projection_error,
+            }) => {
+                if let Err(error) = reservation.commit(result.forgotten.as_ref()) {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InternalError,
+                        error.to_string(),
+                    );
+                }
+                self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!(
+                        "memory forget committed but projection refresh failed: {projection_error}"
+                    ),
+                )
+            }
             Ok(MemoryCommandResult::Status(_))
             | Ok(MemoryCommandResult::Remember(_))
             | Ok(MemoryCommandResult::List(_)) => self.error_response(

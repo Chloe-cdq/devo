@@ -121,15 +121,21 @@ impl MemoryRuntime {
             "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
             [entry_id.as_str()],
         )?;
-        transaction.commit()?;
-
         let entry_id = MemoryEntryId::from_string(entry_id);
-        let entry = load_entry(&connection, &entry_id)?
+        let entry = load_entry(&transaction, &entry_id)?
             .ok_or_else(|| MemoryError::InvalidStoredValue("forgotten entry is missing".into()))?;
-        self.refresh_projection(&connection, scope, &scope_id)?;
-        Ok(MemoryForgetResult {
+        let result = MemoryForgetResult {
             forgotten: Some(entry),
             candidates: Vec::new(),
-        })
+        };
+        transaction.commit()?;
+
+        if let Err(projection_error) = self.refresh_projection(&connection, scope, &scope_id) {
+            return Err(MemoryError::ForgetCommitted {
+                result: Box::new(result),
+                projection_error: Box::new(projection_error),
+            });
+        }
+        Ok(result)
     }
 }
