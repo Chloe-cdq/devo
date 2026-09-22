@@ -120,9 +120,50 @@ pub(super) fn migrate_explicit_equivalence(
     )?;
     deduplicate_evidence(transaction)?;
     transaction.execute_batch(
+        "UPDATE memory_entries AS entry
+         SET state = CASE
+                 WHEN EXISTS (
+                     SELECT 1
+                     FROM memory_revocations AS revocation
+                     WHERE revocation.scope_type = entry.scope_type
+                       AND revocation.scope_id = entry.scope_id
+                       AND revocation.normalized_key = entry.normalized_key
+                       AND (
+                           revocation.restored_at IS NULL
+                           OR revocation.restored_at < revocation.revoked_at
+                       )
+                 ) THEN 'retired'
+                 ELSE 'restored'
+             END,
+             updated_at = MAX(
+                 entry.updated_at,
+                 (
+                     SELECT CASE
+                         WHEN revocation.restored_at IS NOT NULL
+                              AND revocation.restored_at >= revocation.revoked_at
+                         THEN revocation.restored_at
+                         ELSE revocation.revoked_at
+                     END
+                     FROM memory_revocations AS revocation
+                     WHERE revocation.scope_type = entry.scope_type
+                       AND revocation.scope_id = entry.scope_id
+                       AND revocation.normalized_key = entry.normalized_key
+                 )
+             )
+         WHERE EXISTS (
+             SELECT 1
+             FROM memory_revocations AS revocation
+             WHERE revocation.scope_type = entry.scope_type
+               AND revocation.scope_id = entry.scope_id
+               AND revocation.normalized_key = entry.normalized_key
+         );",
+    )?;
+    transaction.execute_batch(
         "DELETE FROM memory_entries_fts;
          INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
-         SELECT entry_id, normalized_key, body FROM memory_entries;
+         SELECT entry_id, normalized_key, body
+         FROM memory_entries
+         WHERE state IN ('active', 'restored');
          CREATE UNIQUE INDEX memory_entries_scope_key
              ON memory_entries (scope_type, scope_id, normalized_key);
          CREATE UNIQUE INDEX memory_revocations_scope_identity

@@ -268,7 +268,7 @@ impl MemoryAgentSession {
 async fn ambiguous_search_cannot_delete_in_same_turn() -> Result<()> {
     let provider = Arc::new(MemoryAgentProvider::new([
         ProviderAction::Search("tabs"),
-        ProviderAction::ForgetSearchCandidate(0),
+        ProviderAction::ForgetSearchCandidate(/*result_index*/ 0),
         ProviderAction::Complete("selection required"),
     ]));
     let mut harness = MemoryAgentHarness::new(Arc::clone(&provider)).await?;
@@ -283,7 +283,7 @@ async fn ambiguous_search_cannot_delete_in_same_turn() -> Result<()> {
 
     assert_forget_rejected(
         &provider.requests(),
-        2,
+        /*request_index*/ 2,
         "requires a subsequent user selection",
     )?;
     assert_eq!(
@@ -325,7 +325,11 @@ async fn pending_selection_rejects_an_id_outside_its_candidates() -> Result<()> 
             next_cursor: None,
         }
     );
-    assert_forget_rejected(&provider.requests(), 3, "not one of the pending candidates")?;
+    assert_forget_rejected(
+        &provider.requests(),
+        /*request_index*/ 3,
+        "not one of the pending candidates",
+    )?;
     assert_eq!(
         harness.list(MemoryScope::User, MemoryState::Active).await?,
         Page {
@@ -557,8 +561,12 @@ async fn ordinary_task_rewrites_cannot_authorize_forget() -> Result<()> {
 
     let requests = provider.requests();
     for (index, variant) in variants.iter().enumerate() {
-        assert_forget_rejected(&requests, index * 2 + 1, "exact stable-ID command")
-            .with_context(|| format!("unsafe variant: {variant}"))?;
+        assert_forget_rejected(
+            &requests,
+            /*request_index*/ index * 2 + 1,
+            "exact stable-ID command",
+        )
+        .with_context(|| format!("unsafe variant: {variant}"))?;
     }
     assert_eq!(
         harness.list(MemoryScope::User, MemoryState::Active).await?,
@@ -650,7 +658,11 @@ async fn pending_selection_does_not_cross_memory_scopes() -> Result<()> {
             next_cursor: None,
         }
     );
-    assert_forget_rejected(&provider.requests(), 3, "not one of the pending candidates")?;
+    assert_forget_rejected(
+        &provider.requests(),
+        /*request_index*/ 3,
+        "not one of the pending candidates",
+    )?;
     assert_eq!(
         harness
             .list(MemoryScope::Project, MemoryState::Active)

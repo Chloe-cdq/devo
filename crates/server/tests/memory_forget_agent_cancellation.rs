@@ -39,8 +39,14 @@ async fn interrupted_agent_confirmation_preserves_pending_selection_for_retry() 
         /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
     )?;
     let (connection_id, mut notifications, session_id) =
-        start_subscribed_session(&runtime, data_root.path(), 1).await?;
-    let entry = remember(&runtime, connection_id, 2, "I prefer tabs").await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 1).await?;
+    let entry = remember(
+        &runtime,
+        connection_id,
+        /*request_id*/ 2,
+        "I prefer tabs",
+    )
+    .await?;
     let entry_id = entry.entry_id.clone();
     provider.push_scripts([
         tool_call_script(

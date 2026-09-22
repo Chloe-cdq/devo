@@ -42,11 +42,23 @@ async fn direct_first_blocks_confirmation() -> Result<()> {
         /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
     )?;
     let (direct_connection, mut direct_notifications, direct_session) =
-        start_subscribed_session(&runtime, data_root.path(), 1).await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 1).await?;
     let (confirmation_connection, mut confirmation_notifications, confirmation_session) =
-        start_subscribed_session(&runtime, data_root.path(), 2).await?;
-    let pending = remember(&runtime, direct_connection, 3, "I prefer tabs").await?;
-    let direct = remember(&runtime, direct_connection, 4, "My timezone is UTC").await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 2).await?;
+    let pending = remember(
+        &runtime,
+        direct_connection,
+        /*request_id*/ 3,
+        "I prefer tabs",
+    )
+    .await?;
+    let direct = remember(
+        &runtime,
+        direct_connection,
+        /*request_id*/ 4,
+        "My timezone is UTC",
+    )
+    .await?;
     provider.push_scripts([
         tool_call_script(
             "memory-search",
@@ -349,10 +361,16 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
         /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
     )?;
     let (confirmation_connection, mut confirmation_notifications, confirmation_session) =
-        start_subscribed_session(&runtime, data_root.path(), 40).await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 40).await?;
     let (search_connection, mut search_notifications, search_session) =
-        start_subscribed_session(&runtime, data_root.path(), 41).await?;
-    let entry = remember(&runtime, confirmation_connection, 42, "I prefer tabs").await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 41).await?;
+    let entry = remember(
+        &runtime,
+        confirmation_connection,
+        /*request_id*/ 42,
+        "I prefer tabs",
+    )
+    .await?;
     let entry_id = entry.entry_id.clone();
     provider.push_scripts([
         tool_call_script(
@@ -503,12 +521,18 @@ async fn native_durable_commit_with_projection_failure_invalidates_search_and_co
         /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
     )?;
     let (pending_connection, mut pending_notifications, pending_session) =
-        start_subscribed_session(&runtime, data_root.path(), 50).await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 50).await?;
     let (search_connection, mut search_notifications, search_session) =
-        start_subscribed_session(&runtime, data_root.path(), 51).await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 51).await?;
     let (native_connection, _native_notifications, _native_session) =
-        start_subscribed_session(&runtime, data_root.path(), 52).await?;
-    let entry = remember(&runtime, pending_connection, 53, "I prefer tabs").await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 52).await?;
+    let entry = remember(
+        &runtime,
+        pending_connection,
+        /*request_id*/ 53,
+        "I prefer tabs",
+    )
+    .await?;
     let entry_id = entry.entry_id.clone();
     provider.push_scripts([
         tool_call_script(
@@ -657,10 +681,16 @@ async fn agent_first_blocks_native() -> Result<()> {
         /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
     )?;
     let (agent_connection, mut agent_notifications, agent_session) =
-        start_subscribed_session(&runtime, data_root.path(), 20).await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 20).await?;
     let (native_connection, _native_notifications, _native_session) =
-        start_subscribed_session(&runtime, data_root.path(), 21).await?;
-    let entry = remember(&runtime, agent_connection, 22, "I prefer tabs").await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 21).await?;
+    let entry = remember(
+        &runtime,
+        agent_connection,
+        /*request_id*/ 22,
+        "I prefer tabs",
+    )
+    .await?;
     provider.push_scripts([
         tool_call_script(
             "agent-forget",
@@ -721,10 +751,16 @@ async fn native_first_blocks_agent() -> Result<()> {
         /*memory_command_executor*/ Some(Arc::clone(&executor) as _),
     )?;
     let (agent_connection, mut agent_notifications, agent_session) =
-        start_subscribed_session(&runtime, data_root.path(), 30).await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 30).await?;
     let (native_connection, _native_notifications, _native_session) =
-        start_subscribed_session(&runtime, data_root.path(), 31).await?;
-    let entry = remember(&runtime, agent_connection, 32, "I prefer spaces").await?;
+        start_subscribed_session(&runtime, data_root.path(), /*request_id*/ 31).await?;
+    let entry = remember(
+        &runtime,
+        agent_connection,
+        /*request_id*/ 32,
+        "I prefer spaces",
+    )
+    .await?;
     provider.push_scripts([
         tool_call_script(
             "agent-forget",
