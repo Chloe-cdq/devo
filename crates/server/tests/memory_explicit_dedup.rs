@@ -75,7 +75,7 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
     )
     .await;
     let equivalent_request = MemoryRememberRequest {
-        text: "  Please remember that MY PREFERENCE IS dark mode!  ".to_string(),
+        text: "  Can you remember that MY PREFERENCE IS dark mode?  ".to_string(),
         scope: MemoryScope::User,
         kind: None,
         source_user_item_id: Some("item-2".to_string()),
@@ -92,7 +92,7 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
     assert_eq!(updated.normalized_key, "i prefer dark mode");
     assert_eq!(
         updated.body,
-        "Please remember that MY PREFERENCE IS dark mode!"
+        "Can you remember that MY PREFERENCE IS dark mode?"
     );
     assert_eq!(updated.kind, MemoryKind::Preference);
     assert_eq!(
@@ -119,6 +119,60 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
         )
         .await,
         vec![replayed]
+    );
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3, DD-8
+/// Verifies: an accepted Chinese intent frame deduplicates within Project scope.
+#[tokio::test]
+async fn chinese_explicit_intent_updates_one_project_entry() {
+    let data_root = TempDir::new().expect("memory data root");
+    let runtime = MemoryRuntime::open(
+        data_root.path().join("memory"),
+        MemoryConfig {
+            enabled: true,
+            ..MemoryConfig::default()
+        },
+    )
+    .expect("open enabled memory runtime");
+
+    let first = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "项目使用 Rust".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source_user_item_id: Some("project-rust-zh-1".to_string()),
+            source_session_id: "session-project".to_string(),
+            source_turn_id: Some("turn-1".to_string()),
+            workspace_root: data_root.path().to_path_buf(),
+        },
+    )
+    .await;
+    let updated = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "请记住项目使用 Rust。".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source_user_item_id: Some("project-rust-zh-2".to_string()),
+            source_session_id: "session-project".to_string(),
+            source_turn_id: Some("turn-2".to_string()),
+            workspace_root: data_root.path().to_path_buf(),
+        },
+    )
+    .await;
+
+    assert_eq!(updated.entry_id, first.entry_id);
+    assert_eq!(
+        list(
+            &runtime,
+            MemoryScope::Project,
+            data_root.path(),
+            /*text*/ None,
+        )
+        .await,
+        vec![updated]
     );
 }
 

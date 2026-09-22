@@ -145,43 +145,7 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
          ON memory_jobs (job_kind, job_key)",
         [],
     )?;
-    transaction.execute_batch(
-        "UPDATE memory_revocations AS kept
-         SET revoked_at = (
-                 SELECT MAX(all_rows.revoked_at)
-                 FROM memory_revocations AS all_rows
-                 WHERE all_rows.scope_type = kept.scope_type
-                   AND all_rows.scope_id = kept.scope_id
-                   AND all_rows.normalized_key = kept.normalized_key
-             ),
-             restored_at = (
-                 SELECT CASE
-                     WHEN MAX(all_rows.restored_at) >= MAX(all_rows.revoked_at)
-                     THEN MAX(all_rows.restored_at)
-                     ELSE NULL
-                 END
-                 FROM memory_revocations AS all_rows
-                 WHERE all_rows.scope_type = kept.scope_type
-                   AND all_rows.scope_id = kept.scope_id
-                   AND all_rows.normalized_key = kept.normalized_key
-             )
-         WHERE kept.revocation_id = (
-             SELECT MAX(candidate.revocation_id)
-             FROM memory_revocations AS candidate
-             WHERE candidate.scope_type = kept.scope_type
-               AND candidate.scope_id = kept.scope_id
-               AND candidate.normalized_key = kept.normalized_key
-         );
-
-         DELETE FROM memory_revocations
-         WHERE revocation_id != (
-             SELECT MAX(candidate.revocation_id)
-             FROM memory_revocations AS candidate
-             WHERE candidate.scope_type = memory_revocations.scope_type
-               AND candidate.scope_id = memory_revocations.scope_id
-               AND candidate.normalized_key = memory_revocations.normalized_key
-         );",
-    )?;
+    migration::deduplicate_revocations(&transaction)?;
     transaction.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS memory_revocations_scope_identity
          ON memory_revocations (scope_type, scope_id, normalized_key)",

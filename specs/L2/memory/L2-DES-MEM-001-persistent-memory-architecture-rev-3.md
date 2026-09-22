@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-MEM-001
-revision: 2
-status: Approved
-active_baseline: yes
-supersedes: revision 1 draft
+revision: 3
+status: Draft
+active_baseline: no
+supersedes: revision 2 after approval
 superseded_by:
 owner: Human + Assistant
-last_updated: 2026-09-12
+last_updated: 2026-09-22
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -115,15 +115,30 @@ Tokens that carry path, file-name, URL, address, identifier, or assignment
 punctuation preserve case and internal punctuation while harmless surrounding
 quotes, brackets, and sentence terminators are ignored. For example, `.env`,
 `env`, `../config`, `/config`, `FOO=1`, and `foo=1` remain distinct where their
-identity-bearing content differs. It removes only these
-case-insensitive leading intent frames, repeatedly and longest-first:
-`please remember that`, `please remember this`, `please remember`, `remember
-that`, `remember this`, `remember`, `please keep in mind that`, `please keep in
-mind`, `keep in mind that`, `keep in mind`, `for future reference`, `please note
-that`, `please note`, `note that`, and `note`. A final standalone `please` is
-also removed. For preference wording, leading `my preference is`, `i would
-prefer`, and `i'd prefer` are rewritten to `i prefer`. If these transformations
-would remove every token, the pre-frame normalized key is retained.
+identity-bearing content differs. It removes only the following intent frames,
+repeatedly and longest-first:
+
+- Case-insensitive English frames: `please remember [that|this]`, `remember
+  [that|this]`, `please keep in mind [that]`, `keep in mind [that]`, `for future
+  reference`, `please note [that]`, `note [that]`, `can|could|would you remember
+  [that|this]`, `i want you to remember [that|this]`, `i'd|i’d like you to
+  remember [that|this]`, `memorize [that|this]`, `save|store [that|this]`, and
+  `don't|do not forget [that|this]`. Bracketed words are optional.
+- Exact attached Chinese frames: `请记住`, `请记一下`, `请记下来`, `帮我记住`,
+  `记住我`, `记住这`, `记一下`, `记下来`, `请保存`, `帮我保存`, `保存一下`,
+  `保存这`, `存一下`, `别忘了`, and `不要忘记`. The content-bearing `我` or
+  `这` in those frames remains in the normalized claim.
+
+An English frame match uses the explicit-intent boundary rule: the next
+character is absent or is not an ASCII letter or digit. Matching happens before
+whitespace tokenization, so `remember:payload`, question-mark separators, and
+attached structured payloads normalize consistently without discarding identity-bearing
+path, URL, file-name, or assignment punctuation.
+
+A final standalone English `please` is also removed. For preference wording,
+leading `my preference is`, `i would prefer`, and `i'd|i’d prefer` are rewritten
+to `i prefer`. If these transformations would remove every token, the pre-frame
+normalized key is retained.
 
 This equivalence contract is implemented locally and must not call a model, use
 embeddings or fuzzy thresholds, stem words, substitute open-ended synonyms, or
@@ -430,4 +445,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
 | 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
-| 2 | 2026-09-12 | Assistant | Clarification | Defined the deterministic explicit-memory equivalence key, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v4 upgrade, and startup projection recovery required by DD-4 and DD-8. |
+| 3 | 2026-09-22 | Assistant | Proposed | Defines the deterministic explicit-memory equivalence key, supported intent frames, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v4 upgrade, and startup projection recovery required by DD-4 and DD-8. |

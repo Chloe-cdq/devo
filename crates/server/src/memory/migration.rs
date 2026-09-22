@@ -65,6 +65,37 @@ pub(super) fn migrate_explicit_equivalence(
             rusqlite::params![new_key, scope_type, scope_id, old_key],
         )?;
     }
+    deduplicate_revocations(transaction)?;
+    let mut replacement_redirects = Vec::new();
+    for ((_, _, normalized_key), entries) in groups {
+        replacement_redirects.extend(merge_group(transaction, &normalized_key, &entries)?);
+    }
+    for (duplicate_id, keeper_id) in replacement_redirects {
+        transaction.execute(
+            "UPDATE memory_entries SET replacement_entry_id = ?1
+             WHERE replacement_entry_id = ?2",
+            rusqlite::params![keeper_id, duplicate_id],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE memory_entries SET replacement_entry_id = NULL
+         WHERE replacement_entry_id = entry_id",
+        [],
+    )?;
+    deduplicate_evidence(transaction)?;
+    transaction.execute_batch(
+        "DELETE FROM memory_entries_fts;
+         INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
+         SELECT entry_id, normalized_key, body FROM memory_entries;
+         CREATE UNIQUE INDEX memory_entries_scope_key
+             ON memory_entries (scope_type, scope_id, normalized_key);
+         CREATE UNIQUE INDEX memory_revocations_scope_identity
+             ON memory_revocations (scope_type, scope_id, normalized_key);",
+    )?;
+    Ok(())
+}
+
+pub(super) fn deduplicate_revocations(transaction: &Transaction<'_>) -> Result<(), MemoryError> {
     transaction.execute_batch(
         "UPDATE memory_revocations AS kept
          SET revoked_at = (
@@ -101,32 +132,6 @@ pub(super) fn migrate_explicit_equivalence(
                AND candidate.scope_id = memory_revocations.scope_id
                AND candidate.normalized_key = memory_revocations.normalized_key
          );",
-    )?;
-    let mut replacement_redirects = Vec::new();
-    for ((_, _, normalized_key), entries) in groups {
-        replacement_redirects.extend(merge_group(transaction, &normalized_key, &entries)?);
-    }
-    for (duplicate_id, keeper_id) in replacement_redirects {
-        transaction.execute(
-            "UPDATE memory_entries SET replacement_entry_id = ?1
-             WHERE replacement_entry_id = ?2",
-            rusqlite::params![keeper_id, duplicate_id],
-        )?;
-    }
-    transaction.execute(
-        "UPDATE memory_entries SET replacement_entry_id = NULL
-         WHERE replacement_entry_id = entry_id",
-        [],
-    )?;
-    deduplicate_evidence(transaction)?;
-    transaction.execute_batch(
-        "DELETE FROM memory_entries_fts;
-         INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
-         SELECT entry_id, normalized_key, body FROM memory_entries;
-         CREATE UNIQUE INDEX memory_entries_scope_key
-             ON memory_entries (scope_type, scope_id, normalized_key);
-         CREATE UNIQUE INDEX memory_revocations_scope_identity
-             ON memory_revocations (scope_type, scope_id, normalized_key);",
     )?;
     Ok(())
 }

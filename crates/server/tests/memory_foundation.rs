@@ -66,6 +66,8 @@ impl ModelProviderSDK for NoopProvider {
     }
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-2
+/// Verifies: memory defaults are opt-in and the global disabled gate dominates.
 #[test]
 fn memory_config_defaults_are_disabled_and_global_gate_wins() {
     let config = MemoryConfig::default();
@@ -177,6 +179,8 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
     );
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
+/// Verifies: the disabled runtime initializes the current schema idempotently.
 #[tokio::test]
 async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
     let data_root = TempDir::new().expect("memory data root");
@@ -346,6 +350,8 @@ fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4
+/// Verifies: legacy memory-job storage upgrades to the current schema version.
 #[test]
 fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -523,6 +529,8 @@ fn create_v2_revocation_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
+/// Verifies: Native status reports a disabled memory runtime through the canonical surface.
 #[tokio::test]
 async fn native_memory_status_reports_disabled_runtime() -> Result<()> {
     let data_root = TempDir::new()?;
