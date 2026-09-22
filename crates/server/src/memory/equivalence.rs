@@ -1,4 +1,4 @@
-const INTENT_PREFIXES: &[&str] = &[
+const EQUIVALENCE_PREFIXES: &[&str] = &[
     "i'd like you to remember that",
     "i'd like you to remember this",
     "i’d like you to remember that",
@@ -38,6 +38,9 @@ const INTENT_PREFIXES: &[&str] = &[
     "store this",
     "save that",
     "save this",
+    "memorize",
+    "store",
+    "save",
     "remember that",
     "remember this",
     "please note",
@@ -46,7 +49,7 @@ const INTENT_PREFIXES: &[&str] = &[
     "note",
 ];
 
-const ATTACHED_INTENT_PREFIXES: &[(&str, &str)] = &[
+const ATTACHED_EQUIVALENCE_PREFIXES: &[(&str, &str)] = &[
     ("请记住", "请记住"),
     ("请记一下", "请记一下"),
     ("请记下来", "请记下来"),
@@ -67,24 +70,26 @@ const ATTACHED_INTENT_PREFIXES: &[(&str, &str)] = &[
 pub(super) fn explicit_memory_key(body: &str) -> String {
     let original_normalized_key = normalize_tokens(body).join(" ");
     let mut body = body.trim();
-    let mut removed_intent = false;
+    let mut removed_wrapper = false;
     loop {
-        let removed_prefix = if let Some(prefix) = INTENT_PREFIXES.iter().find(|prefix| {
+        let equivalence_candidate = body.trim_start_matches(is_structured_wrapper_punctuation);
+        let removed_prefix = if let Some(prefix) = EQUIVALENCE_PREFIXES.iter().find(|prefix| {
             let prefix = **prefix;
-            body.get(..prefix.len())
+            equivalence_candidate
+                .get(..prefix.len())
                 .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
-                && body[prefix.len()..]
+                && equivalence_candidate[prefix.len()..]
                     .chars()
                     .next()
                     .is_none_or(|character| !character.is_ascii_alphanumeric())
         }) {
-            body = &body[prefix.len()..];
+            body = &equivalence_candidate[prefix.len()..];
             true
-        } else if let Some(frame) = ATTACHED_INTENT_PREFIXES
+        } else if let Some((_, removal_prefix)) = ATTACHED_EQUIVALENCE_PREFIXES
             .iter()
-            .find(|frame| body.starts_with(frame.0))
+            .find(|(match_prefix, _)| body.starts_with(match_prefix))
         {
-            body = &body[frame.1.len()..];
+            body = &body[removal_prefix.len()..];
             true
         } else {
             false
@@ -92,7 +97,7 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
         if !removed_prefix {
             break;
         }
-        removed_intent = true;
+        removed_wrapper = true;
         body = body.trim_start();
         if let Some(separator) = body.chars().next().filter(|character| {
             matches!(
@@ -101,6 +106,11 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
             )
         }) {
             body = body[separator.len_utf8()..].trim_start();
+        } else if body
+            .strip_prefix('.')
+            .is_some_and(|remainder| remainder.chars().next().is_some_and(char::is_whitespace))
+        {
+            body = body['.'.len_utf8()..].trim_start();
         }
     }
     let normalized_tokens = normalize_tokens(body);
@@ -130,7 +140,7 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
 
     let semantic_key = semantic_tokens.join(" ");
     if semantic_key.is_empty() {
-        if removed_intent {
+        if removed_wrapper {
             original_normalized_key
         } else {
             normalized_key
@@ -247,9 +257,9 @@ mod tests {
     use super::explicit_memory_key;
 
     /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8
-    /// Verifies: supported explicit-intent and preference frames share one deterministic key.
+    /// Verifies: allowed equivalence wrappers and preference frames share one deterministic key.
     #[test]
-    fn explicit_intent_and_preference_frames_have_a_fixed_equivalence_table() {
+    fn equivalence_wrappers_and_preference_frames_have_a_fixed_table() {
         let cases = [
             (
                 "Please remember that I prefer compact responses.",
@@ -406,6 +416,10 @@ mod tests {
                 "i prefer compact responses",
             ),
             (
+                "Memorize I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
                 "Save this: I prefer compact responses",
                 "i prefer compact responses",
             ),
@@ -414,11 +428,19 @@ mod tests {
                 "i prefer compact responses",
             ),
             (
+                "Save I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
                 "Store that I prefer compact responses",
                 "i prefer compact responses",
             ),
             (
                 "Store this: I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Store I prefer compact responses",
                 "i prefer compact responses",
             ),
             (
@@ -469,6 +491,14 @@ mod tests {
             ),
             (
                 "Please remember?I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "Remember. I prefer compact responses",
+                "i prefer compact responses",
+            ),
+            (
+                "“Remember that I prefer compact responses.”",
                 "i prefer compact responses",
             ),
             (

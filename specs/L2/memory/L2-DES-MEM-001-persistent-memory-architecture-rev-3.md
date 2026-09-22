@@ -1,9 +1,9 @@
 ---
 artifact_id: L2-DES-MEM-001
 revision: 3
-status: Draft
-active_baseline: no
-supersedes: revision 2 after approval
+status: Approved
+active_baseline: yes
+supersedes: revision 2
 superseded_by:
 owner: Human + Assistant
 last_updated: 2026-09-22
@@ -86,7 +86,17 @@ Provenance records source session and turn IDs when available. The first release
 
 ### DD-6: Explicit writes are immediate; passive learning is background
 
-An explicit request is accepted only from a root agent acting on an identified current user message or from a direct Native command such as `/remember`. The module redacts, validates, normalizes, classifies, deduplicates, and commits it synchronously. It becomes available on the next turn; the active turn's prepared snapshot never changes.
+Explicit-memory authorization and equivalence are separate deterministic stages. A root
+agent acting on an identified current user message passes an intent gate that accepts only
+the fixed English and Chinese allowlist implemented by the server. The gate is conservative:
+it performs no fuzzy matching, synonym expansion, or spelling correction. A direct Native
+`memory/remember` command is authorized by the command itself and does not depend on
+natural-language intent recognition.
+
+After authorization, the module redacts, validates, normalizes, classifies, deduplicates,
+and commits the request synchronously. Equivalence normalization may remove only the
+allowlisted intent wrappers described in DD-8; it does not grant authorization. The entry
+becomes available on the next turn, and the active turn's prepared snapshot never changes.
 
 Passive learning is triggered when a new normal root session starts. The background scanner selects prior sessions that are persistent, root, contribution-enabled, idle for at least six hours, within the source window, not already processed at the same source watermark, and free of external-context use. It runs one structured extraction call per source session, then deterministic redaction, validation, deduplication, conflict handling, commit, and FTS update. There is no global consolidation-model pass in the first release.
 
@@ -131,9 +141,12 @@ repeatedly and longest-first:
 
 An English frame match uses the explicit-intent boundary rule: the next
 character is absent or is not an ASCII letter or digit. Matching happens before
-whitespace tokenization, so `remember:payload`, question-mark separators, and
-attached structured payloads normalize consistently without discarding identity-bearing
-path, URL, file-name, or assignment punctuation.
+whitespace tokenization. Harmless leading quotation or bracketing punctuation around an
+accepted frame is ignored, and an allowlisted sentence separator following the frame is
+removed; a period is a separator only when followed by whitespace. Therefore
+`remember:payload`, question-mark separators, quoted requests, sentence-separated
+requests, and attached structured payloads normalize consistently without discarding
+identity-bearing path, URL, file-name, or assignment punctuation.
 
 A final standalone English `please` is also removed. For preference wording,
 leading `my preference is`, `i would prefer`, and `i'd|i’d prefer` are rewritten
@@ -158,8 +171,9 @@ atomically replaced. Runtime startup regenerates Markdown from the authoritative
 SQLite state, so an interruption after commit cannot expose the superseded body
 after restart.
 
-Schema version 4 applies this equivalence contract only to existing explicit
-rows in one idempotent transaction; inferred rows retain their stored key. Within
+Schema version 5 reapplies this equivalence contract to existing explicit rows,
+including databases already marked as schema version 4, in one idempotent transaction;
+inferred rows retain their stored key. Within
 each `(scope, new memory_key)` collision group it retains the oldest entry ID and
 `created_at`, prefers the most recently updated explicit body and metadata over
 inferred content, merges evidence with null-safe tuple deduplication, removes the
@@ -445,4 +459,5 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
 | 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
-| 3 | 2026-09-22 | Assistant | Proposed | Defines the deterministic explicit-memory equivalence key, supported intent frames, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v4 upgrade, and startup projection recovery required by DD-4 and DD-8. |
+| 3 | 2026-09-22 | Assistant | Proposed | Defines the deterministic explicit-memory equivalence key, supported intent frames, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v5 migration, and startup projection recovery required by DD-4 and DD-8. |
+| 3 | 2026-09-22 | Human | Approval | Approved the explicit-memory intent/equivalence boundary, schema-v5 migration, and deterministic deduplication contract as the active baseline. |

@@ -92,9 +92,9 @@ async fn restart_repairs_projection_after_database_commit() {
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
-/// Verifies: schema migration merges legacy keys without changing canonical identity.
+/// Verifies: schema v5 migrates v4 keys without changing canonical identity.
 #[tokio::test]
-async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
+async fn schema_v4_upgrade_rekeys_and_merges_equivalent_entries() {
     let data_root = TempDir::new().expect("memory data root");
     let memory_root = data_root.path().join("memory");
     let runtime =
@@ -102,7 +102,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     let oldest = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "Please remember that I prefer compact responses".to_string(),
+            text: "Can you remember that I prefer compact responses".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Preference),
             source_user_item_id: Some("legacy-item".to_string()),
@@ -120,7 +120,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
         .execute(
             "UPDATE memory_entries SET normalized_key = ?1 WHERE entry_id = ?2",
             rusqlite::params![
-                "please remember that i prefer compact responses",
+                "can you remember that i prefer compact responses",
                 oldest.entry_id.as_str(),
             ],
         )
@@ -135,8 +135,8 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
             rusqlite::params![
                 "legacy-duplicate",
                 oldest.scope_id,
-                "remember that i prefer compact responses",
-                "Remember that I prefer compact responses",
+                "save i prefer compact responses",
+                "Save I prefer compact responses",
                 "2030-01-01T00:00:00Z",
             ],
         )
@@ -209,10 +209,10 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
                  revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
              ) VALUES
                  ('legacy-revocation-1', 'user', 'user',
-                  'please remember that i prefer compact responses',
+                  'can you remember that i prefer compact responses',
                   '2027-01-01T00:00:00Z', '2028-01-01T00:00:00Z'),
                  ('legacy-revocation-2', 'user', 'user',
-                  'remember that i prefer compact responses',
+                  'save i prefer compact responses',
                   '2035-01-01T00:00:00Z', NULL);",
         )
         .expect("insert converging legacy revocations");
@@ -221,9 +221,9 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
             "DELETE FROM memory_entries_fts;
              INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
              SELECT entry_id, normalized_key, body FROM memory_entries;
-             UPDATE memory_schema_meta SET value = '3' WHERE key = 'schema_version';",
+             UPDATE memory_schema_meta SET value = '4' WHERE key = 'schema_version';",
         )
-        .expect("downgrade fixture schema marker");
+        .expect("set v4 fixture schema marker");
     drop(connection);
     fs::write(
         memory_root.join("user").join("MEMORY.md"),
@@ -235,7 +235,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
         MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("upgrade memory runtime");
     let mut expected = oldest;
     expected.normalized_key = "i prefer compact responses".to_string();
-    expected.body = "Remember that I prefer compact responses".to_string();
+    expected.body = "Save I prefer compact responses".to_string();
     expected.updated_at = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
         .expect("parse fixture timestamp")
         .with_timezone(&Utc);
@@ -300,7 +300,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("read migrated storage state");
-    assert_eq!(stored, ("4".to_string(), 2, 1));
+    assert_eq!(stored, ("5".to_string(), 2, 1));
     let revocations = connection
         .prepare(
             "SELECT revocation_id, normalized_key, revoked_at, restored_at
@@ -330,7 +330,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     );
     let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
         .expect("read migrated projection");
-    assert!(projection.contains("Remember that I prefer compact responses"));
+    assert!(projection.contains("Save I prefer compact responses"));
     assert!(!projection.contains("Model inferred a compact-response preference"));
     assert!(!projection.contains("stale legacy projection"));
 }
