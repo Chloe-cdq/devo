@@ -29,14 +29,17 @@ This document defines:
 - Session deletion, reset, rebuild, retention, failure, and observability behavior
 - Server module seam, rollout plan, and verification requirements
 
-It replaces revision 1's Git-backed, two-model extraction/consolidation workspace. It does not implement the design.
+It replaces revision 1's Git-backed, two-model extraction/consolidation workspace. The implementation-status audit below records independently shipped slices without changing the remaining design authority.
 
 ## Current-State Audit
 
-- `crates/core/src/memory.rs` contains types, path helpers, and traits, but no production `MemoryStore` adapter, server configuration, job runner, Native methods, tools, or recall integration. It is not a working general memory mechanism.
+- The storage foundation is implemented: the server owns `MemoryRuntime`, a dedicated SQLite schema and migrations, configuration gating, safe status reporting, and generated Markdown projections.
+- Explicit control currently implements status, remember, and list through Native/root-agent paths for User and Project scopes. Forget, export, reset, rebuild, and lifecycle closeout remain pending.
+- The session-settings slice is implemented: canonical `memory_recall` and `memory_contribution` patch fields, global-default resolution, field-level rollout persistence and replay, and best-effort actor synchronization.
+- The runtime `prepare_turn` seam can construct a prototype User-scope snapshot bounded by entry count. Project retrieval, token budgeting, production root-turn query-loop recall/advisory injection, and the Memory Recall item/event remain pending.
+- The runtime `enqueue_source` seam currently applies contribution gating only; background source discovery, external-context eligibility, extraction, jobs/retries, and passive contribution remain pending.
 - Session JSONL persistence, resume, replay, and compaction implement Session History, not General Persistent Memory.
 - Desktop automations maintain a separate per-automation `memory.md`; this is Automation Run Memory and remains separate.
-- The production model loop is assembled through `crates/core/src/query/mod.rs`. A memory design wired only through unused context-pipeline helpers would not affect real turns.
 - Native is the single retained protocol surface per L2-DES-APP-008. Memory behavior must not be implemented independently in legacy or ACP handlers.
 
 ## Design Decisions
@@ -71,7 +74,7 @@ Project identity in the first release is the hash of the canonical Git common di
 
 A dedicated local SQLite database is the canonical truth. It provides transactions, FTS lexical retrieval, evidence joins, revocation checks, reset watermarks, and idempotent jobs.
 
-Each User or Project scope has one generated, read-only `MEMORY.md` projection for inspection and export. Projection generation occurs after a successful transaction using atomic replacement. Manual edits are overwritten and never imported. The memory directory is not Git-initialized.
+Each User or Project scope has one generated, read-only `MEMORY.md` projection for inspection and export. Projection generation occurs after a successful transaction using atomic replacement. Runtime startup regenerates every stored scope from SQLite, closing the recoverable crash window between database commit and projection replacement. Manual edits are overwritten and never imported. The memory directory is not Git-initialized.
 
 This decision is recorded in `docs/adr/0001-sqlite-authority-for-general-persistent-memory.md`.
 
@@ -103,6 +106,53 @@ Uniqueness is evaluated by `(scope, memory_key)`:
 2. Explicit content replaces inferred content for the same key.
 3. Newer explicit content replaces older explicit content and preserves the replacement lineage.
 4. Incompatible inferred content marks the canonical entry `Conflicted` and retains the competing claim as a candidate; the key remains inspectable but is excluded from recall.
+
+For explicit writes, `memory_key` uses a deterministic equivalence contract. The
+accepted display body is whitespace-normalized first. The key lowercases
+Unicode characters in plain-prose tokens, collapses whitespace, and removes
+sentence, quotation, and bracketing punctuation only at token boundaries.
+Tokens that carry path, file-name, URL, address, identifier, or assignment
+punctuation preserve case and internal punctuation while harmless surrounding
+quotes, brackets, and sentence terminators are ignored. For example, `.env`,
+`env`, `../config`, `/config`, `FOO=1`, and `foo=1` remain distinct where their
+identity-bearing content differs. It removes only these
+case-insensitive leading intent frames, repeatedly and longest-first:
+`please remember that`, `please remember this`, `please remember`, `remember
+that`, `remember this`, `remember`, `please keep in mind that`, `please keep in
+mind`, `keep in mind that`, `keep in mind`, `for future reference`, `please note
+that`, `please note`, `note that`, and `note`. A final standalone `please` is
+also removed. For preference wording, leading `my preference is`, `i would
+prefer`, and `i'd prefer` are rewritten to `i prefer`. If these transformations
+would remove every token, the pre-frame normalized key is retained.
+
+This equivalence contract is implemented locally and must not call a model, use
+embeddings or fuzzy thresholds, stem words, substitute open-ended synonyms, or
+reorder tokens. Kind is not part of the identity key: a later equivalent
+explicit request may correct the projected kind. All other tokens, including
+negation and claim values, remain identity-bearing, so distinct or incompatible
+claims remain separate. Equivalence is evaluated only after resolving the User
+or Project scope; the same key in different scopes never aliases.
+
+When an equivalent explicit write is committed, the canonical entry retains its
+entry ID and original `created_at`, receives the latest validated body and kind,
+advances `updated_at`, and adds the new evidence tuple. Evidence identity is
+`(entry_id, session_id, turn_id, source_user_item_id)` with null-safe equality;
+replaying the same tuple does not duplicate provenance. The entry row, FTS row,
+and evidence rows update in one SQLite transaction; generated Markdown is then
+atomically replaced. Runtime startup regenerates Markdown from the authoritative
+SQLite state, so an interruption after commit cannot expose the superseded body
+after restart.
+
+Schema version 4 applies this equivalence contract only to existing explicit
+rows in one idempotent transaction; inferred rows retain their stored key. Within
+each `(scope, new memory_key)` collision group it retains the oldest entry ID and
+`created_at`, prefers the most recently updated explicit body and metadata over
+inferred content, merges evidence with null-safe tuple deduplication, removes the
+redundant rows, and rebuilds the FTS table before recreating the uniqueness index.
+The same old-to-new identity mapping is applied to revocation tombstones, whose
+collisions retain the latest revoke/restore lifecycle event. Replacement links
+to merged rows are redirected to the retained entry without creating self-links.
+Startup projection regeneration then publishes the migrated state.
 
 An extractor never resolves inferred conflicts by itself. A later explicit request may resolve the key.
 
@@ -383,8 +433,8 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | refines | L1-REQ-MEM-001 | 2 | specs/L1/L1-REQ-MEM-001-persistent-memory.md | Implements the approved user-controlled General Persistent Memory requirement. |
 | related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | Defines local storage, export, deletion, redaction, and telemetry boundaries. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | Session JSONL supplies eligibility facts and evidence references without storing memory entries. |
-| related-to | L2-DES-CONV-002 | 1 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings.md | Recall and contribution use canonical persist-first session settings and declared decision points. |
-| related-to | L2-DES-APP-008 | 1 | specs/L2/app/L2-DES-APP-008-protocol-unification.md | Management methods and recall events land on Native only. |
+| related-to | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | Recall and contribution use canonical persist-first session settings and declared decision points. |
+| related-to | L2-DES-APP-008 | 5 | specs/L2/app/L2-DES-APP-008-protocol-unification-rev-5.md | Management methods and recall events land on Native only. |
 | related-to | L2-DES-AGENT-003 | 1 | specs/L2/agent/L2-DES-AGENT-003-subagent-architecture.md | Subagents inherit a read-only parent snapshot and cannot mutate memory. |
 | related-to | L2-DES-LLM-003 | 1 | specs/L2/llm/L2-DES-LLM-003-model-usage-observability.md | Background extraction usage is metered without logging memory content. |
 
@@ -399,5 +449,7 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 |---:|---|---|---|---|
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
+| 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
+| 2 | 2026-09-12 | Assistant | Clarification | Defined the deterministic explicit-memory equivalence key, structured-token and scope boundaries, canonical-entry update semantics, evidence identity, schema-v4 upgrade, and startup projection recovery required by DD-4 and DD-8. |
 | 3 | 2026-09-12 | Human + Assistant | Security revision | Defined server-bound two-stage root-agent forget authorization and removed open-ended natural-language classification from the mutation boundary. |
 | 4 | 2026-09-13 | Human + Assistant | Concurrency revision | Human-approved design unifies Agent Direct, Agent Confirmed, and Native deletion behind one server-global RAII lease with atomic authority checks, candidate cleanup, deterministic failure/cancellation semantics, and search coordination. |

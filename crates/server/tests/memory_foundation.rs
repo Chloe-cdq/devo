@@ -31,8 +31,8 @@ use devo_server::ClientTransportKind;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
 use devo_server::memory::{
-    EnqueueOutcome, MemoryCommand, MemoryCommandResult, MemoryRuntime, PrepareMemoryRequest,
-    PreparedMemory, SessionMemorySource,
+    EnqueueOutcome, MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime,
+    PrepareMemoryRequest, PreparedMemory, SessionMemorySource,
 };
 use futures::Stream;
 use futures::stream;
@@ -263,7 +263,87 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             |row| row.get(0),
         )
         .expect("read memory schema version");
-    assert_eq!(schema_version, "3");
+    assert_eq!(schema_version, "4");
+}
+
+/// Trace: L2-DES-MEM-001 DD-4, DD-8
+/// Verifies: future and malformed schema versions are rejected before any schema mutation.
+#[test]
+fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
+    for unsupported_version in ["5", "future"] {
+        let data_root = TempDir::new()?;
+        let memory_root = data_root.path().join("memory");
+        std::fs::create_dir_all(&memory_root)?;
+
+        let database_path = memory_root.join("memory.sqlite3");
+        let connection = Connection::open(&database_path)?;
+        connection.execute_batch(
+            "CREATE TABLE memory_schema_meta (
+                 key TEXT PRIMARY KEY NOT NULL,
+                 value TEXT NOT NULL
+             );
+             CREATE TABLE future_memory_layout (
+                 marker TEXT PRIMARY KEY NOT NULL
+             );
+             INSERT INTO future_memory_layout (marker) VALUES ('untouched');",
+        )?;
+        connection.execute(
+            "INSERT INTO memory_schema_meta (key, value) VALUES ('schema_version', ?1)",
+            [unsupported_version],
+        )?;
+        let schema_before = connection
+            .prepare(
+                "SELECT type, name, tbl_name, sql
+                 FROM sqlite_schema
+                 ORDER BY type, name",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(connection);
+
+        let error = match MemoryRuntime::open(memory_root, MemoryConfig::default()) {
+            Ok(_) => panic!("unsupported memory schema must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, MemoryError::InvalidStoredValue(_)));
+
+        let connection = Connection::open(database_path)?;
+        let schema_after = connection
+            .prepare(
+                "SELECT type, name, tbl_name, sql
+                 FROM sqlite_schema
+                 ORDER BY type, name",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(schema_after, schema_before);
+        let stored = connection.query_row(
+            "SELECT
+                 (SELECT value FROM memory_schema_meta WHERE key = 'schema_version'),
+                 (SELECT marker FROM future_memory_layout)",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        assert_eq!(
+            stored,
+            (unsupported_version.to_string(), "untouched".to_string())
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -323,7 +403,7 @@ fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(schema_version, "3");
+    assert_eq!(schema_version, "4");
     Ok(())
 }
 

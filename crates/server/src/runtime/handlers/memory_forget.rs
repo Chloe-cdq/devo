@@ -120,7 +120,7 @@ impl ServerRuntime {
                 ProtocolErrorCode::InternalError,
                 "memory/forget returned an unexpected result",
             ),
-            Err(error) => self.memory_error_response(request_id, error),
+            Err(error) => self.memory_error_response(request_id, "memory/forget", error),
         }
     }
 }

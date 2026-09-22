@@ -78,7 +78,7 @@ When a user changes a session setting, the program must acknowledge the change o
 
 | Relationship | Target ID | Target Revision | Target Path | Rationale |
 |---|---|---:|---|---|
-| refined-by | L2-DES-CONV-002 | 1 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings.md | The two-plane session settings design refines this requirement into an architecture, API contract, and per-setting promise matrix. |
+| refined-by | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | The two-plane session settings design refines this requirement into an architecture, API contract, and per-setting promise matrix. |
 
 ## Revision Notes
 

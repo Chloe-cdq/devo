@@ -264,6 +264,15 @@ fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
         crate::memory::MemoryError::Disabled => {
             ToolCallError::NeedsConfiguration("memory is disabled".to_string())
         }
+        crate::memory::MemoryError::AmbiguousProjectScope => ToolCallError::InvalidInput(
+            "memory operation has ambiguous Native Session selectors".to_string(),
+        ),
+        crate::memory::MemoryError::ProjectSessionRequired => ToolCallError::InvalidInput(
+            "Project memory requires a session-bound connection".to_string(),
+        ),
+        crate::memory::MemoryError::ProjectSessionUnavailable => ToolCallError::InvalidInput(
+            "Project memory requires a session with a workspace root".to_string(),
+        ),
         crate::memory::MemoryError::Directory(_)
         | crate::memory::MemoryError::Database(_)
         | crate::memory::MemoryError::LockPoisoned

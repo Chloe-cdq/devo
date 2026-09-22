@@ -64,15 +64,20 @@ impl ServerRuntime {
                         format!("direct {operation} commands must omit sourceUserItemId"),
                     ));
                 }
-                let context = self
-                    .project_memory_context(connection_id, &active_session_ids)
-                    .await
+                let Some(memory) = self.memory.as_ref() else {
+                    return Err(self.error_response(
+                        request_id.clone(),
+                        ProtocolErrorCode::InternalError,
+                        "memory runtime is unavailable",
+                    ));
+                };
+                let candidates = self
+                    .project_memory_sessions(connection_id, &active_session_ids)
+                    .await;
+                let (selected_session_id, workspace_root) = memory
+                    .resolve_project_memory_source(candidates)
                     .map_err(|error| {
-                        self.project_memory_context_error_response(
-                            request_id.clone(),
-                            operation,
-                            error,
-                        )
+                        self.memory_error_response(request_id.clone(), operation, error)
                     })?;
                 let (turn_id, user_item_id) = active_source
                     .as_ref()
@@ -81,8 +86,8 @@ impl ServerRuntime {
                 let session_id = active_source
                     .as_ref()
                     .map(|source| source.0)
-                    .unwrap_or(context.session_id);
-                (session_id, turn_id, user_item_id, context.workspace_root)
+                    .unwrap_or(selected_session_id);
+                (session_id, turn_id, user_item_id, workspace_root)
             }
             MemoryScope::User => {
                 let (session_id, turn_id, user_item_id) = if let Some(source) = active_source {

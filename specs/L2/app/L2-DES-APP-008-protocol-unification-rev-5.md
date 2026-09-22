@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-APP-008
-revision: 4
+revision: 5
 status: Approved
 active_baseline: yes
-supersedes:
+supersedes: revision 4
 superseded_by:
 owner: Assistant
-last_updated: 2026-08-25
+last_updated: 2026-09-12
 ---
 
 # L2-DES-APP-008 — Protocol Unification: Canonical Core with Edge Adapters
@@ -115,7 +115,7 @@ Each phase is independently shippable. Rollback within a phase is ordinary rever
 |---|---|---:|---|---|
 | refines | L1-REQ-APP-001 | 1 | specs/L1/L1-REQ-APP-001-client-server-arch.md | Protocol unification refines the client-server architecture requirement into a single canonical surface with edge adapters. |
 | related-to | L2-DES-APP-003 | 2 | specs/L2/app/L2-DES-APP-003-client-server-protocol.md | The broader client-server protocol architecture; this document supersedes its multi-surface status quo with a unification plan. |
-| related-to | L2-DES-CONV-002 | 1 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings.md | The settings two-plane write path lands as the pilot domain of Phase B via canonical `session/metadata/update`. |
+| related-to | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | The settings two-plane write path lands as the pilot domain of Phase B via canonical `session/metadata/update`; revision 2 adds the approved memory-setting promises. |
 | related-to | L2-DES-MEM-001 | 2 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture.md | Memory methods and recall events extend Native only; ACP and future protocols remain pure projections. |
 
 ## Revision Notes
@@ -127,3 +127,4 @@ Each phase is independently shippable. Rollback within a phase is ordinary rever
 | 3 | 2026-08-11 | Assistant | Added DD-9 | Runtime `ProtocolSet`, Native CLI vocabulary, monotonic singleton extension, initialize-time adapter selection, and once-per-connection event projection. |
 | 4 | 2026-08-22 | Assistant | Clarified DD-8 | Defined request-before-event ordering, lifecycle cancellation cleanup, indefinite interactive waits, and command pattern/prefix carriage for Native approvals. |
 | 5 | 2026-08-25 | Human + Assistant | Memory alignment | Recorded General Persistent Memory as a Native-only feature with no legacy or ACP business implementation. |
+| 5 | 2026-09-12 | Assistant | Lineage repair | Split the approved Memory alignment from revision 4 into explicit revision 5 without changing product meaning. |

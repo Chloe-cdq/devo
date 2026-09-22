@@ -1,4 +1,5 @@
 mod memory_settings;
+mod write_path;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -763,81 +764,24 @@ impl RolloutStore {
         if lines.is_empty() {
             return Ok(());
         }
-        if let Some(parent) = rollout_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create rollout directory {}", parent.display()))?;
-        }
-        // Acquire a per-file lock so concurrent writes to the same rollout file
-        // do not interleave their JSON payloads.
-        let file_lock = {
-            let mut locks = self
-                .file_locks
-                .lock()
-                .expect("rollout file-locks table poisoned");
-            locks
-                .entry(rollout_path.to_path_buf())
-                .or_insert_with(|| Arc::new(StdMutex::new(())))
-                .clone()
-        };
-        let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
-
-        let mut write_states = self
-            .write_states
-            .lock()
-            .expect("rollout write-state table poisoned");
-        let state = match write_states.get_mut(rollout_path) {
-            Some(state) => state,
-            None => {
-                let state = hydrate_write_state(rollout_path)?;
-                write_states
-                    .entry(rollout_path.to_path_buf())
-                    .or_insert(state)
-            }
-        };
-        let mut v2_lines = Vec::new();
-        for line in lines {
-            v2_lines.extend(
-                state.projector.project_line(line).with_context(|| {
+        self.with_locked_write_state(rollout_path, |state| {
+            let mut v2_lines = Vec::new();
+            for line in lines {
+                v2_lines.extend(state.projector.project_line(line).with_context(|| {
                     format!("project rollout line for {}", rollout_path.display())
-                })?,
-            );
-        }
-        self.write_v2_lines(rollout_path, state, &v2_lines)
+                })?);
+            }
+            self.write_v2_lines(rollout_path, state, &v2_lines)
+        })
     }
 
     fn append_v2_lines(&self, rollout_path: &Path, v2_lines: Vec<RolloutLineV2>) -> Result<()> {
-        if let Some(parent) = rollout_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create rollout directory {}", parent.display()))?;
-        }
-        let file_lock = {
-            let mut locks = self
-                .file_locks
-                .lock()
-                .expect("rollout file-locks table poisoned");
-            locks
-                .entry(rollout_path.to_path_buf())
-                .or_insert_with(|| Arc::new(StdMutex::new(())))
-                .clone()
-        };
-        let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
-        let mut write_states = self
-            .write_states
-            .lock()
-            .expect("rollout write-state table poisoned");
-        let state = match write_states.get_mut(rollout_path) {
-            Some(state) => state,
-            None => {
-                let state = hydrate_write_state(rollout_path)?;
-                write_states
-                    .entry(rollout_path.to_path_buf())
-                    .or_insert(state)
+        self.with_locked_write_state(rollout_path, |state| {
+            for line in &v2_lines {
+                state.projector.observe_v2_line(line);
             }
-        };
-        for line in &v2_lines {
-            state.projector.observe_v2_line(line);
-        }
-        self.write_v2_lines(rollout_path, state, &v2_lines)
+            self.write_v2_lines(rollout_path, state, &v2_lines)
+        })
     }
 
     fn write_v2_lines(
