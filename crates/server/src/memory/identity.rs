@@ -250,21 +250,31 @@ mod tests {
     }
 
     /// Trace: L2-DES-MEM-001 Rev 2 DD-3
-    /// Verifies: Unix-native paths that differ by case resolve to distinct complete Project identities.
+    /// Verifies: case-sensitive Unix filesystems resolve case variants to distinct complete Project identities.
     #[cfg(unix)]
     #[test]
-    fn unix_case_sensitive_paths_resolve_to_distinct_identities() {
+    fn unix_case_sensitive_filesystems_resolve_case_variants_to_distinct_identities() {
+        use std::os::unix::fs::MetadataExt;
+
         let temp = tempfile::TempDir::new().expect("temp dir");
         let upper = temp.path().join("Project");
         let lower = temp.path().join("project");
         std::fs::create_dir_all(&upper).expect("create upper-case workspace");
         std::fs::create_dir_all(&lower).expect("create lower-case workspace");
+        let upper_metadata = std::fs::metadata(&upper).expect("upper-case metadata");
+        let lower_metadata = std::fs::metadata(&lower).expect("lower-case metadata");
+        if (upper_metadata.dev(), upper_metadata.ino())
+            == (lower_metadata.dev(), lower_metadata.ino())
+        {
+            return;
+        }
 
         let upper = resolve_project_memory_identity(&upper).expect("upper-case identity");
         let lower = resolve_project_memory_identity(&lower).expect("lower-case identity");
 
         assert_ne!(upper, lower);
     }
+
     /// Trace: L2-DES-MEM-001 Rev 2 DD-3
     /// Verifies: on Unix, a literal backslash and a path separator resolve to distinct complete Project identities.
     #[cfg(unix)]
