@@ -1,10 +1,10 @@
 ---
 artifact_id: L2-DES-MEM-001
 revision: 2
-status: Approved
-active_baseline: yes
+status: Deprecated
+active_baseline: no
 supersedes: revision 1 draft
-superseded_by:
+superseded_by: revision 3
 owner: Human + Assistant
 last_updated: 2026-09-12
 ---

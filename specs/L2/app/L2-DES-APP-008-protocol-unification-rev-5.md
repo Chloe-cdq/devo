@@ -116,7 +116,7 @@ Each phase is independently shippable. Rollback within a phase is ordinary rever
 | refines | L1-REQ-APP-001 | 1 | specs/L1/L1-REQ-APP-001-client-server-arch.md | Protocol unification refines the client-server architecture requirement into a single canonical surface with edge adapters. |
 | related-to | L2-DES-APP-003 | 2 | specs/L2/app/L2-DES-APP-003-client-server-protocol.md | The broader client-server protocol architecture; this document supersedes its multi-surface status quo with a unification plan. |
 | related-to | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | The settings two-plane write path lands as the pilot domain of Phase B via canonical `session/metadata/update`; revision 2 adds the approved memory-setting promises. |
-| related-to | L2-DES-MEM-001 | 2 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture-rev-2.md | Memory methods and recall events extend Native only; ACP and future protocols remain pure projections. |
+| related-to | L2-DES-MEM-001 | 3 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture-rev-3.md | Memory methods and recall events extend Native only; ACP and future protocols remain pure projections. |
 
 ## Revision Notes
 

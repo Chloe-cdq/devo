@@ -1,11 +1,11 @@
 ---
 artifact_id: L2-DES-MEM-001
 revision: 3
-status: Draft
-active_baseline: no
-supersedes: revision 2 after explicit human approval
+status: Approved
+active_baseline: yes
+supersedes: revision 2
 superseded_by:
-owner: Assistant (proposal; human approval pending)
+owner: Human + Assistant
 last_updated: 2026-09-23
 ---
 
@@ -29,7 +29,7 @@ This document defines:
 - Session deletion, reset, rebuild, retention, failure, and observability behavior
 - Server module seam, rollout plan, and verification requirements
 
-Revision 2 remains the active Approved authority while this revision is Draft. This proposal supersedes revision 2 only after explicit human approval naming L2-DES-MEM-001 revision 3. Until then, implementation, tests, traceability, and other Approved specifications continue to target revision 2; a record may cite revision 3 only when documenting this proposal itself. Revision 2 replaced revision 1's Git-backed, two-model extraction/consolidation workspace. The implementation-status audit below records independently shipped slices.
+Revision 3 is the active Approved authority and supersedes revision 2. Revision 2 remains the historical approved design that replaced revision 1's Git-backed, two-model extraction/consolidation workspace. The implementation-status audit below records independently shipped slices.
 
 ## Current-State Audit
 
@@ -417,3 +417,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
 | 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
 | 3 | 2026-09-23 | Assistant | Proposed | Separates trusted-entrypoint authorization, claim extraction, and deterministic textual equivalence; proposes conservative structured-token identity, canonical-entry updates, and schema-v5 migration for human review. |
+| 3 | 2026-09-23 | Human | Approval | Approved in the Codex task: "批准 **L2-DES-MEM-001 revision 3**". |
