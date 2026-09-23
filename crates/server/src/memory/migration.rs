@@ -188,6 +188,10 @@ fn merge_group(
             })
         })
         .ok_or_else(|| MemoryError::InvalidStoredValue("empty migration group".into()))?;
+    let last_recalled_at = entries
+        .iter()
+        .filter_map(|entry| entry.last_recalled_at.as_deref())
+        .max();
 
     let mut replacement_redirects = Vec::new();
     for duplicate in entries
@@ -230,7 +234,7 @@ fn merge_group(
             current.origin,
             current.state,
             current.updated_at,
-            current.last_recalled_at,
+            last_recalled_at,
             current.replacement_entry_id,
             current.expires_at,
             keeper.entry_id,
