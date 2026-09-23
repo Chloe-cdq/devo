@@ -114,6 +114,10 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
         |row| row.get::<_, String>(0),
     )?;
     let (previous_version_number, current_version) = supported_schema_version(&previous_version)?;
+    if previous_version_number == current_version {
+        transaction.commit()?;
+        return Ok(());
+    }
     ensure_column(
         &transaction,
         "memory_jobs",

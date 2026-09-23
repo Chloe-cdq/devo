@@ -263,14 +263,14 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             |row| row.get(0),
         )
         .expect("read memory schema version");
-    assert_eq!(schema_version, "4");
+    assert_eq!(schema_version, "5");
 }
 
 /// Trace: L2-DES-MEM-001 DD-4, DD-8
 /// Verifies: future and malformed schema versions are rejected before any schema mutation.
 #[test]
 fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
-    for unsupported_version in ["5", "future"] {
+    for unsupported_version in ["6", "future"] {
         let data_root = TempDir::new()?;
         let memory_root = data_root.path().join("memory");
         std::fs::create_dir_all(&memory_root)?;
@@ -403,7 +403,7 @@ fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(schema_version, "4");
+    assert_eq!(schema_version, "5");
     Ok(())
 }
 
