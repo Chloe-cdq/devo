@@ -147,7 +147,7 @@ mod tests {
 
     use super::*;
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-3
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
     /// Verifies: a main checkout and linked worktree resolve to one complete Git common-directory Project identity.
     #[test]
     fn linked_worktree_resolves_to_main_git_common_directory() {
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(main.scope_id.len(), 64);
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-3
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
     /// Verifies: a non-Git workspace and its canonical path resolve to the same complete workspace-root identity.
     #[test]
     fn non_git_workspace_uses_canonical_workspace_root() {
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(identity.scope_id.len(), 64);
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-3
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
     /// Verifies: moving a Git workspace changes its complete Project identity.
     #[test]
     fn moved_git_workspace_uses_a_new_project_identity() {
@@ -216,7 +216,7 @@ mod tests {
         assert_ne!(original, moved);
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-3
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
     /// Verifies: Windows-native paths that differ only by ASCII case resolve to the same complete Project identity.
     #[cfg(windows)]
     #[test]
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(alternate_identity, identity);
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-3
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
     /// Verifies: case-sensitive Unix filesystems resolve case variants to distinct complete Project identities.
     #[cfg(unix)]
     #[test]
@@ -275,7 +275,7 @@ mod tests {
         assert_ne!(upper, lower);
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-3
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
     /// Verifies: on Unix, a literal backslash and a path separator resolve to distinct complete Project identities.
     #[cfg(unix)]
     #[test]
@@ -292,7 +292,7 @@ mod tests {
         assert_ne!(backslash, separator);
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-3
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
     /// Verifies: on Unix, distinct non-UTF-8 names resolve to distinct complete Project identities.
     #[cfg(unix)]
     #[test]

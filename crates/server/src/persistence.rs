@@ -4889,7 +4889,7 @@ mod tests {
         assert_eq!(line.value, serde_json::Value::String("workspace".into()));
     }
 
-    /// Trace: L2-DES-CONV-002 Rev 2 DD-3/DD-4, L2-DES-MEM-001 Rev 2 Session Controls
+    /// Trace: L2-DES-CONV-002 Rev 2 DD-3/DD-4, L2-DES-MEM-001 Rev 3 Session Controls
     /// Verifies: a recall and contribution patch appends one ordered batch of field-level settings records.
     #[test]
     fn session_settings_batch_is_written_as_one_projected_append() {
@@ -4955,7 +4955,7 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-CONV-002 Rev 2 DD-4, L2-DES-MEM-001 Rev 2 Session Controls
+    /// Trace: L2-DES-CONV-002 Rev 2 DD-4, L2-DES-MEM-001 Rev 3 Session Controls
     /// Verifies: replay exposes field-level recall and contribution settings to runtime state.
     #[test]
     fn replay_memory_settings_are_exposed_for_runtime_session() {

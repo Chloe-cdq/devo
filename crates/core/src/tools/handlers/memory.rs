@@ -185,7 +185,7 @@ mod tests {
 
     use super::*;
 
-    /// Trace: L2-DES-MEM-001 Rev 2 Explicit Control
+    /// Trace: L2-DES-MEM-001 Rev 3 Explicit Control
     /// Verifies: the root-agent schema lets the server supply the current user item binding.
     #[test]
     fn schema_binds_to_current_user_item_id_without_model_required_field() {
@@ -216,7 +216,7 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 2 DD-12
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-12
     /// Verifies: the root-agent memory tool exposes and preserves Project scope.
     #[test]
     fn project_memory_tool_input_preserves_project_scope() {

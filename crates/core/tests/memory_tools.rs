@@ -1,7 +1,7 @@
 use devo_core::tools::create_default_tool_registry;
 use devo_core::tools::is_subagent_agent_coordination_tool;
 
-/// Trace: L2-DES-MEM-001 Rev 2 Explicit Control
+/// Trace: L2-DES-MEM-001 Rev 3 Explicit Control
 /// Verifies: the default registry exposes the root memory remember action.
 #[test]
 fn default_registry_exposes_the_root_memory_remember_tool() {
@@ -10,7 +10,7 @@ fn default_registry_exposes_the_root_memory_remember_tool() {
     assert!(registry.get("memory_remember").is_some());
 }
 
-/// Trace: L2-DES-MEM-001 Rev 2 Explicit Control
+/// Trace: L2-DES-MEM-001 Rev 3 Explicit Control
 /// Verifies: subagents cannot receive the mutating memory remember action.
 #[test]
 fn memory_remember_is_not_available_to_subagents() {

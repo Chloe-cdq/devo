@@ -444,7 +444,7 @@ fn compaction_lifecycle_events_project_to_native_notifications() {
     );
 }
 
-/// Trace: L2-DES-APP-008 Rev 5 DD-5, L2-DES-CONV-002 Rev 2 DD-2/DD-10, L2-DES-MEM-001 Rev 2 Session Controls
+/// Trace: L2-DES-APP-008 Rev 5 DD-5, L2-DES-CONV-002 Rev 2 DD-2/DD-10, L2-DES-MEM-001 Rev 3 Session Controls
 /// Verifies: the canonical session/metadata/update contract shape, including recall and contribution,
 /// round-trips a SessionSettings patch and expectedVersion on the wire.
 #[test]
