@@ -30,7 +30,7 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
         }
 
         if let Some(last) = claim.chars().last()
-            && matches!(last, '.' | '!' | '?' | '。' | '！' | '？')
+            && matches!(last, '.' | '!' | '。' | '！')
         {
             let without_delimiter = &claim[..claim.len() - last.len_utf8()];
             if without_delimiter.chars().last().is_some_and(|character| {
@@ -48,7 +48,7 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
     let ambiguous_case = claim.split_whitespace().enumerate().any(|(index, token)| {
         let token = token.trim_end_matches(',');
         if index == 0 {
-            token != "I" && token.chars().any(char::is_uppercase)
+            !matches!(token, "I" | "My" | "The") && token.chars().any(char::is_uppercase)
         } else {
             token.chars().any(char::is_uppercase)
         }
@@ -89,16 +89,29 @@ mod tests {
             "Remember that I prefer compact responses"
         );
         assert_eq!(
-            explicit_memory_key("My preference is compact responses"),
-            "My preference is compact responses"
-        );
-        assert_eq!(
             explicit_memory_key("\"I prefer compact responses\"."),
             "i prefer compact responses"
         );
         assert_eq!(
             explicit_memory_key("(I prefer compact responses)."),
             "i prefer compact responses"
+        );
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-8
+    /// Verifies: an ordinary article-led sentence folds its initial capital.
+    #[test]
+    fn explicit_key_case_folds_plain_prose_article() {
+        assert_eq!(explicit_memory_key("The sky is blue."), "the sky is blue");
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-8
+    /// Verifies: an ordinary possessive-led sentence folds its initial capital.
+    #[test]
+    fn explicit_key_case_folds_plain_prose_possessive() {
+        assert_eq!(
+            explicit_memory_key("My preference is compact responses"),
+            "my preference is compact responses"
         );
     }
 
@@ -113,6 +126,20 @@ mod tests {
         assert_ne!(
             explicit_memory_key("FOO, BAR"),
             explicit_memory_key("foo, bar")
+        );
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-8
+    /// Verifies: a question remains distinct from the corresponding assertion.
+    #[test]
+    fn explicit_key_preserves_question_marks() {
+        assert_ne!(
+            explicit_memory_key("I prefer tea?"),
+            explicit_memory_key("I prefer tea")
+        );
+        assert_ne!(
+            explicit_memory_key("I prefer tea？"),
+            explicit_memory_key("I prefer tea")
         );
     }
 

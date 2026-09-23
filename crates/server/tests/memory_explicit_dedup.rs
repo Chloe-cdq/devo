@@ -135,7 +135,7 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
     let user_rust = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "the project uses rust".to_string(),
+            text: "The project uses rust".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Fact),
             source_user_item_id: Some("user-rust".to_string()),
@@ -148,7 +148,7 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
     let project_rust = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "the project uses rust".to_string(),
+            text: "The project uses rust".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
             source_user_item_id: Some("project-rust-1".to_string()),
