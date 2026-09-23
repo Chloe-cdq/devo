@@ -106,6 +106,19 @@ pub(super) fn migrate_explicit_equivalence(
     for ((_, _, normalized_key), entries) in groups {
         replacement_redirects.extend(merge_group(transaction, &normalized_key, &entries)?);
     }
+    transaction.execute(
+        "UPDATE memory_entries AS entry
+         SET state = 'retired'
+         WHERE EXISTS (
+             SELECT 1 FROM memory_revocations AS revocation
+             WHERE revocation.scope_type = entry.scope_type
+               AND revocation.scope_id = entry.scope_id
+               AND revocation.normalized_key = entry.normalized_key
+               AND (revocation.restored_at IS NULL
+                    OR revocation.restored_at < revocation.revoked_at)
+         )",
+        [],
+    )?;
     for (duplicate_id, keeper_id) in replacement_redirects {
         transaction.execute(
             "UPDATE memory_entries SET replacement_entry_id = ?1

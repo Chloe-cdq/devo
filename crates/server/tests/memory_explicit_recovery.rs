@@ -259,7 +259,7 @@ async fn restart_repairs_projection_after_database_commit() {
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
-/// Verifies: schema migration merges legacy keys without changing canonical identity.
+/// Verifies: schema migration merges legacy keys and honors the latest revocation.
 #[tokio::test]
 async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     let data_root = TempDir::new().expect("memory data root");
@@ -408,6 +408,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     expected.normalized_key = "i prefer compact responses".to_string();
     expected.body = "i prefer compact responses!".to_string();
     expected.kind = MemoryKind::Fact;
+    expected.state = MemoryState::Retired;
     expected.updated_at = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
         .expect("parse fixture timestamp")
         .with_timezone(&Utc);
@@ -513,6 +514,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
         .expect("read migrated projection");
     assert!(projection.contains("i prefer compact responses!"));
+    assert!(!projection.contains("state: active"));
     assert!(!projection.contains("Model inferred a compact-response preference"));
     assert!(!projection.contains("stale legacy projection"));
 }
