@@ -48,7 +48,7 @@ pub(super) fn explicit_memory_key(body: &str) -> String {
     let ambiguous_case = claim.split_whitespace().enumerate().any(|(index, token)| {
         let token = token.trim_end_matches(',');
         if index == 0 {
-            !matches!(token, "I" | "My" | "The") && token.chars().any(char::is_uppercase)
+            !matches!(token, "I" | "My" | "The" | "We") && token.chars().any(char::is_uppercase)
         } else {
             token.chars().any(char::is_uppercase)
         }
@@ -112,6 +112,20 @@ mod tests {
         assert_eq!(
             explicit_memory_key("My preference is compact responses"),
             "my preference is compact responses"
+        );
+    }
+
+    /// Trace: L2-DES-MEM-001 DD-8
+    /// Verifies: an ordinary pronoun-led sentence folds its initial capital.
+    #[test]
+    fn explicit_key_case_folds_plain_prose_plural_pronoun() {
+        assert_eq!(
+            explicit_memory_key("We prefer short replies."),
+            "we prefer short replies"
+        );
+        assert_ne!(
+            explicit_memory_key("WE prefer short replies"),
+            explicit_memory_key("we prefer short replies")
         );
     }
 
