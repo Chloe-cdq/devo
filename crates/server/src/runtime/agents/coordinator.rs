@@ -534,7 +534,7 @@ fn memory_command_has_payload(text: &str, phrase: &str) -> bool {
 mod tests {
     use super::has_explicit_memory_intent;
 
-    /// Trace: L2-DES-MEM-001
+    /// Trace: L2-DES-MEM-001 Rev 2 Explicit Control
     /// Verifies: supported explicit memory requests are recognized in English and Chinese.
     #[test]
     fn explicit_memory_intent_accepts_english_and_chinese_requests() {
@@ -550,8 +550,8 @@ mod tests {
         assert!(!has_explicit_memory_intent("Please rememberable tabs"));
     }
 
-    /// Trace: L2-DES-MEM-001
-    /// Verifies: negated or descriptive memory phrases are rejected.
+    /// Trace: L2-DES-MEM-001 Rev 2 Explicit Control
+    /// Verifies: negated or descriptive memory phrases do not authorize mutation.
     #[test]
     fn explicit_memory_intent_rejects_negation_and_description() {
         assert!(!has_explicit_memory_intent("Don't remember my birthday"));

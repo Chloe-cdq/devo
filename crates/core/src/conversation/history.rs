@@ -343,9 +343,9 @@ mod tests {
         assert!(matches!(error, HistoryReadError::DamagedLine { .. }));
     }
 
-    /// Trace: L2-DES-CONV-002
-    /// Verifies: field-level settings lines fold into the canonical session
-    /// snapshot (last line per field wins) and bump its version (DD-4).
+    /// Trace: L2-DES-CONV-002 Rev 2 DD-4, L2-DES-MEM-001 Rev 2 Session Controls
+    /// Verifies: field-level settings lines, including recall and contribution, fold into the canonical
+    /// session snapshot (last line per field wins) and bump its version.
     #[test]
     fn session_settings_lines_fold_into_canonical_session() {
         let dir = tempfile::TempDir::new().expect("temp dir");

@@ -628,6 +628,8 @@ async fn resume_restores_session_permission_preset_and_plan_mode_without_turn() 
     Ok(())
 }
 
+/// Trace: L2-DES-APP-008 Rev 5 DD-5, L2-DES-CONV-002 Rev 2 DD-2, L2-DES-MEM-001 Rev 2 Session Controls
+/// Verifies: partial Native metadata updates preserve independent memory settings in an ephemeral session.
 #[tokio::test]
 async fn ephemeral_memory_settings_survive_metadata_updates() -> Result<()> {
     let data_root = TempDir::new()?;

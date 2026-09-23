@@ -59,7 +59,8 @@ impl ModelProviderSDK for NoopProvider {
     }
 }
 
-/// Verifies: a persisted memory patch reaches actor state before the next actor command.
+/// Trace: L2-DES-APP-008 Rev 5 DD-5, L2-DES-CONV-002 Rev 2 DD-3/DD-4, L2-DES-MEM-001 Rev 2 Session Controls
+/// Verifies: a persisted memory patch reaches actor state before the next actor command and is inherited by a fork.
 #[tokio::test]
 async fn durable_memory_settings_are_inherited_by_the_next_fork() -> Result<()> {
     let data_root = TempDir::new()?;
