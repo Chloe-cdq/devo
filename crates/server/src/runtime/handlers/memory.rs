@@ -84,16 +84,14 @@ impl ServerRuntime {
             .iter()
             .map(|(session_id, _)| *session_id)
             .collect::<Vec<_>>();
-        let active_source = if active_turns.is_empty() {
-            None
-        } else {
-            let Some(source_user_item_id) = params.source_user_item_id.as_ref() else {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    "memory/remember in an active turn requires sourceUserItemId",
-                );
-            };
+        if active_turns.is_empty() && params.source_user_item_id.is_some() {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                "direct memory/remember commands must omit sourceUserItemId",
+            );
+        }
+        let active_source = if let Some(source_user_item_id) = params.source_user_item_id.as_ref() {
             let mut active_source = None;
             for (session_id, turn) in &active_turns {
                 let item_matches = if let Some(stream) = self.active_stream_state(*session_id).await
@@ -130,6 +128,8 @@ impl ServerRuntime {
                 );
             };
             Some(active_source)
+        } else {
+            None
         };
         let command = match params.scope {
             devo_protocol::native::rpc_memory::MemoryScope::Project => {
