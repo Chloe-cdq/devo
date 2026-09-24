@@ -223,7 +223,7 @@ async fn start_native_session(
     )
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-2, DD-13
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-2, DD-13
 /// Verifies: Native Project commands apply the global disable gate before selectors.
 #[tokio::test]
 async fn disabled_native_project_commands_do_not_require_a_session_selector() -> Result<()> {
@@ -296,7 +296,7 @@ async fn disabled_native_project_commands_do_not_require_a_session_selector() ->
     Ok(())
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3, DD-13
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-3, DD-13
 /// Verifies: missing and unavailable Native Session selectors fail deterministically.
 #[tokio::test]
 async fn native_project_commands_reject_missing_and_unavailable_session_selectors() -> Result<()> {
@@ -353,7 +353,7 @@ async fn native_project_commands_reject_missing_and_unavailable_session_selector
     Ok(())
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3, DD-13
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-3, DD-13
 /// Verifies: an unavailable Project identity returns a stable Native error
 /// without exposing the selected workspace path.
 #[tokio::test]

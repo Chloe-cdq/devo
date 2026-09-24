@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    /// Trace: L2-DES-MEM-001
+    /// Trace: L2-DES-CONV-002 Rev 2 DD-6, L2-DES-MEM-001 Rev 3 DD-2
     /// Verifies: independent per-session recall and contribution settings resolve against their global defaults.
     #[test]
     fn session_memory_settings_resolve_against_independent_global_defaults() {
@@ -148,7 +148,7 @@ mod tests {
         );
     }
 
-    /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001
+    /// Trace: L2-DES-CONV-002 Rev 2 DD-6, L2-DES-MEM-001 Rev 3 DD-2
     /// Verifies: the global memory gate forces explicit session overrides off.
     #[test]
     fn disabled_memory_forces_explicit_session_settings_off() {

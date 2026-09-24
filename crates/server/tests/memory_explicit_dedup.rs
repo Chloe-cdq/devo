@@ -47,7 +47,7 @@ async fn list(
     }
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-8
 /// Verifies: plain-prose formatting updates one stable canonical entry.
 #[tokio::test]
 async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidence() {
@@ -119,7 +119,7 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
     );
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3, DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-3, DD-8
 /// Verifies: equivalence is scope-local and preserves identity-bearing claim tokens.
 #[tokio::test]
 async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
@@ -335,7 +335,7 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
     assert_eq!(project_entries, expected);
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-4, DD-8
 /// Verifies: deduplication updates SQLite, FTS, API listing, and Markdown durably.
 #[tokio::test]
 async fn deduplication_stays_consistent_across_storage_search_projection_and_restart() {

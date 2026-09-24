@@ -55,7 +55,7 @@ fn enabled_config() -> MemoryConfig {
     }
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-8
 /// Verifies: an existing v4 database rekeys explicit claims once while inferred keys stay fixed.
 #[tokio::test]
 async fn v4_database_rekeys_only_explicit_rows_and_reopens_idempotently() {
@@ -222,7 +222,7 @@ async fn v4_database_rekeys_only_explicit_rows_and_reopens_idempotently() {
     );
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-4, DD-8
 /// Verifies: opening a current database repairs a stale Markdown projection.
 #[tokio::test]
 async fn restart_repairs_projection_after_database_commit() {
@@ -258,7 +258,7 @@ async fn restart_repairs_projection_after_database_commit() {
     assert!(!repaired.contains("stale projection"));
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-4, DD-8
 /// Verifies: schema migration merges legacy keys and honors the latest revocation.
 #[tokio::test]
 async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {

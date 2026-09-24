@@ -147,8 +147,8 @@ mod tests {
 
     use super::*;
 
-    /// Trace: L2-DES-MEM-001 DD-3
-    /// Verifies: a main checkout and linked worktree share the Git common-dir identity.
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
+    /// Verifies: a main checkout and linked worktree resolve to one complete Git common-directory Project identity.
     #[test]
     fn linked_worktree_resolves_to_main_git_common_directory() {
         let temp = tempfile::TempDir::new().expect("temp dir");
@@ -181,8 +181,8 @@ mod tests {
         assert_eq!(main.scope_id.len(), 64);
     }
 
-    /// Trace: L2-DES-MEM-001 DD-3
-    /// Verifies: non-Git workspaces use their canonical workspace root as identity input.
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
+    /// Verifies: a non-Git workspace and its canonical path resolve to the same complete workspace-root identity.
     #[test]
     fn non_git_workspace_uses_canonical_workspace_root() {
         let temp = tempfile::TempDir::new().expect("temp dir");
@@ -200,8 +200,8 @@ mod tests {
         assert_eq!(identity.scope_id.len(), 64);
     }
 
-    /// Trace: L2-DES-MEM-001 DD-3
-    /// Verifies: a moved Git workspace intentionally receives a new project namespace.
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
+    /// Verifies: moving a Git workspace changes its complete Project identity.
     #[test]
     fn moved_git_workspace_uses_a_new_project_identity() {
         let temp = tempfile::TempDir::new().expect("temp dir");
@@ -216,23 +216,67 @@ mod tests {
         assert_ne!(original, moved);
     }
 
-    /// Verifies: distinct Windows-native path values never collapse through lossy UTF-8 conversion.
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
+    /// Verifies: Windows-native paths that differ only by ASCII case resolve to the same complete Project identity.
     #[cfg(windows)]
     #[test]
-    fn identity_bytes_distinguish_unpaired_utf16() {
+    fn windows_case_insensitive_paths_resolve_to_the_same_identity() {
         use std::ffi::OsString;
+        use std::os::windows::ffi::OsStrExt;
         use std::os::windows::ffi::OsStringExt;
 
-        let left = PathBuf::from(OsString::from_wide(&[0xd800]));
-        let right = PathBuf::from(OsString::from_wide(&[0xd801]));
+        const ASCII_LOWERCASE_START: u16 = b'a' as u16;
+        const ASCII_LOWERCASE_END: u16 = b'z' as u16;
+        const ASCII_CASE_OFFSET: u16 = (b'a' - b'A') as u16;
 
-        assert_ne!(
-            normalize_identity_path(&left),
-            normalize_identity_path(&right)
-        );
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let workspace = temp.path().join("Project");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        let alternate_case = workspace
+            .as_os_str()
+            .encode_wide()
+            .map(|unit| match unit {
+                ASCII_LOWERCASE_START..=ASCII_LOWERCASE_END => unit - ASCII_CASE_OFFSET,
+                unit => unit,
+            })
+            .collect::<Vec<_>>();
+        let alternate_case = PathBuf::from(OsString::from_wide(&alternate_case));
+
+        let identity = resolve_project_memory_identity(&workspace).expect("workspace identity");
+        let alternate_identity =
+            resolve_project_memory_identity(&alternate_case).expect("alternate identity");
+
+        assert_eq!(alternate_identity, identity);
     }
 
-    /// Verifies: on Unix, a literal backslash and a path separator produce distinct scopes.
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
+    /// Verifies: case-sensitive Unix filesystems resolve case variants to distinct complete Project identities.
+    #[cfg(unix)]
+    #[test]
+    fn unix_case_sensitive_filesystems_resolve_case_variants_to_distinct_identities() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let upper = temp.path().join("Project");
+        let lower = temp.path().join("project");
+        std::fs::create_dir_all(&upper).expect("create upper-case workspace");
+        std::fs::create_dir_all(&lower).expect("create lower-case workspace");
+        let upper_metadata = std::fs::metadata(&upper).expect("upper-case metadata");
+        let lower_metadata = std::fs::metadata(&lower).expect("lower-case metadata");
+        if (upper_metadata.dev(), upper_metadata.ino())
+            == (lower_metadata.dev(), lower_metadata.ino())
+        {
+            return;
+        }
+
+        let upper = resolve_project_memory_identity(&upper).expect("upper-case identity");
+        let lower = resolve_project_memory_identity(&lower).expect("lower-case identity");
+
+        assert_ne!(upper, lower);
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
+    /// Verifies: on Unix, a literal backslash and a path separator resolve to distinct complete Project identities.
     #[cfg(unix)]
     #[test]
     fn identity_distinguishes_backslash_from_path_separator() {
@@ -245,10 +289,11 @@ mod tests {
         let backslash = resolve_project_memory_identity(&backslash).expect("backslash identity");
         let separator = resolve_project_memory_identity(&separator).expect("separator identity");
 
-        assert_ne!(backslash.scope_id, separator.scope_id);
+        assert_ne!(backslash, separator);
     }
 
-    /// Verifies: on Unix, distinct non-UTF-8 names produce distinct scopes.
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-3
+    /// Verifies: on Unix, distinct non-UTF-8 names resolve to distinct complete Project identities.
     #[cfg(unix)]
     #[test]
     fn identity_distinguishes_non_utf8_paths() {
@@ -268,6 +313,6 @@ mod tests {
         let left = resolve_project_memory_identity(&left).expect("left identity");
         let right = resolve_project_memory_identity(&right).expect("right identity");
 
-        assert_ne!(left.scope_id, right.scope_id);
+        assert_ne!(left, right);
     }
 }

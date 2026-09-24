@@ -76,7 +76,7 @@ mod tests {
 
     use super::explicit_memory_key;
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: an authorized claim keeps its wording while prose formatting normalizes.
     #[test]
     fn explicit_key_normalizes_only_plain_prose_formatting() {
@@ -98,14 +98,14 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: an ordinary article-led sentence folds its initial capital.
     #[test]
     fn explicit_key_case_folds_plain_prose_article() {
         assert_eq!(explicit_memory_key("The sky is blue."), "the sky is blue");
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: an ordinary possessive-led sentence folds its initial capital.
     #[test]
     fn explicit_key_case_folds_plain_prose_possessive() {
@@ -115,7 +115,7 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: an ordinary pronoun-led sentence folds its initial capital.
     #[test]
     fn explicit_key_case_folds_plain_prose_plural_pronoun() {
@@ -129,7 +129,7 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: an internal prose comma stays present while surrounding words case-fold.
     #[test]
     fn explicit_key_case_folds_unambiguous_prose_with_internal_comma() {
@@ -143,7 +143,7 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: a question remains distinct from the corresponding assertion.
     #[test]
     fn explicit_key_preserves_question_marks() {
@@ -157,7 +157,7 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: a bare or embedded uppercase identifier retains its case.
     #[test]
     fn explicit_key_preserves_ambiguous_uppercase_identifiers() {
@@ -184,7 +184,7 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: ambiguous structured punctuation and identifier case remain identity-bearing.
     #[test]
     fn explicit_key_keeps_structured_claims_opaque() {
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(explicit_memory_key("Use config.toml:"), "Use config.toml:");
     }
 
-    /// Trace: L2-DES-MEM-001 DD-8
+    /// Trace: L2-DES-MEM-001 Rev 3 DD-8
     /// Verifies: structured punctuation remains identity-bearing under conservative keys.
     #[test]
     fn structured_tokens_remain_identity_bearing() {
