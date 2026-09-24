@@ -2,7 +2,6 @@ use super::super::*;
 
 use crate::memory::MemoryForgetRequest;
 use crate::memory::MemoryForgetSelector;
-use crate::memory::ProjectMemoryOperation;
 
 use super::memory_source::MemoryMutationSource;
 use crate::runtime::memory_forget_authorization::{
@@ -55,13 +54,24 @@ impl ServerRuntime {
             Ok(source) => source,
             Err(response) => return response,
         };
+        let source = match source {
+            MemoryMutationSource::User(source) => source,
+            MemoryMutationSource::Project { candidates, source } => {
+                match memory.resolve_project_mutation_source(candidates, source) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        return self.memory_error_response(request_id, "memory/forget", error);
+                    }
+                }
+            }
+        };
         let entry_id = match &selector {
             MemoryForgetSelector::EntryId(entry_id) => Some(entry_id),
             MemoryForgetSelector::Text(_) => None,
         };
         let reservation = match self
             .memory_forget_coordinator
-            .authorize_native(source.reservation_session_id(), entry_id)
+            .authorize_native(source.session_id, entry_id)
         {
             Ok(reservation) => reservation,
             Err(error) => {
@@ -72,30 +82,11 @@ impl ServerRuntime {
                 );
             }
         };
-        let command = match source {
-            MemoryMutationSource::User(source) => {
-                crate::memory::MemoryCommand::Forget(MemoryForgetRequest {
-                    selector,
-                    scope: params.scope,
-                    source,
-                })
-            }
-            MemoryMutationSource::Project {
-                candidates,
-                source_session_id,
-                source_turn_id,
-                source_user_item_id,
-                reservation_session_id: _,
-            } => crate::memory::MemoryCommand::Project {
-                candidates,
-                operation: ProjectMemoryOperation::Forget {
-                    selector,
-                    source_user_item_id,
-                    source_session_id,
-                    source_turn_id,
-                },
-            },
-        };
+        let command = crate::memory::MemoryCommand::Forget(MemoryForgetRequest {
+            selector,
+            scope: params.scope,
+            source,
+        });
         let result = self
             .deps
             .memory_command_executor

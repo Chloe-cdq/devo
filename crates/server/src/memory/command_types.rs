@@ -36,20 +36,7 @@ pub enum ProjectMemoryOperation {
     Remember {
         text: String,
         kind: Option<MemoryKind>,
-        source_user_item_id: Option<ItemId>,
-        /// Active-turn source Session; direct commands fall back to the
-        /// selected Project Session when absent.
-        source_session_id: Option<SessionId>,
-        source_turn_id: Option<TurnId>,
-    },
-    /// Retire one Project memory selected by stable identity or text.
-    Forget {
-        selector: MemoryForgetSelector,
-        source_user_item_id: Option<ItemId>,
-        /// Active-turn source Session; direct commands fall back to the
-        /// selected Project Session when absent.
-        source_session_id: Option<SessionId>,
-        source_turn_id: Option<TurnId>,
+        source: MemorySourceBinding,
     },
     /// Return a filtered, paginated Project memory view.
     List {
@@ -124,6 +111,16 @@ pub struct MemorySourceContext {
     pub session_id: SessionId,
     pub turn_id: Option<TurnId>,
     pub workspace_root: PathBuf,
+}
+
+/// Session-bound provenance supplied before a Project workspace is resolved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemorySourceBinding {
+    pub user_item_id: Option<ItemId>,
+    /// Active-turn source Session; direct commands fall back to the selected
+    /// Project Session when absent.
+    pub session_id: Option<SessionId>,
+    pub turn_id: Option<TurnId>,
 }
 
 /// Selector accepted by a server-owned forget request.

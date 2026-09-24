@@ -49,9 +49,9 @@ pub(crate) use command_execution::RuntimeMemoryCommandExecutor;
 pub(crate) use command_types::MemoryInferredRememberRequest;
 pub use command_types::{
     EnqueueOutcome, ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
-    MemoryForgetSelector, MemoryRememberRequest, MemorySourceContext, PrepareMemoryRequest,
-    PreparedMemory, ProjectMemoryOperation, ProjectMemorySession, ProjectMemorySessionActivity,
-    SessionMemorySource,
+    MemoryForgetSelector, MemoryRememberRequest, MemorySourceBinding, MemorySourceContext,
+    PrepareMemoryRequest, PreparedMemory, ProjectMemoryOperation, ProjectMemorySession,
+    ProjectMemorySessionActivity, SessionMemorySource,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
@@ -250,7 +250,6 @@ impl MemoryRuntime {
                 if !self.config.enabled {
                     return match operation {
                         ProjectMemoryOperation::Remember { .. } => Err(MemoryError::Disabled),
-                        ProjectMemoryOperation::Forget { .. } => Err(MemoryError::Disabled),
                         ProjectMemoryOperation::List { .. } => {
                             Ok(MemoryCommandResult::List(Page {
                                 data: Vec::new(),
@@ -262,42 +261,19 @@ impl MemoryRuntime {
                 let (selected_session_id, workspace_root) =
                     self.resolve_project_memory_source(candidates)?;
                 match operation {
-                    ProjectMemoryOperation::Remember {
-                        text,
-                        kind,
-                        source_user_item_id,
-                        source_session_id,
-                        source_turn_id,
-                    } => Ok(MemoryCommandResult::Remember(self.remember(
-                        MemoryRememberRequest {
+                    ProjectMemoryOperation::Remember { text, kind, source } => Ok(
+                        MemoryCommandResult::Remember(self.remember(MemoryRememberRequest {
                             text,
                             scope: MemoryScope::Project,
                             kind,
                             source: MemorySourceContext {
-                                user_item_id: source_user_item_id,
-                                session_id: source_session_id.unwrap_or(selected_session_id),
-                                turn_id: source_turn_id,
+                                user_item_id: source.user_item_id,
+                                session_id: source.session_id.unwrap_or(selected_session_id),
+                                turn_id: source.turn_id,
                                 workspace_root,
                             },
-                        },
-                    )?)),
-                    ProjectMemoryOperation::Forget {
-                        selector,
-                        source_user_item_id,
-                        source_session_id,
-                        source_turn_id,
-                    } => Ok(MemoryCommandResult::Forget(self.forget(
-                        MemoryForgetRequest {
-                            selector,
-                            scope: MemoryScope::Project,
-                            source: MemorySourceContext {
-                                user_item_id: source_user_item_id,
-                                session_id: source_session_id.unwrap_or(selected_session_id),
-                                turn_id: source_turn_id,
-                                workspace_root,
-                            },
-                        },
-                    )?)),
+                        })?),
+                    ),
                     ProjectMemoryOperation::List {
                         kind,
                         state,
@@ -357,6 +333,26 @@ impl MemoryRuntime {
         selected
             .map(|(session_id, workspace_root, _, _)| (session_id, workspace_root))
             .ok_or(MemoryError::ProjectSessionRequired)
+    }
+
+    /// Resolves all fallible Project provenance before a caller acquires a
+    /// mutation lease.
+    pub(crate) fn resolve_project_mutation_source(
+        &self,
+        candidates: Vec<ProjectMemorySession>,
+        source: MemorySourceBinding,
+    ) -> Result<MemorySourceContext, MemoryError> {
+        if !self.config.enabled {
+            return Err(MemoryError::Disabled);
+        }
+        let (selected_session_id, workspace_root) =
+            self.resolve_project_memory_source(candidates)?;
+        Ok(MemorySourceContext {
+            user_item_id: source.user_item_id,
+            session_id: source.session_id.unwrap_or(selected_session_id),
+            turn_id: source.turn_id,
+            workspace_root,
+        })
     }
 
     /// Records one observation from the server-owned passive extraction path.

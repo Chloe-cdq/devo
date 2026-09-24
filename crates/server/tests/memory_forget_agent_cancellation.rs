@@ -119,7 +119,9 @@ async fn interrupted_agent_confirmation_preserves_pending_selection_for_retry() 
     let requests = provider.requests();
     let result: MemoryForgetResult = serde_json::from_str(
         tool_result(
-            requests.get(4).context("retry result request")?,
+            requests
+                .get(/*result_index*/ 4)
+                .context("retry result request")?,
             "retry-forget",
         )
         .context("retry memory_forget result")?,

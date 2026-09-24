@@ -175,6 +175,35 @@ fn pending_selection_does_not_shadow_direct_exact_id_authority() {
     assert_eq!(authorized.scope, MemoryScope::User);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-12
+/// Verifies: a same-turn search for another entry cannot shadow an independently bound exact-ID command.
+#[test]
+fn same_turn_search_does_not_shadow_direct_exact_id_authority() {
+    let authorizations = MemoryForgetCoordinator::default();
+    let invocation = invocation();
+    authorizations
+        .record_search(
+            &invocation,
+            &[candidate(
+                MemoryEntryId::from("mem_pending"),
+                MemoryScope::User,
+            )],
+        )
+        .expect("record pending search");
+    let direct_id = MemoryEntryId::from("mem_direct");
+
+    let authorized = authorizations
+        .authorize_agent(
+            &invocation,
+            &format!("Forget memory entry {direct_id}"),
+            &direct_id,
+            MemoryScope::User,
+        )
+        .expect("same-turn direct command is independent of unrelated search state");
+
+    assert_eq!(authorized.scope, MemoryScope::User);
+}
+
 /// Trace: L2-DES-MEM-001 DD-12
 /// Verifies: a direct mutation lease blocks a pending confirmation from another session.
 #[test]

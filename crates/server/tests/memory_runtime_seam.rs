@@ -8,8 +8,8 @@ use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryProvenance;
 use devo_server::memory::{
-    MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime, ProjectMemoryOperation,
-    ProjectMemorySession, ProjectMemorySessionActivity,
+    MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime, MemorySourceBinding,
+    ProjectMemoryOperation, ProjectMemorySession, ProjectMemorySessionActivity,
 };
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -49,9 +49,11 @@ async fn project_command_rejects_unrelated_session_candidates() {
             operation: ProjectMemoryOperation::Remember {
                 text: "the repository uses Rust".into(),
                 kind: None,
-                source_user_item_id: Some(ItemId::from_string("item-a".into())),
-                source_session_id: None,
-                source_turn_id: Some(TurnId::new()),
+                source: MemorySourceBinding {
+                    user_item_id: Some(ItemId::from_string("item-a".into())),
+                    session_id: None,
+                    turn_id: Some(TurnId::new()),
+                },
             },
         })
         .await
@@ -111,9 +113,7 @@ async fn project_command_uses_active_same_repository_session_for_provenance() {
             operation: ProjectMemoryOperation::Remember {
                 text: "the repository uses Rust".into(),
                 kind: None,
-                source_user_item_id: None,
-                source_session_id: None,
-                source_turn_id: None,
+                source: MemorySourceBinding::default(),
             },
         })
         .await
@@ -173,9 +173,7 @@ async fn disabled_project_commands_do_not_resolve_session_candidates() {
             operation: ProjectMemoryOperation::Remember {
                 text: "the repository uses Rust".into(),
                 kind: None,
-                source_user_item_id: None,
-                source_session_id: None,
-                source_turn_id: None,
+                source: MemorySourceBinding::default(),
             },
         })
         .await

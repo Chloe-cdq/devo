@@ -6,7 +6,7 @@ use crate::memory::MemoryCommandResult;
 use crate::memory::MemoryError;
 use crate::memory::MemoryRememberRequest;
 use crate::memory::MemorySourceContext;
-use crate::memory::ProjectMemoryOperation;
+use crate::memory::{MemorySourceBinding, ProjectMemoryOperation};
 
 impl ServerRuntime {
     /// Native `memory/status`: reports safe aggregate state without exposing
@@ -108,43 +108,46 @@ impl ServerRuntime {
                 let candidates = self
                     .project_memory_sessions(connection_id, &active_session_ids)
                     .await;
-                let (source_turn_id, source_user_item_id) = active_source
-                    .as_ref()
-                    .map(|source| (source.1, source.2.clone()))
-                    .unwrap_or((None, None));
                 MemoryCommand::Project {
                     candidates,
                     operation: ProjectMemoryOperation::Remember {
                         text: params.text,
                         kind: params.kind,
-                        source_user_item_id,
-                        source_session_id: active_source.as_ref().map(|source| source.0),
-                        source_turn_id,
+                        source: active_source.unwrap_or_default(),
                     },
                 }
             }
             devo_protocol::native::rpc_memory::MemoryScope::User => {
-                let (source_session_id, source_turn_id, source_user_item_id) =
-                    if let Some(source) = active_source {
-                        source
-                    } else if let Some(session_id) =
-                        self.subscribed_session_for_connection(connection_id).await
-                    {
-                        if params.source_user_item_id.is_some() {
-                            return self.error_response(
-                                request_id,
-                                ProtocolErrorCode::InvalidParams,
-                                "direct memory/remember commands must omit sourceUserItemId",
-                            );
-                        }
-                        (session_id, None, None)
-                    } else {
+                let source = if let Some(source) = active_source {
+                    source
+                } else if let Some(session_id) =
+                    self.subscribed_session_for_connection(connection_id).await
+                {
+                    if params.source_user_item_id.is_some() {
                         return self.error_response(
                             request_id,
                             ProtocolErrorCode::InvalidParams,
-                            "memory/remember requires a session-bound connection",
+                            "direct memory/remember commands must omit sourceUserItemId",
                         );
-                    };
+                    }
+                    MemorySourceBinding {
+                        session_id: Some(session_id),
+                        ..MemorySourceBinding::default()
+                    }
+                } else {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        "memory/remember requires a session-bound connection",
+                    );
+                };
+                let Some(source_session_id) = source.session_id else {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        "memory/remember requires a session-bound connection",
+                    );
+                };
                 let Some(workspace_root) = self
                     .session_summary_snapshot(source_session_id)
                     .await
@@ -161,9 +164,9 @@ impl ServerRuntime {
                     scope: params.scope,
                     kind: params.kind,
                     source: MemorySourceContext {
-                        user_item_id: source_user_item_id,
+                        user_item_id: source.user_item_id,
                         session_id: source_session_id,
-                        turn_id: source_turn_id,
+                        turn_id: source.turn_id,
                         workspace_root,
                     },
                 })

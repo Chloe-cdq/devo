@@ -244,34 +244,35 @@ impl MemoryForgetCoordinator {
         Self::reject_active(&state)?;
         Self::prune_expired(&mut state, now);
         let selection = state.pending_by_session.get(&invocation.session_id);
+        let direct = user_text.contains(entry_id.as_str());
         let (scope, kind) = if let Some(selection) = selection {
-            if selection.source_turn_id == invocation.turn_id
-                || selection.source_user_item_id == invocation.user_item_id
-            {
-                return Err(ToolCallError::InvalidInput(
-                    "memory_forget requires a subsequent user selection after memory_search"
-                        .to_string(),
-                ));
-            }
             if let Some(candidate) = selection
                 .candidates
                 .iter()
                 .find(|candidate| candidate.entry_id == *entry_id)
             {
+                if selection.source_turn_id == invocation.turn_id
+                    || selection.source_user_item_id == invocation.user_item_id
+                {
+                    return Err(ToolCallError::InvalidInput(
+                        "memory_forget requires a subsequent user selection after memory_search"
+                            .to_string(),
+                    ));
+                }
                 (
                     candidate.scope,
                     ActiveForgetKind::AgentConfirmed {
                         selection_id: selection.selection_id,
                     },
                 )
-            } else if user_text.contains(entry_id.as_str()) {
+            } else if direct {
                 (requested_scope, ActiveForgetKind::AgentDirect)
             } else {
                 return Err(ToolCallError::InvalidInput(
                     "memory_forget target is not one of the pending candidates".to_string(),
                 ));
             }
-        } else if user_text.contains(entry_id.as_str()) {
+        } else if direct {
             (requested_scope, ActiveForgetKind::AgentDirect)
         } else {
             return Err(ToolCallError::InvalidInput(

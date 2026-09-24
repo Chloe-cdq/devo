@@ -2,38 +2,19 @@ use super::super::*;
 
 use devo_protocol::native::rpc_memory::MemoryScope;
 
-use crate::memory::{MemorySourceContext, ProjectMemorySession};
+use crate::memory::{MemorySourceBinding, MemorySourceContext, ProjectMemorySession};
 
 pub(super) struct ActiveMemoryMutationSource {
     pub(super) active_session_ids: Vec<devo_protocol::SessionId>,
-    pub(super) source: Option<(
-        devo_protocol::SessionId,
-        Option<devo_protocol::TurnId>,
-        Option<devo_protocol::native::ids::ItemId>,
-    )>,
+    pub(super) source: Option<MemorySourceBinding>,
 }
 
 pub(super) enum MemoryMutationSource {
     User(MemorySourceContext),
     Project {
         candidates: Vec<ProjectMemorySession>,
-        source_session_id: Option<devo_protocol::SessionId>,
-        source_turn_id: Option<devo_protocol::TurnId>,
-        source_user_item_id: Option<devo_protocol::native::ids::ItemId>,
-        reservation_session_id: devo_protocol::SessionId,
+        source: MemorySourceBinding,
     },
-}
-
-impl MemoryMutationSource {
-    pub(super) fn reservation_session_id(&self) -> devo_protocol::SessionId {
-        match self {
-            Self::User(source) => source.session_id,
-            Self::Project {
-                reservation_session_id,
-                ..
-            } => *reservation_session_id,
-        }
-    }
 }
 
 impl ServerRuntime {
@@ -64,11 +45,11 @@ impl ServerRuntime {
                     .await
                     .is_ok()
                 {
-                    source = Some((
-                        *session_id,
-                        Some(turn.turn_id),
-                        Some(source_user_item_id.clone()),
-                    ));
+                    source = Some(MemorySourceBinding {
+                        session_id: Some(*session_id),
+                        turn_id: Some(turn.turn_id),
+                        user_item_id: Some(source_user_item_id.clone()),
+                    });
                     break;
                 }
             }
@@ -119,27 +100,13 @@ impl ServerRuntime {
                 let candidates = self
                     .project_memory_sessions(connection_id, &active.active_session_ids)
                     .await;
-                let reservation_session_id = active_source
-                    .as_ref()
-                    .map(|source| source.0)
-                    .or_else(|| candidates.first().map(|candidate| candidate.session_id))
-                    .ok_or_else(|| {
-                        self.error_response(
-                            request_id.clone(),
-                            ProtocolErrorCode::InvalidParams,
-                            format!("{operation} requires a Project session"),
-                        )
-                    })?;
                 Ok(MemoryMutationSource::Project {
                     candidates,
-                    source_session_id: active_source.as_ref().map(|source| source.0),
-                    source_turn_id: active_source.as_ref().and_then(|source| source.1),
-                    source_user_item_id: active_source.as_ref().and_then(|source| source.2.clone()),
-                    reservation_session_id,
+                    source: active_source.unwrap_or_default(),
                 })
             }
             MemoryScope::User => {
-                let (session_id, turn_id, user_item_id) = if let Some(source) = active_source {
+                let source = if let Some(source) = active_source {
                     source
                 } else if let Some(session_id) =
                     self.subscribed_session_for_connection(connection_id).await
@@ -151,7 +118,10 @@ impl ServerRuntime {
                             format!("direct {operation} commands must omit sourceUserItemId"),
                         ));
                     }
-                    (session_id, None, None)
+                    MemorySourceBinding {
+                        session_id: Some(session_id),
+                        ..MemorySourceBinding::default()
+                    }
                 } else {
                     return Err(self.error_response(
                         request_id.clone(),
@@ -159,6 +129,13 @@ impl ServerRuntime {
                         format!("{operation} requires a session-bound connection"),
                     ));
                 };
+                let session_id = source.session_id.ok_or_else(|| {
+                    self.error_response(
+                        request_id.clone(),
+                        ProtocolErrorCode::InvalidParams,
+                        format!("{operation} requires a session-bound connection"),
+                    )
+                })?;
                 let Some(workspace_root) = self
                     .session_summary_snapshot(session_id)
                     .await
@@ -172,8 +149,8 @@ impl ServerRuntime {
                 };
                 Ok(MemoryMutationSource::User(MemorySourceContext {
                     session_id,
-                    turn_id,
-                    user_item_id,
+                    turn_id: source.turn_id,
+                    user_item_id: source.user_item_id,
                     workspace_root,
                 }))
             }

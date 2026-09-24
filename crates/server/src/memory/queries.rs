@@ -37,7 +37,12 @@ impl MemoryRuntime {
             .limit
             .unwrap_or(DEFAULT_LIST_LIMIT)
             .clamp(1, MAX_LIST_LIMIT);
-        let offset = parse_cursor(request.cursor.as_deref())?;
+        let offset = request
+            .cursor
+            .as_deref()
+            .unwrap_or("0")
+            .parse::<usize>()
+            .map_err(|_| MemoryError::InvalidRequest("memory cursor must be a number".into()))?;
         let state_filter = match mode {
             MemoryListMode::Management => "AND (?4 IS NULL OR state = ?4)",
             MemoryListMode::Recallable => {
@@ -97,11 +102,4 @@ impl MemoryRuntime {
             next_cursor: has_next.then(|| (offset + usize::try_from(limit).unwrap()).to_string()),
         })
     }
-}
-
-fn parse_cursor(cursor: Option<&str>) -> Result<usize, MemoryError> {
-    cursor
-        .unwrap_or("0")
-        .parse::<usize>()
-        .map_err(|_| MemoryError::InvalidRequest("memory cursor must be a number".into()))
 }
