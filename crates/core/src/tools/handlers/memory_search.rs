@@ -38,7 +38,7 @@ impl MemorySearchHandler {
 pub fn memory_search_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_search".to_string(),
-        description: "Search bounded user or project memory summaries and stable entry IDs. For natural-language forget requests, show the results and ask the user to reply in a later turn with exactly 'Confirm forget memory entry <entry_id>' or '确认删除记忆条目 <entry_id>'; memory_forget cannot run in this same user turn.".to_string(),
+        description: "Search bounded user or project memory summaries and stable entry IDs. For natural-language forget requests, show the results and ask the user to clearly confirm one displayed stable ID in a later turn; memory_forget cannot run in this same user turn.".to_string(),
         input_schema: JsonSchema::object(
             BTreeMap::from([
                 (

@@ -1,6 +1,9 @@
 use devo_core::tools::MemoryToolInvocation;
 
 use super::*;
+use crate::runtime::memory_forget_authorization::{
+    MemoryForgetExecutionError, complete_forget_execution,
+};
 
 struct MemoryMutationContext {
     memory: Arc<crate::memory::MemoryRuntime>,
@@ -124,24 +127,14 @@ pub(super) async fn forget(
             }),
         )
         .await;
-    match execution {
-        Ok(crate::memory::MemoryCommandResult::Forget(result)) => {
-            authorized.reservation.commit(result.forgotten.as_ref())?;
-            Ok(result)
-        }
-        Err(crate::memory::MemoryError::ForgetCommitted {
-            result,
-            projection_error,
-        }) => {
-            authorized.reservation.commit(result.forgotten.as_ref())?;
-            Err(ToolCallError::InternalError(format!(
-                "memory forget committed but projection refresh failed: {projection_error}"
-            )))
-        }
-        Err(error) => Err(memory_tool_error(error)),
-        Ok(crate::memory::MemoryCommandResult::Status(_))
-        | Ok(crate::memory::MemoryCommandResult::Remember(_))
-        | Ok(crate::memory::MemoryCommandResult::List(_)) => Err(ToolCallError::InternalError(
+    match complete_forget_execution(authorized.reservation, execution) {
+        Ok(result) => Ok(result),
+        Err(MemoryForgetExecutionError::Coordinator(error)) => Err(error),
+        Err(MemoryForgetExecutionError::Storage(error)) => Err(memory_tool_error(error)),
+        Err(MemoryForgetExecutionError::Projection(error)) => Err(ToolCallError::InternalError(
+            format!("memory forget committed but projection refresh failed: {error}"),
+        )),
+        Err(MemoryForgetExecutionError::UnexpectedResult) => Err(ToolCallError::InternalError(
             "memory_forget returned an unexpected result".to_string(),
         )),
     }

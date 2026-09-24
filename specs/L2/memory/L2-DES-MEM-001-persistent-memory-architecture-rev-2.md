@@ -80,7 +80,7 @@ This decision is recorded in `docs/adr/0001-sqlite-authority-for-general-persist
 
 ### DD-5: Flat typed entries with lightweight provenance
 
-Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired | Restored`), timestamps, and zero or more evidence links.
+Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired`), timestamps, and zero or more evidence links.
 
 Provenance records source session and turn IDs when available. The first release has no floating confidence value or trust graph. Explicit user origin has higher authority than inferred origin but remains advisory relative to current instructions and policy.
 
@@ -117,7 +117,7 @@ Reset clears one scope and advances `ignore_sources_before` for that scope. Auto
 
 ### DD-10: Recall is lexical, bounded, stable per turn, and advisory
 
-At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` and explicitly `Restored` entries are automatically recalled; other lifecycle states are excluded.
+At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` entries are automatically recalled.
 
 The result is capped at 12 entries and approximately 2,000 tokens. It is rendered as a distinct advisory memory context block, never concatenated into system policy, project instructions, or `AGENTS.md`. The block explicitly states that current instructions and observed repository state take precedence.
 
@@ -141,22 +141,7 @@ The Native protocol adds:
 - `memory/reset`
 - `memory/rebuild`
 
-`memory/list` supports scope, kind, state, origin, text, and pagination filters and returns safe provenance summaries. Direct Native exact Entry ID deletion is immediate. A root-agent exact-ID deletion is immediate only when the current user item is a strict exact-ID forget command containing the same stable ID; open-ended natural-language classification is not a mutation authority.
-
-A root-agent natural-language forget request is a server-enforced two-stage operation:
-
-1. `memory_search` records a short-lived `PendingForgetSelection` containing the session ID, source turn and user-item IDs, ordered candidate IDs, and their scopes. Search never grants mutation authority in the same user turn.
-2. A later user item explicitly confirms one displayed stable ID using the closed confirmation grammar `Confirm forget memory entry <entry_id>` or `确认删除记忆条目 <entry_id>`. A bare ID is not mutation authority. `memory_forget` succeeds only when its ID is in the unexpired candidate set and the current user item names that same ID with the confirmation grammar. The server rejects same-turn mutation, IDs outside the candidate set, and cross-scope substitution.
-
-All Agent Direct, Agent Confirmed, and Native forget mutations acquire one server-global, fail-fast deletion lease from `MemoryForgetCoordinator`. User Memory is shared across sessions, Native and Agent can target the same record, and a Native text selector may not resolve its final Entry ID before storage. Consequently, session-local exclusion is insufficient. The coordinator owns pending selections and the one active mutation under a single mutex; checking for an active mutation, validating Agent authority, allocating a monotonic reservation ID, and publishing the active reservation are one atomic operation. A strict Agent Direct command remains independent of unrelated Pending state, but it is rejected while any deletion lease is active.
-
-The RAII reservation lives across the complete asynchronous storage operation. Agent and Native handlers resolve every fallible prerequisite before acquiring it, then immediately execute the forget command. Cancellation, unexpected results, and storage errors before the SQLite transaction commits release only the matching reservation ID through `Drop`; a stale reservation can never clear a newer lease. The SQLite durable commit is the authorization commit boundary. If a later projection refresh fails, the memory layer returns a typed committed outcome containing the forget result and projection error; the handler commits the reservation before reporting the derived-layer failure or scheduling repair. A durable deletion must never be represented as an uncommitted failure.
-
-Commit semantics depend on the typed active mutation kind. Agent Confirmed consumes only its matching selection; Agent Direct and Native preserve unrelated pending selections. Every successful deletion removes the forgotten Entry ID from all sessions' pending candidate sets, dropping sets that become empty, and then clears the active lease. Failed or cancelled Agent Confirmed mutations retain their pending selection for retry while it remains within its ordinary TTL.
-
-Search captures the coordinator's `mutation_epoch` before reading memory storage. `record_search` uses the coordinator's same mutex and atomically rejects a snapshot whose epoch differs from the current epoch. Every successful deletion advances the epoch before removing the forgotten Entry ID from existing Pending selections, so a search that read before that commit cannot publish stale candidates afterward. `record_search` also rejects replacement of a selection currently used by an active Agent Confirmed mutation. Empty search results remove the session's Pending selection, and each non-empty search receives a distinct monotonic selection ID. TTL pruning never removes the selection protected by an active Agent Confirmed mutation; after lease release, normal TTL rules resume.
-
-Pending selection and active leases are ephemeral authorization state, not memory data. Pending state expires after a bounded interval and is removed with its session. Losing either state on restart is fail-closed and requires a new search or retry. The single lease does not reduce an existing concurrency guarantee because `MemoryRuntime` already serializes commands through its process-global SQLite connection mutex. Clients confirm reset and rebuild before issuing the command.
+`memory/list` supports scope, kind, state, origin, text, and pagination filters and returns safe provenance summaries. Exact Entry ID deletion is immediate; text-based forgetting first returns matches, and multiple matches require user selection. Clients confirm reset and rebuild before issuing the command.
 
 Recall and contribution toggles are fields of canonical `SessionSettingsPatch` on `session/metadata/update`; no per-concern settings method is introduced. No legacy or ACP memory implementation is added. An external protocol may later project canonical behavior without owning memory logic.
 
@@ -250,7 +235,6 @@ candidate -> Active -> Stale -> Active
                   \-> Retired
 
 forget: any state -> durable revocation + Retired
-explicit remember of a revoked identity -> Restored
 ```
 
 - Explicit entries do not expire automatically.
@@ -258,7 +242,6 @@ explicit remember of a revoked identity -> Restored
 - Deleting a source session removes pending candidates, completed source-job detail, and evidence links for that session. An inferred entry retires when its final evidence disappears. An explicit entry remains unless related-memory deletion was selected.
 - A duplicate evidence observation updates the existing entry rather than creating a duplicate.
 - Retired and revoked records remain only as long as required to enforce provenance, reset, and resurrection rules; user export distinguishes live entries from lifecycle metadata.
-- Restored identities are recallable like Active entries, but retain a public `restored` lifecycle state in list and Markdown projections; revocation timestamps remain internal.
 
 ## Session Settings Contract
 
@@ -288,9 +271,9 @@ Root agents may receive:
 - `memory_search(query, scope?, kind?, state?)` — return bounded summaries and stable IDs.
 - `memory_read(entry_id)` — return one safe entry and provenance summary.
 - `memory_remember(text, scope?, kind?, source_user_item_id)` — mutate only when tied to explicit current-user intent.
-- `memory_forget(entry_id, source_user_item_id)` — mutate only for a strict current-user exact-ID command or a later server-bound pending selection.
+- `memory_forget(entry_id, source_user_item_id)` — mutate only when tied to explicit current-user intent.
 
-Natural-language forget requests use search first and cannot mutate in the search turn. Subagents receive none of the mutation tools and do not independently receive read tools; the parent can delegate relevant context in the task message or inherited snapshot.
+Ambiguous natural-language forget requests use search first. Subagents receive none of the mutation tools and do not independently receive read tools; the parent can delegate relevant context in the task message or inherited snapshot.
 
 ## Background Scheduling and Failure Policy
 
@@ -348,9 +331,6 @@ Module and integration tests must cover:
 - deterministic ranking, Project tie priority, token/entry caps, and stable per-turn snapshots
 - duplicate merging, explicit-over-inferred replacement, inferred conflict withholding, and explicit conflict resolution
 - forgetting, old-source replay prevention, reset watermarks, deliberate rebuild, and idempotent job replay
-- root-agent forget authorization: same-turn rejection, pending candidate membership, later exact-ID selection, expiry, and User/Project scope isolation
-- global forget exclusion across Agent Direct, Agent Confirmed, Native, and different sessions, including deterministic cancellation/failure release through aborted real handler futures and stale-reservation safety
-- stale-search exclusion with this deterministic interleaving: search completes its storage read and pauses, deletion commits and advances the mutation epoch, then search resumes and fails to publish its old candidates, including when the post-commit projection refresh fails
 - session deletion with final and non-final evidence and explicit-memory retention
 - setting patch partial semantics, persist-first replay, and next-turn/next-scan decision points
 - external-context monotonic marking and exclusion for Web, MCP, and Tool Search

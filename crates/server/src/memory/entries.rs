@@ -8,17 +8,20 @@ use devo_protocol::native::rpc_memory::MemoryState;
 use devo_safety::{InMemorySecretDetectorRegistry, SecretDetectorRegistry};
 use rusqlite::{Connection, OptionalExtension};
 
+#[cfg(test)]
+use super::MemoryInferredRememberRequest;
 use super::equivalence;
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
+use super::stored_values::{parse_kind, parse_origin, parse_scope, parse_state, parse_timestamp};
 use super::{
-    MemoryError, MemoryInferredRememberRequest, MemoryRememberRequest, MemoryRuntime,
-    USER_SCOPE_ID, kind_name, origin_name, scope_name, state_name,
+    MemoryError, MemoryRememberRequest, MemoryRuntime, USER_SCOPE_ID, kind_name, origin_name,
+    scope_name, state_name,
 };
 
-#[allow(dead_code)]
 enum MemoryWriteMode {
     Explicit,
+    #[cfg(test)]
     Inferred {
         source_observed_at: DateTime<Utc>,
         source_watermark: String,
@@ -58,7 +61,7 @@ impl MemoryRuntime {
             })
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(super) fn remember_inferred(
         &self,
         request: MemoryInferredRememberRequest,
@@ -88,6 +91,7 @@ impl MemoryRuntime {
         }
         let normalized_key = match &mode {
             MemoryWriteMode::Explicit => equivalence::explicit_memory_key(&body),
+            #[cfg(test)]
             MemoryWriteMode::Inferred { .. } => normalize_inferred_key(&body),
         };
         let kind = request
@@ -101,9 +105,10 @@ impl MemoryRuntime {
                 MemoryOrigin::ExplicitUser,
                 now.clone(),
                 now.clone(),
-                None,
+                None::<DateTime<Utc>>,
                 true,
             ),
+            #[cfg(test)]
             MemoryWriteMode::Inferred {
                 source_observed_at,
                 source_watermark,
@@ -312,6 +317,7 @@ pub(super) fn normalize_body(text: &str) -> Result<String, MemoryError> {
     Ok(body)
 }
 
+#[cfg(test)]
 fn normalize_inferred_key(body: &str) -> String {
     body.chars()
         .filter(|character| character.is_alphanumeric() || character.is_whitespace())
@@ -467,47 +473,4 @@ fn load_provenance(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
-}
-
-pub(super) fn parse_scope(value: &str) -> Result<MemoryScope, MemoryError> {
-    match value {
-        "user" => Ok(MemoryScope::User),
-        "project" => Ok(MemoryScope::Project),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_kind(value: &str) -> Result<MemoryKind, MemoryError> {
-    match value {
-        "preference" => Ok(MemoryKind::Preference),
-        "feedback" => Ok(MemoryKind::Feedback),
-        "fact" => Ok(MemoryKind::Fact),
-        "reference" => Ok(MemoryKind::Reference),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_state(value: &str) -> Result<MemoryState, MemoryError> {
-    match value {
-        "active" => Ok(MemoryState::Active),
-        "stale" => Ok(MemoryState::Stale),
-        "conflicted" => Ok(MemoryState::Conflicted),
-        "retired" => Ok(MemoryState::Retired),
-        "restored" => Ok(MemoryState::Restored),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_origin(value: &str) -> Result<MemoryOrigin, MemoryError> {
-    match value {
-        "explicit_user" => Ok(MemoryOrigin::ExplicitUser),
-        "inferred_session" => Ok(MemoryOrigin::InferredSession),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_timestamp(value: &str) -> Result<DateTime<Utc>, MemoryError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-        .map_err(|_| MemoryError::InvalidTimestamp(value.into()))
 }

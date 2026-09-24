@@ -275,10 +275,10 @@ async fn exact_forget_uses_persisted_scope_for_project_entry() {
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
 
+    let mut forget = forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone()));
+    forget.source.workspace_root = project_root;
     let result = runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
-        )))
+        .execute_command(MemoryCommand::Forget(forget))
         .await
         .expect("forget project entry by stable ID");
 
@@ -299,6 +299,66 @@ async fn exact_forget_uses_persisted_scope_for_project_entry() {
         MemoryForgetResult {
             forgotten: Some(expected_forgotten),
             candidates: Vec::new(),
+        }
+    );
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev4 DD-9, DD-12
+/// Verifies: a stable ID cannot retire Project memory from an unrelated workspace.
+#[tokio::test]
+async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
+    let database_root = tempfile::tempdir().expect("temporary memory root");
+    let project_a = database_root.path().join("project-a");
+    let project_b = database_root.path().join("project-b");
+    std::fs::create_dir_all(&project_a).expect("project A root");
+    std::fs::create_dir_all(&project_b).expect("project B root");
+    let runtime = open_runtime(database_root.path());
+    let mut project_request = remember_request("Use tabs");
+    project_request.scope = MemoryScope::Project;
+    project_request.source.workspace_root = project_a.clone();
+    let remembered = match runtime
+        .execute_command(MemoryCommand::Remember(project_request))
+        .await
+        .expect("remember project entry")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+    };
+
+    let mut request = forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone()));
+    request.source.workspace_root = project_b;
+    let error = runtime
+        .execute_command(MemoryCommand::Forget(request))
+        .await
+        .expect_err("unrelated Project scope must reject the stable ID");
+    assert_eq!(
+        error.to_string(),
+        "invalid memory request: memory entry not found"
+    );
+
+    let listed = match runtime
+        .execute_command(MemoryCommand::List(
+            devo_server::memory::ListMemoryRequest {
+                scope: Some(MemoryScope::Project),
+                workspace_root: project_a,
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("list original Project memory")
+    {
+        MemoryCommandResult::List(page) => page,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Status(_) => panic!("expected Project list"),
+    };
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![remembered],
+            next_cursor: None,
         }
     );
 }

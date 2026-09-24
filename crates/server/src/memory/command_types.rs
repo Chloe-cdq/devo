@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+#[cfg(test)]
 use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::{ItemId, MemoryEntryId};
 use devo_protocol::native::rpc_memory::{
@@ -35,6 +36,15 @@ pub enum ProjectMemoryOperation {
     Remember {
         text: String,
         kind: Option<MemoryKind>,
+        source_user_item_id: Option<ItemId>,
+        /// Active-turn source Session; direct commands fall back to the
+        /// selected Project Session when absent.
+        source_session_id: Option<SessionId>,
+        source_turn_id: Option<TurnId>,
+    },
+    /// Retire one Project memory selected by stable identity or text.
+    Forget {
+        selector: MemoryForgetSelector,
         source_user_item_id: Option<ItemId>,
         /// Active-turn source Session; direct commands fall back to the
         /// selected Project Session when absent.
@@ -96,7 +106,7 @@ pub struct MemoryRememberRequest {
 ///
 /// A revoked identity cannot be recreated by this path. The type is crate
 /// private because inferred writes are not part of the public command seam.
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MemoryInferredRememberRequest {
     pub(crate) text: String,

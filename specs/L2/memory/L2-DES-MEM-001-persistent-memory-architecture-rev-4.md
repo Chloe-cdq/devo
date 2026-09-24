@@ -150,7 +150,7 @@ Reset clears one scope and advances `ignore_sources_before` for that scope. Auto
 
 ### DD-10: Recall is lexical, bounded, stable per turn, and advisory
 
-At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` entries are automatically recalled.
+At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` and explicitly `Restored` entries are automatically recalled; other lifecycle states are excluded.
 
 The result is capped at 12 entries and approximately 2,000 tokens. It is rendered as a distinct advisory memory context block, never concatenated into system policy, project instructions, or `AGENTS.md`. The block explicitly states that current instructions and observed repository state take precedence.
 

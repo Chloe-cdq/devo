@@ -82,45 +82,20 @@ impl ServerRuntime {
                 "memory runtime is unavailable",
             );
         };
-        let active_turns = self.active_turns.turns_for_connection(connection_id).await;
-        let active_session_ids = active_turns
-            .iter()
-            .map(|(session_id, _)| *session_id)
-            .collect::<Vec<_>>();
-        if active_turns.is_empty() && params.source_user_item_id.is_some() {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::InvalidParams,
-                "direct memory/remember commands must omit sourceUserItemId",
-            );
-        }
-        let active_source = if let Some(source_user_item_id) = params.source_user_item_id.as_ref() {
-            let mut active_source = None;
-            for (session_id, turn) in &active_turns {
-                if self
-                    .current_user_item_text(*session_id, turn.turn_id, source_user_item_id)
-                    .await
-                    .is_ok()
-                {
-                    active_source = Some((
-                        *session_id,
-                        Some(turn.turn_id),
-                        Some(source_user_item_id.clone()),
-                    ));
-                    break;
-                }
-            }
-            let Some(active_source) = active_source else {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    "memory/remember source item is not the current user message",
-                );
-            };
-            Some(active_source)
-        } else {
-            None
+        let active = match self
+            .resolve_active_memory_mutation_source(
+                connection_id,
+                params.source_user_item_id.as_ref(),
+                "memory/remember",
+                &request_id,
+            )
+            .await
+        {
+            Ok(active) => active,
+            Err(response) => return response,
         };
+        let active_session_ids = active.active_session_ids;
+        let active_source = active.source;
         let command = match params.scope {
             devo_protocol::native::rpc_memory::MemoryScope::Project => {
                 if active_source.is_none() && params.source_user_item_id.is_some() {

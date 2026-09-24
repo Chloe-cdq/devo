@@ -110,7 +110,7 @@ pub fn memory_remember_spec() -> ToolSpec {
 pub fn memory_forget_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_forget".to_string(),
-        description: "Forget one user or project memory by its exact entry_id. For natural-language requests, call memory_search and ask the user to reply in a later turn with exactly 'Confirm forget memory entry <entry_id>' or '确认删除记忆条目 <entry_id>'. Direct deletion without a pending search requires exactly 'Forget memory entry <entry_id>' or '删除记忆条目 <entry_id>'.".to_string(),
+        description: "Forget one user or project memory by its exact entry_id. For natural-language requests, call memory_search, show the candidates, and ask the user to clearly confirm one displayed stable ID in a later turn. A direct request is authorized only when the current user message contains the byte-exact stable ID.".to_string(),
         input_schema: JsonSchema::object(
             BTreeMap::from([
                 (

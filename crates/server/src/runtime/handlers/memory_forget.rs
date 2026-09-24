@@ -1,8 +1,13 @@
 use super::super::*;
 
-use crate::memory::MemoryCommandResult;
 use crate::memory::MemoryForgetRequest;
 use crate::memory::MemoryForgetSelector;
+use crate::memory::ProjectMemoryOperation;
+
+use super::memory_source::MemoryMutationSource;
+use crate::runtime::memory_forget_authorization::{
+    MemoryForgetExecutionError, complete_forget_execution,
+};
 
 impl ServerRuntime {
     /// Native `memory/forget`: retires an exact entry or returns candidates
@@ -56,7 +61,7 @@ impl ServerRuntime {
         };
         let reservation = match self
             .memory_forget_coordinator
-            .authorize_native(source.session_id, entry_id)
+            .authorize_native(source.reservation_session_id(), entry_id)
         {
             Ok(reservation) => reservation,
             Err(error) => {
@@ -67,60 +72,61 @@ impl ServerRuntime {
                 );
             }
         };
-        let result = self
-            .deps
-            .memory_command_executor
-            .execute(
-                memory,
+        let command = match source {
+            MemoryMutationSource::User(source) => {
                 crate::memory::MemoryCommand::Forget(MemoryForgetRequest {
                     selector,
                     scope: params.scope,
                     source,
-                }),
-            )
-            .await;
-        match result {
-            Ok(MemoryCommandResult::Forget(result)) => {
-                if let Err(error) = reservation.commit(result.forgotten.as_ref()) {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        error.to_string(),
-                    );
-                }
-                serde_json::to_value(SuccessResponse {
-                    id: request_id,
-                    result,
                 })
-                .expect("serialize memory/forget response")
             }
-            Err(crate::memory::MemoryError::ForgetCommitted {
+            MemoryMutationSource::Project {
+                candidates,
+                source_session_id,
+                source_turn_id,
+                source_user_item_id,
+                reservation_session_id: _,
+            } => crate::memory::MemoryCommand::Project {
+                candidates,
+                operation: ProjectMemoryOperation::Forget {
+                    selector,
+                    source_user_item_id,
+                    source_session_id,
+                    source_turn_id,
+                },
+            },
+        };
+        let result = self
+            .deps
+            .memory_command_executor
+            .execute(memory, command)
+            .await;
+        match complete_forget_execution(reservation, result) {
+            Ok(result) => serde_json::to_value(SuccessResponse {
+                id: request_id,
                 result,
-                projection_error,
-            }) => {
-                if let Err(error) = reservation.commit(result.forgotten.as_ref()) {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        error.to_string(),
-                    );
-                }
-                self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    format!(
-                        "memory forget committed but projection refresh failed: {projection_error}"
-                    ),
-                )
-            }
-            Ok(MemoryCommandResult::Status(_))
-            | Ok(MemoryCommandResult::Remember(_))
-            | Ok(MemoryCommandResult::List(_)) => self.error_response(
+            })
+            .expect("serialize memory/forget response"),
+            Err(MemoryForgetExecutionError::Projection(projection_error)) => self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                format!(
+                    "memory forget committed but projection refresh failed: {projection_error}"
+                ),
+            ),
+            Err(MemoryForgetExecutionError::UnexpectedResult) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
                 "memory/forget returned an unexpected result",
             ),
-            Err(error) => self.memory_error_response(request_id, "memory/forget", error),
+            Err(MemoryForgetExecutionError::Storage(error)) => {
+                self.memory_error_response(request_id, "memory/forget", error)
+            }
+            Err(MemoryForgetExecutionError::Coordinator(error)) => self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                error.to_string(),
+            ),
         }
     }
 }

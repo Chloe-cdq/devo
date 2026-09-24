@@ -3,7 +3,8 @@ use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use rusqlite::OptionalExtension;
 
-use super::entries::{load_entry, normalize_body, parse_scope};
+use super::entries::{load_entry, normalize_body};
+use super::stored_values::parse_scope;
 use super::{
     MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryRuntime, scope_name, state_name,
 };
@@ -39,6 +40,11 @@ impl MemoryRuntime {
                 let (entry_id, normalized_key, scope, scope_id) = target
                     .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?;
                 let scope = parse_scope(&scope)?;
+                if scope == devo_protocol::native::rpc_memory::MemoryScope::Project
+                    && self.scope_id(scope, &request.source.workspace_root)? != scope_id
+                {
+                    return Err(MemoryError::InvalidRequest("memory entry not found".into()));
+                }
                 (entry_id, normalized_key, scope, scope_id)
             }
             MemoryForgetSelector::Text(text) => {

@@ -15,6 +15,7 @@ mod queries;
 #[cfg(test)]
 mod runtime_test_support;
 mod schema;
+mod stored_values;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -30,6 +31,7 @@ use chrono::Utc;
 use devo_core::MemoryConfig;
 use devo_protocol::SessionId;
 use devo_protocol::native::page::Page;
+#[cfg(test)]
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use devo_protocol::native::rpc_memory::MemoryKind;
@@ -43,6 +45,7 @@ use thiserror::Error;
 
 pub use command_execution::MemoryCommandExecutor;
 pub(crate) use command_execution::RuntimeMemoryCommandExecutor;
+#[cfg(test)]
 pub(crate) use command_types::MemoryInferredRememberRequest;
 pub use command_types::{
     EnqueueOutcome, ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
@@ -247,6 +250,7 @@ impl MemoryRuntime {
                 if !self.config.enabled {
                     return match operation {
                         ProjectMemoryOperation::Remember { .. } => Err(MemoryError::Disabled),
+                        ProjectMemoryOperation::Forget { .. } => Err(MemoryError::Disabled),
                         ProjectMemoryOperation::List { .. } => {
                             Ok(MemoryCommandResult::List(Page {
                                 data: Vec::new(),
@@ -277,6 +281,23 @@ impl MemoryRuntime {
                             },
                         },
                     )?)),
+                    ProjectMemoryOperation::Forget {
+                        selector,
+                        source_user_item_id,
+                        source_session_id,
+                        source_turn_id,
+                    } => Ok(MemoryCommandResult::Forget(self.forget(
+                        MemoryForgetRequest {
+                            selector,
+                            scope: MemoryScope::Project,
+                            source: MemorySourceContext {
+                                user_item_id: source_user_item_id,
+                                session_id: source_session_id.unwrap_or(selected_session_id),
+                                turn_id: source_turn_id,
+                                workspace_root,
+                            },
+                        },
+                    )?)),
                     ProjectMemoryOperation::List {
                         kind,
                         state,
@@ -299,8 +320,7 @@ impl MemoryRuntime {
         }
     }
 
-    /// Resolves Native Session candidates to the one canonical Project source.
-    pub(crate) fn resolve_project_memory_source(
+    fn resolve_project_memory_source(
         &self,
         candidates: Vec<ProjectMemorySession>,
     ) -> Result<(SessionId, PathBuf), MemoryError> {
@@ -344,7 +364,7 @@ impl MemoryRuntime {
     /// This remains crate-private so callers must first pass through the
     /// server's source admission and scheduling boundary rather than invoking
     /// inferred persistence as a public memory command.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn record_inferred(
         &self,
         request: MemoryInferredRememberRequest,

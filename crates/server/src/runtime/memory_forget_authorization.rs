@@ -88,6 +88,42 @@ impl Drop for MemoryForgetReservation<'_> {
     }
 }
 
+pub(super) enum MemoryForgetExecutionError {
+    Coordinator(ToolCallError),
+    Storage(crate::memory::MemoryError),
+    Projection(crate::memory::MemoryError),
+    UnexpectedResult,
+}
+
+pub(super) fn complete_forget_execution(
+    reservation: MemoryForgetReservation<'_>,
+    execution: Result<crate::memory::MemoryCommandResult, crate::memory::MemoryError>,
+) -> Result<devo_protocol::native::rpc_memory::MemoryForgetResult, MemoryForgetExecutionError> {
+    match execution {
+        Ok(crate::memory::MemoryCommandResult::Forget(result)) => {
+            reservation
+                .commit(result.forgotten.as_ref())
+                .map_err(MemoryForgetExecutionError::Coordinator)?;
+            Ok(result)
+        }
+        Err(crate::memory::MemoryError::ForgetCommitted {
+            result,
+            projection_error,
+        }) => {
+            reservation
+                .commit(result.forgotten.as_ref())
+                .map_err(MemoryForgetExecutionError::Coordinator)?;
+            Err(MemoryForgetExecutionError::Projection(*projection_error))
+        }
+        Err(error) => Err(MemoryForgetExecutionError::Storage(error)),
+        Ok(crate::memory::MemoryCommandResult::Status(_))
+        | Ok(crate::memory::MemoryCommandResult::Remember(_))
+        | Ok(crate::memory::MemoryCommandResult::List(_)) => {
+            Err(MemoryForgetExecutionError::UnexpectedResult)
+        }
+    }
+}
+
 impl MemoryForgetCoordinator {
     pub(super) fn begin_search(&self) -> Result<MemorySearchEpoch, ToolCallError> {
         Ok(MemorySearchEpoch(self.lock_state()?.mutation_epoch))
