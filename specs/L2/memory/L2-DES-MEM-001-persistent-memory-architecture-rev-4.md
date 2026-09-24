@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-MEM-001
-revision: 3
+revision: 4
 status: Approved
-active_baseline: no
-supersedes: revision 2 approved
-superseded_by: revision 4 approved
+active_baseline: yes
+supersedes: revision 3
+superseded_by:
 owner: Human + Assistant
-last_updated: 2026-09-12
+last_updated: 2026-09-24
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -29,14 +29,17 @@ This document defines:
 - Session deletion, reset, rebuild, retention, failure, and observability behavior
 - Server module seam, rollout plan, and verification requirements
 
-It replaces revision 1's Git-backed, two-model extraction/consolidation workspace. It does not implement the design.
+Revision 4 is the active Approved authority and supersedes revision 3. Revision 3 remains the historical approved design that finalized structural explicit-memory authorization and schema-v5 identity. The implementation-status audit below records independently shipped slices.
 
 ## Current-State Audit
 
-- `crates/core/src/memory.rs` contains types, path helpers, and traits, but no production `MemoryStore` adapter, server configuration, job runner, Native methods, tools, or recall integration. It is not a working general memory mechanism.
+- The storage foundation is implemented: the server owns `MemoryRuntime`, a dedicated SQLite schema and migrations, configuration gating, safe status reporting, and generated Markdown projections.
+- Explicit control currently implements status, remember, list, search, and durable forget through Native/root-agent paths for User and Project scopes. Export, reset, rebuild, and lifecycle closeout remain pending.
+- The session-settings slice is implemented: canonical `memory_recall` and `memory_contribution` patch fields, global-default resolution, field-level rollout persistence and replay, and best-effort actor synchronization.
+- The runtime `prepare_turn` seam can construct a prototype User-scope snapshot bounded by entry count. Project retrieval, token budgeting, production root-turn query-loop recall/advisory injection, and the Memory Recall item/event remain pending.
+- The runtime `enqueue_source` seam currently applies contribution gating only; background source discovery, external-context eligibility, extraction, jobs/retries, and passive contribution remain pending.
 - Session JSONL persistence, resume, replay, and compaction implement Session History, not General Persistent Memory.
 - Desktop automations maintain a separate per-automation `memory.md`; this is Automation Run Memory and remains separate.
-- The production model loop is assembled through `crates/core/src/query/mod.rs`. A memory design wired only through unused context-pipeline helpers would not affect real turns.
 - Native is the single retained protocol surface per L2-DES-APP-008. Memory behavior must not be implemented independently in legacy or ACP handlers.
 
 ## Design Decisions
@@ -71,19 +74,34 @@ Project identity in the first release is the hash of the canonical Git common di
 
 A dedicated local SQLite database is the canonical truth. It provides transactions, FTS lexical retrieval, evidence joins, revocation checks, reset watermarks, and idempotent jobs.
 
-Each User or Project scope has one generated, read-only `MEMORY.md` projection for inspection and export. Projection generation occurs after a successful transaction using atomic replacement. Manual edits are overwritten and never imported. The memory directory is not Git-initialized.
+Each User or Project scope has one generated, read-only `MEMORY.md` projection for inspection and export. Projection generation occurs after a successful transaction using atomic replacement. Runtime startup regenerates every stored scope from SQLite, closing the recoverable crash window between database commit and projection replacement. Manual edits are overwritten and never imported. The memory directory is not Git-initialized.
 
 This decision is recorded in `docs/adr/0001-sqlite-authority-for-general-persistent-memory.md`.
 
 ### DD-5: Flat typed entries with lightweight provenance
 
-Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired | Restored`), timestamps, and zero or more evidence links.
+Every entry has one scope, one kind (`Preference | Feedback | Fact | Reference`), one normalized `memory_key`, one body, one origin (`ExplicitUser | InferredSession`), one lifecycle state (`Active | Stale | Conflicted | Retired`), timestamps, and zero or more evidence links.
 
 Provenance records source session and turn IDs when available. The first release has no floating confidence value or trust graph. Explicit user origin has higher authority than inferred origin but remains advisory relative to current instructions and policy.
 
 ### DD-6: Explicit writes are immediate; passive learning is background
 
-An explicit request is accepted only from a root agent acting on an identified current user message or from a direct Native command such as `/remember`. The module redacts, validates, normalizes, classifies, deduplicates, and commits it synchronously. It becomes available on the next turn; the active turn's prepared snapshot never changes.
+Authorization, claim extraction, and equivalence are separate stages with separate owners. A raw user message and a memory claim are different domain values. The trusted entrypoint owns explicit-memory authorization: a root-agent memory mutation tool call asserts that the current user message contains explicit intent, while a direct Native memory mutation command, such as `memory/remember`, asserts intent through its command surface. The root agent or direct command adapter then extracts and supplies a concise claim to the canonical Memory command. Subagents have no memory mutation capability.
+
+The server command boundary verifies caller scope, an active turn for root-agent calls, binding to the current user item, session and Project consistency, and non-overridable provenance. A direct Native command is bound to its command caller and applicable session or Project context. These structural checks do not classify natural-language intent. The Memory module receives an already-authorized claim; it must not infer authorization from the claim text. In particular, equivalence normalization cannot authorize a write or compensate for a missing entrypoint assertion. If stronger authorization is required later, it needs a separately approved user-confirmation or client-issued token design. A larger phrase allowlist, fuzzy matching, or a model-based server classifier is not a substitute.
+
+The normative processing order and owner of each stage are:
+
+| Order | Stage | Owner |
+|---:|---|---|
+| 1 | Trusted entrypoint and authorization assertion | Root agent or direct Native command adapter |
+| 2 | Claim extraction from the raw user message or command input | The same trusted entrypoint |
+| 3 | Structural provenance verification and User/Project scope resolution | Server command boundary |
+| 4 | Deterministic textual equivalence within the resolved scope | Memory module |
+| 5 | Validation and secret redaction | Memory module |
+| 6 | Transactional commit, evidence/FTS updates, then projection refresh | Memory module |
+
+The authorized explicit write is committed synchronously. It becomes available on the next turn; the active turn's prepared snapshot never changes.
 
 Passive learning is triggered when a new normal root session starts. The background scanner selects prior sessions that are persistent, root, contribution-enabled, idle for at least six hours, within the source window, not already processed at the same source watermark, and free of external-context use. It runs one structured extraction call per source session, then deterministic redaction, validation, deduplication, conflict handling, commit, and FTS update. There is no global consolidation-model pass in the first release.
 
@@ -104,6 +122,24 @@ Uniqueness is evaluated by `(scope, memory_key)`:
 3. Newer explicit content replaces older explicit content and preserves the replacement lineage.
 4. Incompatible inferred content marks the canonical entry `Conflicted` and retains the competing claim as a candidate; the key remains inspectable but is excluded from recall.
 
+For explicit writes, `memory_key` uses **deterministic textual equivalence**, not unqualified knowledge or semantic equivalence. It is computed only from the authorized, entrypoint-supplied claim after User/Project scope resolution. Scope is part of identity: the same textual key in different scopes never aliases. The claim's accepted display body is whitespace-normalized; the identity key uses only the following conservative normalization. Uncertain equivalence retains separate identities. False negatives are preferred over false positives: a duplicate remains recoverable, whereas an incorrect merge can overwrite content and corrupt provenance, revocation, or replacement lineage.
+
+| Input class | Required identity behavior |
+|---|---|
+| Plain prose | Collapse whitespace; apply Unicode case normalization and remove harmless outer sentence/quotation/bracketing punctuation only when the whole claim is unambiguously prose. Do not strip punctuation inside a claim. |
+| Paths, URLs, and file names | Preserve case and internal punctuation as identity-bearing content, including path separators and extensions. |
+| Identifiers and variable names | Preserve case, underscores, and other identifier punctuation. |
+| Assignments and code-like fragments | Treat as opaque identity-bearing tokens, preserving case, operators, and punctuation. |
+| Ambiguous punctuation | Preserve it and accept under-merging unless the caller supplied an unambiguous claim boundary. |
+
+For example, identifier `API_KEY` differs from `api_key`; drive prefix `C:` remains intact; assignments `FOO=1` and `foo=1` differ; paths `/Config` and `/config` differ; and `config.toml:` retains its colon if the implementation cannot prove it is only sentence punctuation. For mixed prose and structured tokens, preserve structured spans; if their boundaries are uncertain, treat the entire claim as opaque. Different scopes, different claim values, and affirmative versus negated claims never merge merely because of formatting normalization. The trusted entrypoint must extract the claim rather than relying on the key normalizer to remove intent phrases or guess a structured-token boundary. Kind is not part of the key, so an approved equivalent explicit write may correct the projected kind without changing identity.
+
+This equivalence contract excludes translation equivalence, open-ended synonym substitution, spelling correction, stemming, token reordering, embeddings or vector similarity, fuzzy thresholds, model judgment, complete natural-language semantic equivalence, and complete automatic recognition of every structured-data format.
+
+For an approved equivalent explicit write, the canonical entry retains its entry ID and earliest `created_at`; the accepted current body, kind, and `updated_at` are refreshed. Identical evidence is deduplicated by null-safe equality of `(entry_id, session_id, turn_id, source_user_item_id)`. No write silently merges different or incompatible claims. The entry row, evidence, and FTS state change consistently in one SQLite transaction; generated Markdown is atomically refreshed after commit. Runtime startup regenerates projections from authoritative SQLite state after migration or an interrupted projection update.
+
+The final key contract requires a real schema version 5 because persisted databases could already be marked version 4 under an earlier key contract. On activation of this revision, migration must include databases already marked v4, rekey explicit rows under the final approved contract, and leave inferred rows' stored keys unchanged unless a separate inferred-identity migration is approved. A collision retains the oldest canonical entry ID and earliest `created_at`, selects the accepted current explicit body and kind by the most recent update, deduplicates evidence with null-safe tuple equality, preserves the latest revocation/restore lifecycle event, and redirects replacement links to the retained identity without self-links. FTS and uniqueness indexes are rebuilt consistently. The entire migration is transactional and rolls back on failure; reopening a migrated database is idempotent. Startup regenerates Markdown projections from the resulting authoritative SQLite state.
+
 An extractor never resolves inferred conflicts by itself. A later explicit request may resolve the key.
 
 ### DD-9: Revocation and reset prevent resurrection
@@ -114,7 +150,7 @@ Reset clears one scope and advances `ignore_sources_before` for that scope. Auto
 
 ### DD-10: Recall is lexical, bounded, stable per turn, and advisory
 
-At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` and explicitly `Restored` entries are automatically recalled; other lifecycle states are excluded.
+At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` entries are automatically recalled.
 
 The result is capped at 12 entries and approximately 2,000 tokens. It is rendered as a distinct advisory memory context block, never concatenated into system policy, project instructions, or `AGENTS.md`. The block explicitly states that current instructions and observed repository state take precedence.
 
@@ -138,14 +174,22 @@ The Native protocol adds:
 - `memory/reset`
 - `memory/rebuild`
 
-`memory/list` supports scope, kind, state, origin, text, and pagination filters and returns safe provenance summaries. Direct Native exact Entry ID deletion is immediate. A root-agent exact-ID deletion is immediate only when the current user item is a strict exact-ID forget command containing the same stable ID; open-ended natural-language classification is not a mutation authority.
+`memory/list` supports scope, kind, state, origin, text, and pagination filters and returns safe provenance summaries. Direct Native exact Entry ID deletion is immediate. A root-agent mutation tool invocation is the explicit-intent assertion defined by DD-6: the server validates root-agent scope, active-turn and current-user-item binding, session identity, Project scope, non-overridable provenance, and the selected stable ID, but does not classify natural-language phrases.
 
-A root-agent natural-language forget request is a server-enforced two-stage operation:
+A root-agent text-based forget request is a server-enforced two-stage operation:
 
 1. `memory_search` records a short-lived `PendingForgetSelection` containing the session ID, source turn and user-item IDs, ordered candidate IDs, and their scopes. Search never grants mutation authority in the same user turn.
-2. A later user item explicitly confirms one displayed stable ID using the closed confirmation grammar `Confirm forget memory entry <entry_id>` or `确认删除记忆条目 <entry_id>`. A bare ID is not mutation authority. `memory_forget` succeeds only when its ID is in the unexpired candidate set and the current user item names that same ID with the confirmation grammar. The server rejects same-turn mutation, IDs outside the candidate set, and cross-scope substitution. It reserves the selection as `InFlight` while the storage mutation runs, consumes it only after success, and releases it back to `Pending` after failure or cancellation. Concurrent mutation and concurrent replacement of an `InFlight` selection are rejected.
+2. A later root-agent `memory_forget` invocation may select one ID from that unexpired candidate set using arbitrary current-user wording. The tool invocation asserts explicit intent; no fixed confirmation grammar is required. The server rejects same-turn mutation, IDs outside the candidate set when no exact ID is bound in the current user item, and cross-scope substitution. An exact-ID request that contains the byte-exact stable ID in the current user item remains an independent Direct action and is not shadowed by unrelated Pending state.
 
-Pending selection is ephemeral authorization state, not memory data. It expires after a bounded interval, is removed with its session, and is pruned when later searches or authorization checks inspect the store. Losing it on restart is fail-closed and requires a new search. Clients confirm reset and rebuild before issuing the command.
+All Agent Direct, Agent Confirmed, and Native forget mutations acquire one server-global, fail-fast deletion lease from `MemoryForgetCoordinator`. User Memory is shared across sessions, Native and Agent can target the same record, and a Native text selector may not resolve its final Entry ID before storage. Consequently, session-local exclusion is insufficient. The coordinator owns pending selections and the one active mutation under a single mutex; checking for an active mutation, validating Agent authority, allocating a monotonic reservation ID, and publishing the active reservation are one atomic operation. A Direct action remains independent of unrelated Pending state, but it is rejected while any deletion lease is active.
+
+The RAII reservation lives across the complete asynchronous storage operation. Agent and Native handlers resolve every fallible prerequisite before acquiring it, then immediately execute the forget command. Cancellation, unexpected results, and storage errors before the SQLite transaction commits release only the matching reservation ID through `Drop`; a stale reservation can never clear a newer lease. The SQLite durable commit is the authorization commit boundary. If a later projection refresh fails, the memory layer returns a typed committed outcome containing the forget result and projection error; the handler commits the reservation before reporting the derived-layer failure or scheduling repair. A durable deletion must never be represented as an uncommitted failure.
+
+Commit semantics depend on the typed active mutation kind. Agent Confirmed consumes only its matching selection; Agent Direct and Native preserve unrelated pending selections. Every successful deletion removes the forgotten Entry ID from all sessions' pending candidate sets, dropping sets that become empty, and then clears the active lease. Failed or cancelled Agent Confirmed mutations retain their pending selection for retry while it remains within its ordinary TTL.
+
+Search captures the coordinator's `mutation_epoch` before reading memory storage. `record_search` uses the coordinator's same mutex and atomically rejects a snapshot whose epoch differs from the current epoch. Every successful deletion advances the epoch before removing the forgotten Entry ID from existing Pending selections, so a search that read before that commit cannot publish stale candidates afterward. `record_search` also rejects replacement of a selection currently used by an active Agent Confirmed mutation. Empty search results remove the session's Pending selection, and each non-empty search receives a distinct monotonic selection ID. TTL pruning never removes the selection protected by an active Agent Confirmed mutation; after lease release, normal TTL rules resume.
+
+Pending selections and active leases are ephemeral authorization state, not memory data. Pending state expires after a bounded interval and is removed with its session. Losing either state on restart is fail-closed and requires a new search or retry. The single lease does not reduce an existing concurrency guarantee because `MemoryRuntime` already serializes commands through its process-global SQLite connection mutex. Clients confirm reset and rebuild before issuing the command.
 
 Recall and contribution toggles are fields of canonical `SessionSettingsPatch` on `session/metadata/update`; no per-concern settings method is introduced. No legacy or ACP memory implementation is added. An external protocol may later project canonical behavior without owning memory logic.
 
@@ -239,7 +283,6 @@ candidate -> Active -> Stale -> Active
                   \-> Retired
 
 forget: any state -> durable revocation + Retired
-explicit remember of a revoked identity -> Restored
 ```
 
 - Explicit entries do not expire automatically.
@@ -247,7 +290,6 @@ explicit remember of a revoked identity -> Restored
 - Deleting a source session removes pending candidates, completed source-job detail, and evidence links for that session. An inferred entry retires when its final evidence disappears. An explicit entry remains unless related-memory deletion was selected.
 - A duplicate evidence observation updates the existing entry rather than creating a duplicate.
 - Retired and revoked records remain only as long as required to enforce provenance, reset, and resurrection rules; user export distinguishes live entries from lifecycle metadata.
-- Restored identities are recallable like Active entries, but retain a public `restored` lifecycle state in list and Markdown projections; revocation timestamps remain internal.
 
 ## Session Settings Contract
 
@@ -277,9 +319,9 @@ Root agents may receive:
 - `memory_search(query, scope?, kind?, state?)` — return bounded summaries and stable IDs.
 - `memory_read(entry_id)` — return one safe entry and provenance summary.
 - `memory_remember(text, scope?, kind?, source_user_item_id)` — mutate only when tied to explicit current-user intent.
-- `memory_forget(entry_id, source_user_item_id)` — mutate only for a strict current-user exact-ID command or a later server-bound pending selection.
+- `memory_forget(entry_id, source_user_item_id)` — mutate only when tied to explicit current-user intent.
 
-Natural-language forget requests use search first and cannot mutate in the search turn. Subagents receive none of the mutation tools and do not independently receive read tools; the parent can delegate relevant context in the task message or inherited snapshot.
+Ambiguous natural-language forget requests use search first. Subagents receive none of the mutation tools and do not independently receive read tools; the parent can delegate relevant context in the task message or inherited snapshot.
 
 ## Background Scheduling and Failure Policy
 
@@ -337,7 +379,6 @@ Module and integration tests must cover:
 - deterministic ranking, Project tie priority, token/entry caps, and stable per-turn snapshots
 - duplicate merging, explicit-over-inferred replacement, inferred conflict withholding, and explicit conflict resolution
 - forgetting, old-source replay prevention, reset watermarks, deliberate rebuild, and idempotent job replay
-- root-agent forget authorization: same-turn rejection, pending candidate membership, later exact-ID selection, expiry, and User/Project scope isolation
 - session deletion with final and non-final evidence and explicit-memory retention
 - setting patch partial semantics, persist-first replay, and next-turn/next-scan decision points
 - external-context monotonic marking and exclusion for Web, MCP, and Tool Search
@@ -345,6 +386,8 @@ Module and integration tests must cover:
 - secret fixtures, projection redaction, and absence of content in logs/telemetry
 - foreground survival during database, projection, provider, malformed-output, quota, and retry failures
 - Native protocol shapes and proof that ACP behavior is unchanged
+- structural root-agent forget authorization with arbitrary wording, exact-ID target binding, same-turn rejection, pending candidate membership, expiry, and User/Project scope isolation
+- deterministic Direct/Confirmed/Native lease exclusion, cancellation release, durable-commit handling, and stale-search epoch rejection
 
 Tests must not mutate process environment variables. Filesystem tests must use platform-native paths and compare whole objects with `pretty_assertions::assert_eq` where practical.
 
@@ -373,8 +416,8 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | refines | L1-REQ-MEM-001 | 2 | specs/L1/L1-REQ-MEM-001-persistent-memory.md | Implements the approved user-controlled General Persistent Memory requirement. |
 | related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | Defines local storage, export, deletion, redaction, and telemetry boundaries. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | Session JSONL supplies eligibility facts and evidence references without storing memory entries. |
-| related-to | L2-DES-CONV-002 | 1 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings.md | Recall and contribution use canonical persist-first session settings and declared decision points. |
-| related-to | L2-DES-APP-008 | 1 | specs/L2/app/L2-DES-APP-008-protocol-unification.md | Management methods and recall events land on Native only. |
+| related-to | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | Recall and contribution use canonical persist-first session settings and declared decision points. |
+| related-to | L2-DES-APP-008 | 5 | specs/L2/app/L2-DES-APP-008-protocol-unification-rev-5.md | Management methods and recall events land on Native only. |
 | related-to | L2-DES-AGENT-003 | 1 | specs/L2/agent/L2-DES-AGENT-003-subagent-architecture.md | Subagents inherit a read-only parent snapshot and cannot mutate memory. |
 | related-to | L2-DES-LLM-003 | 1 | specs/L2/llm/L2-DES-LLM-003-model-usage-observability.md | Background extraction usage is metered without logging memory content. |
 
@@ -389,4 +432,7 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 |---:|---|---|---|---|
 | 1 | 2026-05-27 | Assistant | Initial | Draft Git-backed two-phase extraction/consolidation architecture. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced revision 1 with a SQLite-authoritative, lightweight, Native-manageable User/Project architecture. |
-| 3 | 2026-09-12 | Human + Assistant | Security revision | Defined server-bound two-stage root-agent forget authorization and removed open-ended natural-language classification from the mutation boundary. |
+| 2 | 2026-09-12 | Assistant | Status correction | Distinguished the implemented storage, explicit-control, and settings slices from pending production recall and background contribution work. No product meaning changed. |
+| 3 | 2026-09-23 | Assistant | Proposed | Separates trusted-entrypoint authorization, claim extraction, and deterministic textual equivalence; proposes conservative structured-token identity, canonical-entry updates, and schema-v5 migration for human review. |
+| 3 | 2026-09-23 | Human | Approval | Approved in the Codex task: "批准 **L2-DES-MEM-001 revision 3**". |
+| 4 | 2026-09-24 | Human + Assistant | Concurrency and revocation revision | Human-approved durable forget design adds server-global RAII deletion leases, pending candidate binding, mutation epochs, cancellation semantics, and transactional revocation lifecycle preservation on v4-to-v5 migration. |

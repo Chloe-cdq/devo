@@ -66,6 +66,8 @@ impl ModelProviderSDK for NoopProvider {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 3 DD-2
+/// Verifies: memory defaults remain globally disabled and the global gate forces both effective controls off.
 #[test]
 fn memory_config_defaults_are_disabled_and_global_gate_wins() {
     let config = MemoryConfig::default();
@@ -97,7 +99,7 @@ fn memory_config_defaults_are_disabled_and_global_gate_wins() {
     assert_eq!(enabled.effective_contribution(), MemorySetting::On);
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001
+/// Trace: L2-DES-CONV-002 Rev 2 DD-6, L2-DES-MEM-001 Rev 3 DD-2
 /// Verifies: independent per-session recall and contribution controls resolve at the runtime seam.
 #[tokio::test]
 async fn enabled_memory_runtime_resolves_each_session_control_independently() {
@@ -177,6 +179,8 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 3 DD-2/DD-4/DD-8
+/// Verifies: the disabled runtime reports healthy empty state, disables its seams, and initializes its schema idempotently.
 #[tokio::test]
 async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
     let data_root = TempDir::new().expect("memory data root");
@@ -263,14 +267,14 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             |row| row.get(0),
         )
         .expect("read memory schema version");
-    assert_eq!(schema_version, "4");
+    assert_eq!(schema_version, "5");
 }
 
-/// Trace: L2-DES-MEM-001 DD-4, DD-8
+/// Trace: L2-DES-MEM-001 Rev 3 DD-4/DD-8
 /// Verifies: future and malformed schema versions are rejected before any schema mutation.
 #[test]
 fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
-    for unsupported_version in ["5", "future"] {
+    for unsupported_version in ["6", "future"] {
         let data_root = TempDir::new()?;
         let memory_root = data_root.path().join("memory");
         std::fs::create_dir_all(&memory_root)?;
@@ -346,6 +350,8 @@ fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-MEM-001 Rev 3 DD-4/DD-8
+/// Verifies: schema migration preserves a legacy job while adding canonical job identity and lease fields.
 #[test]
 fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -403,11 +409,11 @@ fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(schema_version, "4");
+    assert_eq!(schema_version, "5");
     Ok(())
 }
 
-/// Trace: L2-DES-MEM-001 DD-9
+/// Trace: L2-DES-MEM-001 Rev 3 DD-9
 /// Verifies: v2 duplicate tombstones retain the latest revoke and later restore event.
 #[test]
 fn revocation_migration_preserves_latest_lifecycle_event() -> Result<()> {
@@ -464,7 +470,7 @@ fn revocation_migration_preserves_latest_lifecycle_event() -> Result<()> {
     Ok(())
 }
 
-/// Trace: L2-DES-MEM-001 DD-9
+/// Trace: L2-DES-MEM-001 Rev 3 DD-9
 /// Verifies: a failed v3 index creation rolls back tombstone consolidation and versioning.
 #[test]
 fn revocation_migration_failure_rolls_back() -> Result<()> {
@@ -523,6 +529,8 @@ fn create_v2_revocation_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-APP-008 Rev 5 DD-1, L2-DES-MEM-001 Rev 3 Status
+/// Verifies: Native memory/status reports the disabled runtime through the canonical protocol.
 #[tokio::test]
 async fn native_memory_status_reports_disabled_runtime() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -606,7 +614,7 @@ async fn native_memory_status_reports_disabled_runtime() -> Result<()> {
     Ok(())
 }
 
-/// Trace: L2-DES-MEM-001 Failure/Observability
+/// Trace: L2-DES-MEM-001 Rev 3 Failure/Observability
 /// Verifies: status exposes the latest completed scan and distinct redacted error classes.
 #[tokio::test]
 async fn memory_status_reports_last_successful_scan_and_error_classes() -> Result<()> {
@@ -669,7 +677,7 @@ async fn memory_status_reports_last_successful_scan_and_error_classes() -> Resul
     Ok(())
 }
 
-/// Trace: L2-DES-MEM-001 DD-9
+/// Trace: L2-DES-MEM-001 Rev 3 DD-9
 /// Verifies: one scope and normalized identity can own only one revocation tombstone.
 #[test]
 fn revocation_identity_is_unique() -> Result<()> {

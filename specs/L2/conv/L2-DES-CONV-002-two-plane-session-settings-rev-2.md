@@ -180,7 +180,7 @@ Findings that shape Phase 1, recorded during implementation:
 | related-to | L2-DES-SAFETY-001 | 1 | specs/L2/safety/L2-DES-SAFETY-001-permission-system.md | Permission profile semantics consumed by the promise matrix. |
 | related-to | L2-DES-SAFETY-002 | 1 | specs/L2/safety/L2-DES-SAFETY-002-approval-mechanism.md | Approval cache invalidation interacts with epoch semantics. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | The field-level settings log extends the rollout data model. |
-| related-to | L2-DES-MEM-001 | 2 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture.md | Declares the decision points and mid-turn promises for memory recall and contribution settings. |
+| related-to | L2-DES-MEM-001 | 3 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture-rev-3.md | Declares the decision points and mid-turn promises for memory recall and contribution settings. |
 
 ## Revision Notes
 

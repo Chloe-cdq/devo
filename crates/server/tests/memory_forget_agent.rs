@@ -314,9 +314,7 @@ async fn pending_selection_rejects_an_id_outside_its_candidates() -> Result<()> 
     provider.set_target(outside.entry_id.clone());
 
     harness.run_turn("Forget my indentation preference").await?;
-    harness
-        .run_turn(&format!("Confirm forget memory entry {}", outside.entry_id))
-        .await?;
+    harness.run_turn("Forget the selected memory").await?;
 
     assert_eq!(
         provider.search_result(),
@@ -355,12 +353,7 @@ async fn pending_selection_accepts_a_later_candidate_id() -> Result<()> {
     provider.set_target(selected.entry_id.clone());
 
     harness.run_turn("Forget my indentation preference").await?;
-    harness
-        .run_turn(&format!(
-            "Confirm forget memory entry {}",
-            selected.entry_id
-        ))
-        .await?;
+    harness.run_turn("Forget the selected memory").await?;
 
     let requests = provider.requests();
     let result: MemoryForgetResult = serde_json::from_str(
@@ -396,7 +389,7 @@ async fn failed_pending_mutation_can_retry_the_same_candidate() -> Result<()> {
     let mut harness = MemoryAgentHarness::new(Arc::clone(&provider)).await?;
     let selected = harness.remember("I prefer tabs", MemoryScope::User).await?;
     provider.set_target(selected.entry_id.clone());
-    let confirmation = format!("Confirm forget memory entry {}", selected.entry_id);
+    let confirmation = "Forget the selected memory";
 
     harness.run_turn("Forget my tab preference").await?;
     let fault_connection = rusqlite::Connection::open(
@@ -564,7 +557,7 @@ async fn ordinary_task_rewrites_cannot_authorize_forget() -> Result<()> {
         assert_forget_rejected(
             &requests,
             /*request_index*/ index * 2 + 1,
-            "exact stable-ID command",
+            "current exact stable ID or a pending selection",
         )
         .with_context(|| format!("unsafe variant: {variant}"))?;
     }
@@ -644,12 +637,7 @@ async fn pending_selection_does_not_cross_memory_scopes() -> Result<()> {
     provider.set_target(project_entry.entry_id.clone());
 
     harness.run_turn("Forget my tabs preference").await?;
-    harness
-        .run_turn(&format!(
-            "Confirm forget memory entry {}",
-            project_entry.entry_id
-        ))
-        .await?;
+    harness.run_turn("Forget the selected memory").await?;
 
     assert_eq!(
         provider.search_result(),

@@ -42,7 +42,7 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
     let database_root = tempfile::tempdir().expect("temporary memory root");
     let runtime = open_runtime(database_root.path());
     let remembered = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
+        .execute_command(MemoryCommand::Remember(remember_request("I prefer tabs")))
         .await
         .expect("remember entry")
     {
@@ -66,7 +66,7 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
 
     let old_observed_at = remembered.updated_at;
     let result = runtime
-        .record_inferred(inferred_request("Use tabs", old_observed_at))
+        .record_inferred(inferred_request("I prefer tabs", old_observed_at))
         .expect("replay old evidence");
     assert_eq!(result, None);
 
@@ -101,7 +101,7 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
     let database_root = tempfile::tempdir().expect("temporary memory root");
     let runtime = open_runtime(database_root.path());
     let remembered = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
+        .execute_command(MemoryCommand::Remember(remember_request("I prefer tabs")))
         .await
         .expect("remember entry")
     {
@@ -117,7 +117,7 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
         .await
         .expect("forget entry");
     let restored = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
+        .execute_command(MemoryCommand::Remember(remember_request("I prefer tabs")))
         .await
         .expect("restore entry")
     {
@@ -129,7 +129,7 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
 
     let old_observed_at = remembered.updated_at;
     let replay = runtime
-        .record_inferred(inferred_request("Use tabs!", old_observed_at))
+        .record_inferred(inferred_request("I prefer tabs!", old_observed_at))
         .expect("replay old evidence");
 
     assert_eq!(replay, None);
@@ -138,8 +138,8 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
         scope: MemoryScope::User,
         scope_id: "user".to_owned(),
         kind: MemoryKind::Preference,
-        normalized_key: "use tabs".to_owned(),
-        body: "Use tabs".to_owned(),
+        normalized_key: "i prefer tabs".to_owned(),
+        body: "I prefer tabs".to_owned(),
         origin: MemoryOrigin::ExplicitUser,
         state: MemoryState::Restored,
         created_at: restored.created_at,
@@ -157,7 +157,7 @@ async fn inferred_memory_does_not_replace_explicit_content() {
     let database_root = tempfile::tempdir().expect("temporary memory root");
     let runtime = open_runtime(database_root.path());
     let remembered = match runtime
-        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
+        .execute_command(MemoryCommand::Remember(remember_request("I prefer tabs")))
         .await
         .expect("remember entry")
     {
@@ -169,7 +169,7 @@ async fn inferred_memory_does_not_replace_explicit_content() {
 
     let inferred_observed_at = remembered.updated_at + chrono::Duration::seconds(1);
     let inferred = runtime
-        .record_inferred(inferred_request("Use tabs!", inferred_observed_at))
+        .record_inferred(inferred_request("I prefer tabs!", inferred_observed_at))
         .expect("inferred duplicate")
         .expect("evidence-preserving inference");
     let remembered_updated_at = remembered.updated_at;

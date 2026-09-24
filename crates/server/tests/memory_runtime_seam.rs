@@ -14,7 +14,7 @@ use devo_server::memory::{
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3, DD-13
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-3, DD-13
 /// Verifies: Project identity ambiguity is resolved behind execute_command.
 #[tokio::test]
 async fn project_command_rejects_unrelated_session_candidates() {
@@ -60,7 +60,7 @@ async fn project_command_rejects_unrelated_session_candidates() {
     assert!(matches!(error, MemoryError::AmbiguousProjectScope));
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3, DD-13
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-3, DD-13
 /// Verifies: Project command selection prefers the active linked-worktree Session.
 #[tokio::test]
 async fn project_command_uses_active_same_repository_session_for_provenance() {
@@ -137,7 +137,7 @@ async fn project_command_uses_active_same_repository_session_for_provenance() {
     );
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-2, DD-13
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-2, DD-13
 /// Verifies: global disable dominates Project selector validation.
 #[tokio::test]
 async fn disabled_project_commands_do_not_resolve_session_candidates() {

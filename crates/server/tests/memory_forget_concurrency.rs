@@ -424,13 +424,12 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
     .await?;
     executor.wait_until_snapshot_ready().await?;
 
-    let confirmation = format!("Confirm forget memory entry {entry_id}");
     run_turn(
         &runtime,
         confirmation_connection,
         confirmation_session,
         &mut confirmation_notifications,
-        &confirmation,
+        "Forget the selected memory",
     )
     .await?;
     executor.release();
@@ -440,7 +439,7 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
         confirmation_connection,
         confirmation_session,
         &mut confirmation_notifications,
-        &confirmation,
+        "Forget the selected memory",
     )
     .await?;
 
@@ -472,7 +471,7 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
             "retry-forget"
         ),
         Some(
-            "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+            "invalid input: memory_forget requires a current exact stable ID or a pending selection"
         )
     );
     let retired_response = runtime
@@ -610,13 +609,12 @@ async fn native_durable_commit_with_projection_failure_invalidates_search_and_co
     );
     executor.release();
     wait_for_parent_turn_completed(&mut search_notifications, search_session).await?;
-    let confirmation = format!("Confirm forget memory entry {entry_id}");
     run_turn(
         &runtime,
         pending_connection,
         pending_session,
         &mut pending_notifications,
-        &confirmation,
+        "Forget the selected memory",
     )
     .await?;
 
@@ -636,7 +634,7 @@ async fn native_durable_commit_with_projection_failure_invalidates_search_and_co
             "retry-forget"
         ),
         Some(
-            "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+            "invalid input: memory_forget requires a current exact stable ID or a pending selection"
         )
     );
     let retired_response = runtime

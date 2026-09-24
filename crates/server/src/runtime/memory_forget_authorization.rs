@@ -50,12 +50,6 @@ enum ActiveForgetKind {
     Native,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForgetCommandGrammar {
-    Direct,
-    Confirmation,
-}
-
 /// Coordinates every server memory deletion through one fail-fast lease.
 ///
 /// Search candidates and the active mutation share one mutex, making
@@ -213,22 +207,8 @@ impl MemoryForgetCoordinator {
         let mut state = self.lock_state()?;
         Self::reject_active(&state)?;
         Self::prune_expired(&mut state, now);
-        let (scope, kind) = if strict_forget_names(
-            ForgetCommandGrammar::Direct,
-            user_text,
-            entry_id,
-        ) {
-            (requested_scope, ActiveForgetKind::AgentDirect)
-        } else {
-            let selection = state
-                .pending_by_session
-                .get(&invocation.session_id)
-                .ok_or_else(|| {
-                    ToolCallError::InvalidInput(
-                        "memory_forget requires a strict exact stable-ID command or a pending selection"
-                            .to_string(),
-                    )
-                })?;
+        let selection = state.pending_by_session.get(&invocation.session_id);
+        let (scope, kind) = if let Some(selection) = selection {
             if selection.source_turn_id == invocation.turn_id
                 || selection.source_user_item_id == invocation.user_item_id
             {
@@ -237,27 +217,31 @@ impl MemoryForgetCoordinator {
                         .to_string(),
                 ));
             }
-            let candidate = selection
+            if let Some(candidate) = selection
                 .candidates
                 .iter()
                 .find(|candidate| candidate.entry_id == *entry_id)
-                .ok_or_else(|| {
-                    ToolCallError::InvalidInput(
-                        "memory_forget target is not one of the pending candidates".to_string(),
-                    )
-                })?;
-            if !strict_forget_names(ForgetCommandGrammar::Confirmation, user_text, entry_id) {
+            {
+                (
+                    candidate.scope,
+                    ActiveForgetKind::AgentConfirmed {
+                        selection_id: selection.selection_id,
+                    },
+                )
+            } else if user_text.contains(entry_id.as_str()) {
+                (requested_scope, ActiveForgetKind::AgentDirect)
+            } else {
                 return Err(ToolCallError::InvalidInput(
-                    "memory_forget pending selection must explicitly confirm the selected stable ID"
-                        .to_string(),
+                    "memory_forget target is not one of the pending candidates".to_string(),
                 ));
             }
-            (
-                candidate.scope,
-                ActiveForgetKind::AgentConfirmed {
-                    selection_id: selection.selection_id,
-                },
-            )
+        } else if user_text.contains(entry_id.as_str()) {
+            (requested_scope, ActiveForgetKind::AgentDirect)
+        } else {
+            return Err(ToolCallError::InvalidInput(
+                "memory_forget requires a current exact stable ID or a pending selection"
+                    .to_string(),
+            ));
         };
         let reservation = self.reserve(
             &mut state,
@@ -395,27 +379,6 @@ impl MemoryForgetCoordinator {
                 "memory forget coordinator state is unavailable".to_string(),
             )
         })
-    }
-}
-
-fn strict_forget_names(
-    grammar: ForgetCommandGrammar,
-    user_text: &str,
-    entry_id: &MemoryEntryId,
-) -> bool {
-    let text = user_text.trim();
-    let english_matches = |prefix: &str| {
-        text.strip_suffix(entry_id.as_str())
-            .is_some_and(|command| command.eq_ignore_ascii_case(prefix))
-    };
-    match grammar {
-        ForgetCommandGrammar::Direct => {
-            english_matches("forget memory entry ") || text == format!("删除记忆条目 {entry_id}")
-        }
-        ForgetCommandGrammar::Confirmation => {
-            english_matches("confirm forget memory entry ")
-                || text == format!("确认删除记忆条目 {entry_id}")
-        }
     }
 }
 

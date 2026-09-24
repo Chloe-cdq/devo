@@ -284,7 +284,7 @@ fn project_remember_request(
     }
 }
 
-/// Trace: L2-DES-MEM-001
+/// Trace: L2-DES-MEM-001 Rev 3 Explicit Control
 /// Verifies: explicit User memory is committed and canonical duplicates are merged.
 #[tokio::test]
 async fn explicit_user_memory_is_committed_and_deduplicated() {
@@ -362,7 +362,7 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     assert_eq!(evidence_count, 1);
 }
 
-/// Trace: L2-DES-MEM-001
+/// Trace: L2-DES-MEM-001 Rev 3 Explicit Control
 /// Verifies: secret-bearing memory is rejected before SQLite, FTS, or projection writes.
 #[tokio::test]
 async fn secret_memory_is_rejected_before_sqlite_fts_and_projection() {
@@ -421,7 +421,7 @@ async fn secret_memory_is_rejected_before_sqlite_fts_and_projection() {
     assert!(!memory_root.join("user").join("MEMORY.md").exists());
 }
 
-/// Trace: L2-DES-MEM-001
+/// Trace: L2-DES-MEM-001 Rev 3 DD-4/Explicit Control
 /// Verifies: User listing pagination and atomic projection regeneration expose canonical entries.
 #[tokio::test]
 async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
@@ -514,8 +514,8 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     assert_eq!(second_page.next_cursor, None);
 }
 
-/// Trace: L2-DES-MEM-001
-/// Verifies: Native remember/list support User and Project scopes and expose safe provenance.
+/// Trace: L2-DES-APP-008 Rev 5 DD-1, L2-DES-MEM-001 Rev 3 DD-3/Explicit Control
+/// Verifies: Native remember and list support User and Project scopes and expose safe provenance.
 #[tokio::test]
 async fn native_memory_remember_and_list_support_user_and_project_scopes() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -842,7 +842,7 @@ async fn native_memory_forget_supports_exact_and_ambiguous_requests() -> Result<
     Ok(())
 }
 
-/// Trace: L2-DES-MEM-001
+/// Trace: L2-DES-MEM-001 Rev 3 DD-6/Explicit Control
 /// Verifies: a committed entry appears only in a newly prepared memory snapshot.
 #[tokio::test]
 async fn committed_memory_only_enters_a_new_prepared_turn_snapshot() {
@@ -881,7 +881,7 @@ async fn committed_memory_only_enters_a_new_prepared_turn_snapshot() {
     assert_eq!(after.user_entries.len(), 1);
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+/// Trace: L2-DES-MEM-001 Rev 3 DD-3
 /// Verifies: linked worktrees share Project memory while unrelated repositories remain isolated.
 #[tokio::test]
 async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositories() {
@@ -1013,7 +1013,7 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     assert_eq!(main_list.data, vec![linked_entry]);
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+/// Trace: L2-DES-APP-008 Rev 5 DD-1, L2-DES-MEM-001 Rev 3 DD-3
 /// Verifies: Project memory follows the Native session selector across create and update.
 #[tokio::test]
 async fn native_project_memory_follows_native_subscription_selector() -> Result<()> {
@@ -1234,7 +1234,7 @@ async fn native_project_memory_follows_native_subscription_selector() -> Result<
     Ok(())
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+/// Trace: L2-DES-APP-008 Rev 5 DD-1, L2-DES-MEM-001 Rev 3 DD-3
 /// Verifies: Native Project memory resolves a durable session before resume.
 #[tokio::test]
 async fn native_project_memory_resolves_durable_session_after_restart() -> Result<()> {
@@ -1296,7 +1296,7 @@ async fn native_project_memory_resolves_durable_session_after_restart() -> Resul
     Ok(())
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
+/// Trace: L2-DES-APP-008 Rev 5 DD-1, L2-DES-MEM-001 Rev 3 DD-3
 /// Verifies: Native Project memory accepts multiple Session selectors for one Git project.
 #[tokio::test]
 async fn native_project_memory_accepts_same_project_session_selectors() -> Result<()> {
@@ -1380,8 +1380,8 @@ async fn native_project_memory_accepts_same_project_session_selectors() -> Resul
     Ok(())
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
-/// Verifies: Project remember/list reject an active-turn versus selector project conflict.
+/// Trace: L2-DES-APP-008 Rev 5 DD-1, L2-DES-MEM-001 Rev 3 DD-3
+/// Verifies: Project remember and list reject an active-turn versus selector project conflict.
 #[tokio::test]
 async fn native_project_memory_rejects_active_turn_selector_conflict() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -1500,8 +1500,8 @@ async fn native_project_memory_rejects_active_turn_selector_conflict() -> Result
     Ok(())
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3
-/// Verifies: Project remember/list reject multiple active sessions from different projects.
+/// Trace: L2-DES-APP-008 Rev 5 DD-1, L2-DES-MEM-001 Rev 3 DD-3
+/// Verifies: Project remember and list reject multiple active sessions from different projects.
 #[tokio::test]
 async fn native_project_memory_rejects_multiple_active_project_scopes() -> Result<()> {
     let data_root = TempDir::new()?;

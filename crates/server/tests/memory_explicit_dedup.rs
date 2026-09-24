@@ -54,8 +54,8 @@ async fn list(
     }
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8
-/// Verifies: harmless explicit-request wording updates one stable canonical entry.
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-8
+/// Verifies: plain-prose formatting updates one stable canonical entry.
 #[tokio::test]
 async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidence() {
     let data_root = TempDir::new().expect("memory data root");
@@ -91,7 +91,7 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
         data_root.path().to_path_buf(),
     );
     let equivalent_request = MemoryRememberRequest {
-        text: "  Please remember that MY PREFERENCE IS dark mode!  ".to_string(),
+        text: "  i prefer dark mode!  ".to_string(),
         scope: MemoryScope::User,
         kind: None,
         source: equivalent_source.clone(),
@@ -103,10 +103,7 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
     assert_eq!(updated.created_at, first.created_at);
     assert!(updated.updated_at > first.updated_at);
     assert_eq!(updated.normalized_key, "i prefer dark mode");
-    assert_eq!(
-        updated.body,
-        "Please remember that MY PREFERENCE IS dark mode!"
-    );
+    assert_eq!(updated.body, "i prefer dark mode!");
     assert_eq!(updated.kind, MemoryKind::Preference);
     assert_eq!(
         replayed.provenance,
@@ -135,7 +132,7 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
     );
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-3, DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-3, DD-8
 /// Verifies: equivalence is scope-local and preserves identity-bearing claim tokens.
 #[tokio::test]
 async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
@@ -151,7 +148,7 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
     let user_rust = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "The project uses Rust".to_string(),
+            text: "The project uses rust".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Fact),
             source: memory_test_support::test_source(
@@ -166,7 +163,7 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
     let project_rust = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "The project uses Rust".to_string(),
+            text: "The project uses rust".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
             source: memory_test_support::test_source(
@@ -181,7 +178,7 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
     let project_rust_updated = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "Remember that the project uses Rust.".to_string(),
+            text: "  the project uses rust.  ".to_string(),
             scope: MemoryScope::Project,
             kind: None,
             source: memory_test_support::test_source(
@@ -283,11 +280,64 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
         },
     )
     .await;
+    let project_upper_identifier = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use FOO".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source: memory_test_support::test_source(
+                Some("project-upper-identifier"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
+        },
+    )
+    .await;
+    let project_lower_identifier = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use foo".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source: memory_test_support::test_source(
+                Some("project-lower-identifier"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
+        },
+    )
+    .await;
+    let project_title_identifier = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use Foo".to_string(),
+            scope: MemoryScope::Project,
+            kind: Some(MemoryKind::Fact),
+            source: memory_test_support::test_source(
+                Some("project-title-identifier"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
+        },
+    )
+    .await;
 
     assert_ne!(user_rust.entry_id, project_rust.entry_id);
     assert_eq!(project_rust_updated.entry_id, project_rust.entry_id);
     assert_ne!(project_dot_env.entry_id, project_env.entry_id);
     assert_ne!(project_parent_config.entry_id, project_root_config.entry_id);
+    assert_ne!(
+        project_upper_identifier.entry_id,
+        project_lower_identifier.entry_id
+    );
+    assert_ne!(
+        project_title_identifier.entry_id,
+        project_lower_identifier.entry_id
+    );
     assert_eq!(
         list(
             &runtime,
@@ -314,12 +364,15 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
         project_not_rust,
         project_python,
         project_rust_updated,
+        project_upper_identifier,
+        project_lower_identifier,
+        project_title_identifier,
     ];
     expected.sort_by(|left, right| left.entry_id.as_str().cmp(right.entry_id.as_str()));
     assert_eq!(project_entries, expected);
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-4, DD-8
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-4, DD-8
 /// Verifies: deduplication updates SQLite, FTS, API listing, and Markdown durably.
 #[tokio::test]
 async fn deduplication_stays_consistent_across_storage_search_projection_and_restart() {
@@ -336,7 +389,7 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
     let first = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "Remember that I would prefer compact responses.".to_string(),
+            text: "I prefer compact responses.".to_string(),
             scope: MemoryScope::User,
             kind: None,
             source: memory_test_support::test_source(
@@ -351,7 +404,7 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
     let updated = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "My preference is compact responses!".to_string(),
+            text: "i prefer compact responses!".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Preference),
             source: memory_test_support::test_source(
@@ -380,7 +433,7 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
             &runtime,
             MemoryScope::User,
             data_root.path(),
-            Some("would prefer")
+            Some("responses.")
         )
         .await,
         Vec::<MemoryEntry>::new()
@@ -406,7 +459,7 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
             1,
             1,
             "i prefer compact responses".to_string(),
-            "My preference is compact responses!".to_string(),
+            "i prefer compact responses!".to_string(),
         )
     );
     let fts_matches: i64 = connection
@@ -421,8 +474,8 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
 
     let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
         .expect("read user memory projection");
-    assert!(projection.contains("My preference is compact responses!"));
-    assert!(!projection.contains("Remember that I would prefer compact responses."));
+    assert!(projection.contains("i prefer compact responses!"));
+    assert!(!projection.contains("I prefer compact responses."));
 
     drop(runtime);
     let reopened = MemoryRuntime::open(

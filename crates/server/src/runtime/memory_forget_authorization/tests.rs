@@ -10,9 +10,8 @@ use devo_protocol::native::rpc_memory::{
 use pretty_assertions::assert_eq;
 
 use super::{
-    ActiveForgetKind, ActiveForgetMutation, ForgetCommandGrammar, ForgetState,
-    MemoryForgetCoordinator, PENDING_SELECTION_TTL, PendingForgetCandidate, PendingForgetSelection,
-    strict_forget_names,
+    ActiveForgetKind, ActiveForgetMutation, ForgetState, MemoryForgetCoordinator,
+    PENDING_SELECTION_TTL, PendingForgetCandidate, PendingForgetSelection,
 };
 
 fn invocation() -> MemoryToolInvocation {
@@ -53,80 +52,29 @@ fn forgotten_entry(entry_id: MemoryEntryId) -> MemoryEntry {
     }
 }
 
-/// Trace: L2-DES-MEM-001 DD-12
-/// Verifies: direct and confirmation commands anchor their grammar while preserving byte-exact ID casing.
+/// Trace: L2-DES-MEM-001 Rev 4 DD-6, DD-12
+/// Verifies: a root-agent exact-ID action uses structural tool authorization without a phrase allowlist.
 #[test]
-fn direct_exact_id_grammar_is_closed_over_task_rewrites() {
+fn direct_exact_id_authorization_accepts_arbitrary_wording() {
+    let authorizations = MemoryForgetCoordinator::default();
+    let invocation = invocation();
     let entry_id = MemoryEntryId::from("mem_test");
-    assert!(strict_forget_names(
-        ForgetCommandGrammar::Direct,
-        "Forget memory entry mem_test",
-        &entry_id
-    ));
-    assert!(strict_forget_names(
-        ForgetCommandGrammar::Direct,
-        "删除记忆条目 mem_test",
-        &entry_id
-    ));
-    assert!(strict_forget_names(
-        ForgetCommandGrammar::Direct,
-        "FORGET MEMORY ENTRY mem_test",
-        &entry_id
-    ));
-    assert!(!strict_forget_names(
-        ForgetCommandGrammar::Direct,
-        "Forget memory entry MEM_TEST",
-        &entry_id
-    ));
-    assert!(strict_forget_names(
-        ForgetCommandGrammar::Confirmation,
-        "CONFIRM FORGET MEMORY ENTRY mem_test",
-        &entry_id
-    ));
-    assert!(!strict_forget_names(
-        ForgetCommandGrammar::Confirmation,
-        "Confirm forget memory entry MEM_TEST",
-        &entry_id
-    ));
+    let authorized = authorizations
+        .authorize_agent(
+            &invocation,
+            "Could you retire mem_test from persistent storage?",
+            &entry_id,
+            MemoryScope::User,
+        )
+        .expect("structurally bound exact-ID action is authorized");
 
-    for prefix in [
-        "Please forget that I use tests",
-        "Forget about memory safety",
-        "请忘记我在写测试",
-        "请删除我不需要的文件",
-    ] {
-        for separator in [" and ", "; ", ". ", "\n", "，", "；"] {
-            for suffix in ["implement docs", "then continue", "然后实现文档"] {
-                let text = format!("{prefix}{separator}{suffix}");
-                assert!(
-                    !strict_forget_names(ForgetCommandGrammar::Direct, &text, &entry_id),
-                    "{text}"
-                );
-                let uppercase = text.to_ascii_uppercase();
-                assert!(
-                    !strict_forget_names(ForgetCommandGrammar::Direct, &uppercase, &entry_id),
-                    "{uppercase}"
-                );
-            }
-        }
-    }
-    for text in [
-        "Do not forget memory entry mem_test",
-        "Please explain forget memory entry mem_test",
-        "Forget memory entry mem_test and implement docs",
-        "删除记忆条目 mem_test，然后实现文档",
-    ] {
-        assert!(
-            !strict_forget_names(ForgetCommandGrammar::Direct, text, &entry_id),
-            "{text}"
-        );
-    }
+    assert_eq!(authorized.scope, MemoryScope::User);
 }
 
-/// Trace: L2-DES-MEM-001 DD-12
-/// Verifies: pending authorization rejects same-turn and outside-candidate mutations, then accepts a later exact selection once.
+/// Trace: L2-DES-MEM-001 Rev 4 DD-12
+/// Verifies: pending authorization rejects same-turn and outside-candidate mutations, then accepts a later structurally authorized selection once.
 #[test]
-fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
+fn pending_selection_is_turn_bound_candidate_bound_and_consumed_once() {
     let authorizations = MemoryForgetCoordinator::default();
     let search = invocation();
     let selected_id = MemoryEntryId::from("mem_selected");
@@ -159,7 +107,7 @@ fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
         authorizations
             .authorize_agent(
                 &selection,
-                &format!("Confirm forget memory entry {outside_id}"),
+                "Remove the selected memory",
                 &outside_id,
                 MemoryScope::User,
             )
@@ -167,22 +115,10 @@ fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
             .to_string(),
         "invalid input: memory_forget target is not one of the pending candidates"
     );
-    assert_eq!(
-        authorizations
-            .authorize_agent(
-                &selection,
-                selected_id.as_str(),
-                &selected_id,
-                MemoryScope::User,
-            )
-            .expect_err("bare candidate ID must not authorize mutation")
-            .to_string(),
-        "invalid input: memory_forget pending selection must explicitly confirm the selected stable ID"
-    );
     let authorized = authorizations
         .authorize_agent(
             &selection,
-            &format!("Confirm forget memory entry {selected_id}"),
+            "Remove the selected memory",
             &selected_id,
             MemoryScope::User,
         )
@@ -196,13 +132,13 @@ fn pending_selection_is_turn_bound_candidate_bound_and_single_use() {
         authorizations
             .authorize_agent(
                 &selection,
-                &format!("Confirm forget memory entry {selected_id}"),
+                "Remove the selected memory",
                 &selected_id,
                 MemoryScope::User,
             )
             .expect_err("consumed selection must fail")
             .to_string(),
-        "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+        "invalid input: memory_forget requires a current exact stable ID or a pending selection"
     );
 }
 
@@ -387,7 +323,7 @@ fn successful_forget_removes_entry_from_all_pending_selections() {
         authorizations
             .authorize_agent(
                 &other_confirmation,
-                &format!("Confirm forget memory entry {deleted_id}"),
+                "Remove the selected memory",
                 &deleted_id,
                 MemoryScope::User,
             )
@@ -431,13 +367,13 @@ fn stale_search_snapshot_cannot_reintroduce_forgotten_candidate() {
         authorizations
             .authorize_agent(
                 &confirmation,
-                &format!("Confirm forget memory entry {deleted_id}"),
+                "Remove the selected memory",
                 &deleted_id,
                 MemoryScope::User,
             )
             .expect_err("stale search must not restore deletion authority")
             .to_string(),
-        "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+        "invalid input: memory_forget requires a current exact stable ID or a pending selection"
     );
 }
 
@@ -599,14 +535,14 @@ fn active_confirmation_protects_its_selection_from_search_and_expiry() {
         authorizations
             .authorize_agent_at(
                 &confirmation,
-                &format!("Confirm forget memory entry {selected_id}"),
+                "Remove the selected memory",
                 &selected_id,
                 MemoryScope::User,
                 started_at + PENDING_SELECTION_TTL + Duration::from_secs(1),
             )
             .expect_err("expired selection is pruned after cancellation releases its lease")
             .to_string(),
-        "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+        "invalid input: memory_forget requires a current exact stable ID or a pending selection"
     );
 }
 
@@ -683,14 +619,14 @@ fn pending_selection_expires_fail_closed() {
         authorizations
             .authorize_agent_at(
                 &selection,
-                &format!("Confirm forget memory entry {entry_id}"),
+                "Remove the selected memory",
                 &entry_id,
                 MemoryScope::User,
                 Instant::now() + PENDING_SELECTION_TTL + Duration::from_secs(1),
             )
             .expect_err("expired selection must fail")
             .to_string(),
-        "invalid input: memory_forget requires a strict exact stable-ID command or a pending selection"
+        "invalid input: memory_forget requires a current exact stable ID or a pending selection"
     );
 }
 

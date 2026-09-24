@@ -10,6 +10,7 @@ use tokio::sync::watch;
 use super::SessionHandle;
 use crate::runtime::session_actor::commands::SessionCommand;
 
+/// Trace: L2-DES-CONV-002 Rev 2 DD-3, L2-DES-MEM-001 Rev 3 Session Controls
 /// Verifies: durable settings notification is retained even when the ordinary actor mailbox is full.
 #[test]
 fn memory_settings_notification_does_not_depend_on_mailbox_capacity() {
