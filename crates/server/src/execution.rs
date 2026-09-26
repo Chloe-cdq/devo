@@ -149,7 +149,8 @@ pub struct ServerRuntimeDependencies {
     /// User-level process context used before a concrete session exists.
     pub(crate) process_context: Arc<SessionRuntimeContext>,
     /// Execution seam used to coordinate memory commands with runtime authority state.
-    pub(crate) memory_command_executor: Arc<dyn crate::MemoryCommandExecutor>,
+    pub(crate) memory_command_executor:
+        Arc<dyn crate::memory::command_execution::MemoryCommandExecutor>,
     /// LRU of workspace-scoped contexts (canonical cwd → context).
     ///
     /// Avoids rebuilding MCP/tool registry/skill catalog on every
@@ -213,10 +214,10 @@ impl ServerRuntimeDependencies {
     }
 
     /// Test-only injection seam for pausing real memory commands at deterministic barriers.
-    #[doc(hidden)]
-    pub fn with_test_memory_command_executor(
+    #[cfg(test)]
+    pub(crate) fn with_test_memory_command_executor(
         mut self,
-        executor: Arc<dyn crate::MemoryCommandExecutor>,
+        executor: Arc<dyn crate::memory::command_execution::MemoryCommandExecutor>,
     ) -> Self {
         self.memory_command_executor = executor;
         self

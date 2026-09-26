@@ -8,9 +8,8 @@ use super::{MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime};
 /// Implementations must preserve command results and storage errors. They may
 /// delay execution for deterministic concurrency control, but must invoke the
 /// supplied [`MemoryRuntime`] exactly once when execution proceeds.
-#[doc(hidden)]
 #[async_trait]
-pub trait MemoryCommandExecutor: Send + Sync {
+pub(crate) trait MemoryCommandExecutor: Send + Sync {
     async fn execute(
         &self,
         memory: &MemoryRuntime,

@@ -9,22 +9,13 @@ use devo_protocol::{ErrorResponse, ProtocolError, ProtocolErrorCode};
 use pretty_assertions::assert_eq;
 use rusqlite::Connection;
 
-#[path = "support/memory_forget_runtime.rs"]
-#[allow(dead_code)]
-mod memory_forget_runtime_support;
-#[path = "support/memory_forget.rs"]
-#[allow(dead_code)]
-mod memory_forget_support;
-#[path = "support/subagent_lifecycle.rs"]
-#[allow(dead_code)]
-mod support;
-
-use memory_forget_runtime_support::{configured_data_root, remember, start_subscribed_session};
-use memory_forget_support::BlockingFirstMemoryCommandExecutor;
-use support::{
-    ScriptedProvider, build_runtime_with_overrides, start_parent_session,
-    start_turn_with_approval_policy,
+use crate::memory_forget_runtime_support::{
+    configured_data_root, remember, start_subscribed_session,
 };
+use crate::memory_forget_support::{
+    BlockingFirstMemoryCommandExecutor, build_runtime_with_overrides,
+};
+use crate::support::{ScriptedProvider, start_parent_session, start_turn_with_approval_policy};
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
 /// Verifies: Native forget retires exact identities and returns ambiguous text matches without mutation.

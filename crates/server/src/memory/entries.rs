@@ -183,6 +183,15 @@ impl MemoryRuntime {
         } else {
             MemoryState::Active
         };
+        if allow_restore {
+            transaction.execute(
+                "UPDATE memory_revocations
+                 SET restored_at = ?1
+                 WHERE scope_type = ?2 AND scope_id = ?3 AND normalized_key = ?4
+                   AND (restored_at IS NULL OR restored_at < revoked_at)",
+                rusqlite::params![now, scope_name(request.scope), scope_id, normalized_key,],
+            )?;
+        }
         let entry_id = if let Some(existing_id) = existing_id {
             if preserve_existing {
                 transaction.execute(
@@ -205,15 +214,6 @@ impl MemoryRuntime {
                         now,
                         existing_id,
                     ],
-                )?;
-            }
-            if allow_restore {
-                transaction.execute(
-                    "UPDATE memory_revocations
-                     SET restored_at = ?1
-                     WHERE scope_type = ?2 AND scope_id = ?3 AND normalized_key = ?4
-                       AND (restored_at IS NULL OR restored_at < revoked_at)",
-                    rusqlite::params![now, scope_name(request.scope), scope_id, normalized_key,],
                 )?;
             }
             MemoryEntryId::from_string(existing_id.clone())

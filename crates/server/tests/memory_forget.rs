@@ -175,6 +175,77 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     assert!(!projection.contains("restored_at"));
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-9
+/// Verifies: explicit remember restores lineage even when only the durable tombstone remains.
+#[tokio::test]
+async fn explicit_remember_restores_a_tombstone_without_an_entry() {
+    let database_root = tempfile::tempdir().expect("temporary memory root");
+    let runtime = open_runtime(database_root.path());
+    let connection =
+        Connection::open(database_root.path().join("memory.sqlite3")).expect("memory database");
+    connection
+        .execute(
+            "INSERT INTO memory_revocations
+                (revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at)
+             VALUES (?1, 'user', 'user', ?2, ?3, NULL)",
+            rusqlite::params!["orphan-revocation", "i use spaces", "2026-09-10T00:00:00Z",],
+        )
+        .expect("write retained tombstone");
+
+    let restored = match runtime
+        .execute_command(MemoryCommand::Remember(remember_request("I use spaces")))
+        .await
+        .expect("explicit restore")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => panic!("expected remembered entry"),
+    };
+    let lifecycle: (String, Option<String>) = connection
+        .query_row(
+            "SELECT revoked_at, restored_at FROM memory_revocations
+             WHERE scope_type = 'user' AND scope_id = 'user' AND normalized_key = ?1",
+            ["i use spaces"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("load restoration lineage");
+    assert_eq!(
+        lifecycle,
+        (
+            "2026-09-10T00:00:00Z".to_string(),
+            Some(restored.updated_at.to_rfc3339()),
+        )
+    );
+
+    let listed = match runtime
+        .execute_command(MemoryCommand::List(
+            devo_server::memory::ListMemoryRequest {
+                scope: Some(MemoryScope::User),
+                state: Some(MemoryState::Restored),
+                workspace_root: PathBuf::new(),
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("list restored entry")
+    {
+        MemoryCommandResult::List(page) => page,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Status(_) => panic!("expected restored list"),
+    };
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![restored],
+            next_cursor: None,
+        }
+    );
+}
+
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
 /// Verifies: exact forget commits revocation before returning the retired entry.
 #[tokio::test]

@@ -4,26 +4,18 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use devo_protocol::native::rpc_memory::{MemoryEntry, MemoryScope};
 use devo_protocol::{ErrorResponse, ProtocolError, ProtocolErrorCode};
-use devo_server::MemoryCommandExecutor;
 use devo_server::memory::{MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime};
 use pretty_assertions::assert_eq;
 
-#[path = "support/memory_forget_runtime.rs"]
-#[allow(dead_code)]
-mod memory_forget_runtime_support;
-#[path = "support/memory_forget.rs"]
-#[allow(dead_code)]
-mod memory_forget_support;
-#[path = "support/subagent_lifecycle.rs"]
-#[allow(dead_code)]
-mod support;
-
-use memory_forget_runtime_support::{
+use crate::memory::command_execution::MemoryCommandExecutor;
+use crate::memory_forget_runtime_support::{
     configured_data_root, remember, run_turn, start_subscribed_session, tool_call_script,
     tool_result,
 };
-use memory_forget_support::BlockingFirstMemoryCommandExecutor;
-use support::{ScriptedProvider, build_runtime_with_overrides};
+use crate::memory_forget_support::{
+    BlockingFirstMemoryCommandExecutor, build_runtime_with_overrides,
+};
+use crate::support::ScriptedProvider;
 
 struct RejectPrepareForgetExecutor;
 

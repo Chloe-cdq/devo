@@ -1,19 +1,23 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use devo_server::MemoryCommandExecutor;
-use devo_server::memory::{MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime};
+use devo_provider::ModelProviderSDK;
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
-pub struct BlockingFirstMemoryCommandExecutor {
+use crate::memory::command_execution::MemoryCommandExecutor;
+use crate::memory::{MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime};
+use crate::{ServerRuntime, ServerRuntimeDependencies};
+
+pub(crate) struct BlockingFirstMemoryCommandExecutor {
     calls: AtomicUsize,
     mutation_started: Notify,
     release_mutation: Notify,
 }
 
-pub struct BlockingSecondMemoryListExecutor {
+pub(crate) struct BlockingSecondMemoryListExecutor {
     armed: AtomicBool,
     list_calls: AtomicUsize,
     snapshot_ready: Notify,
@@ -21,7 +25,7 @@ pub struct BlockingSecondMemoryListExecutor {
 }
 
 impl BlockingSecondMemoryListExecutor {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             armed: AtomicBool::new(false),
             list_calls: AtomicUsize::new(0),
@@ -30,25 +34,25 @@ impl BlockingSecondMemoryListExecutor {
         }
     }
 
-    pub fn block_next_search(&self) {
+    pub(crate) fn block_next_search(&self) {
         self.list_calls.store(0, Ordering::SeqCst);
         self.armed.store(true, Ordering::SeqCst);
     }
 
-    pub async fn wait_until_snapshot_ready(&self) -> Result<()> {
+    pub(crate) async fn wait_until_snapshot_ready(&self) -> Result<()> {
         timeout(Duration::from_secs(5), self.snapshot_ready.notified())
             .await
             .context("memory search snapshot did not become ready")?;
         Ok(())
     }
 
-    pub fn release(&self) {
+    pub(crate) fn release(&self) {
         self.release_snapshot.notify_one();
     }
 }
 
 impl BlockingFirstMemoryCommandExecutor {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             calls: AtomicUsize::new(0),
             mutation_started: Notify::new(),
@@ -56,14 +60,14 @@ impl BlockingFirstMemoryCommandExecutor {
         }
     }
 
-    pub async fn wait_until_started(&self) -> Result<()> {
+    pub(crate) async fn wait_until_started(&self) -> Result<()> {
         timeout(Duration::from_secs(5), self.mutation_started.notified())
             .await
             .context("first memory forget mutation did not start")?;
         Ok(())
     }
 
-    pub fn release(&self) {
+    pub(crate) fn release(&self) {
         self.release_mutation.notify_one();
     }
 }
@@ -104,4 +108,24 @@ impl MemoryCommandExecutor for BlockingSecondMemoryListExecutor {
         }
         Ok(result)
     }
+}
+
+pub(crate) fn build_runtime_with_overrides(
+    data_root: &std::path::Path,
+    provider: Arc<dyn ModelProviderSDK>,
+    workspace_root: Option<&std::path::Path>,
+    memory_command_executor: Option<Arc<dyn MemoryCommandExecutor>>,
+) -> Result<Arc<ServerRuntime>> {
+    crate::support::build_runtime_with_dependencies(
+        data_root,
+        provider,
+        workspace_root,
+        move |dependencies: ServerRuntimeDependencies| {
+            if let Some(executor) = memory_command_executor {
+                dependencies.with_test_memory_command_executor(executor)
+            } else {
+                dependencies
+            }
+        },
+    )
 }

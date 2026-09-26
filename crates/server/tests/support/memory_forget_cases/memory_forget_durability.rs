@@ -6,23 +6,15 @@ use devo_protocol::native::rpc_memory::{MemoryEntry, MemoryScope, MemoryState};
 use devo_protocol::{ErrorResponse, ProtocolError, ProtocolErrorCode};
 use pretty_assertions::assert_eq;
 
-#[path = "support/memory_forget_runtime.rs"]
-mod memory_forget_runtime_support;
-#[path = "support/memory_forget.rs"]
-#[allow(dead_code)]
-mod memory_forget_support;
-#[path = "support/subagent_lifecycle.rs"]
-#[allow(dead_code)]
-mod support;
-
-use memory_forget_runtime_support::{
+use crate::memory_forget_runtime_support::{
     configured_data_root, remember, run_turn, start_subscribed_session, tool_call_script,
     tool_result,
 };
-use memory_forget_support::BlockingSecondMemoryListExecutor;
-use support::{
-    ScriptedProvider, build_runtime_with_overrides, start_turn_with_approval_policy,
-    wait_for_parent_turn_completed,
+use crate::memory_forget_support::{
+    BlockingSecondMemoryListExecutor, build_runtime_with_overrides,
+};
+use crate::support::{
+    ScriptedProvider, start_turn_with_approval_policy, wait_for_parent_turn_completed,
 };
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev4 DD-12

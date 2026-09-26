@@ -37,7 +37,6 @@ use devo_protocol::WaitAgentResult;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
-use devo_server::MemoryCommandExecutor;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
 use pretty_assertions::assert_eq;
@@ -272,8 +271,11 @@ pub fn build_runtime(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
-    build_runtime_with_overrides(
-        data_root, provider, /*workspace_root*/ None, /*memory_command_executor*/ None,
+    build_runtime_with_dependencies(
+        data_root,
+        provider,
+        /*workspace_root*/ None,
+        std::convert::identity,
     )
 }
 
@@ -281,19 +283,14 @@ pub fn build_runtime_with_workspace_config(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
-    build_runtime_with_overrides(
-        data_root,
-        provider,
-        Some(data_root),
-        /*memory_command_executor*/ None,
-    )
+    build_runtime_with_dependencies(data_root, provider, Some(data_root), std::convert::identity)
 }
 
-pub fn build_runtime_with_overrides(
+pub fn build_runtime_with_dependencies(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
     workspace_root: Option<&std::path::Path>,
-    memory_command_executor: Option<Arc<dyn MemoryCommandExecutor>>,
+    configure: impl FnOnce(ServerRuntimeDependencies) -> ServerRuntimeDependencies,
 ) -> Result<Arc<ServerRuntime>> {
     let db_path = data_root.join("subagent_lifecycle.db");
     let db = Arc::new(devo_server::db::Database::open(db_path).expect("open test database"));
@@ -316,11 +313,7 @@ pub fn build_runtime_with_overrides(
                 .expect("load app config store"),
         )),
     );
-    let dependencies = if let Some(executor) = memory_command_executor {
-        dependencies.with_test_memory_command_executor(executor)
-    } else {
-        dependencies
-    };
+    let dependencies = configure(dependencies);
     Ok(ServerRuntime::new(data_root.to_path_buf(), dependencies))
 }
 
