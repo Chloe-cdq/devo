@@ -300,6 +300,44 @@ async fn ambiguous_search_cannot_delete_in_same_turn() -> Result<()> {
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev4 DD-12
+/// Verifies: a byte-bound exact-ID request remains Direct when search returns that ID in the same turn.
+#[tokio::test]
+async fn same_turn_search_for_exact_id_preserves_direct_authority() -> Result<()> {
+    let provider = Arc::new(MemoryAgentProvider::new([
+        ProviderAction::Search("tabs"),
+        ProviderAction::ForgetSearchCandidate(/*result_index*/ 0),
+        ProviderAction::Complete("exact memory forgotten"),
+    ]));
+    let mut harness = MemoryAgentHarness::new(Arc::clone(&provider)).await?;
+    let entry = harness.remember("I prefer tabs", MemoryScope::User).await?;
+
+    harness
+        .run_turn(&format!(
+            "Search for tabs, then forget memory entry {}",
+            entry.entry_id
+        ))
+        .await?;
+
+    let requests = provider.requests();
+    let result: MemoryForgetResult = serde_json::from_str(
+        tool_result(&requests[2], "memory-forget").context("memory forget result")?,
+    )?;
+    let forgotten = result.forgotten.clone().context("forgotten entry")?;
+    assert_eq!(
+        result,
+        MemoryForgetResult {
+            forgotten: Some(MemoryEntry {
+                state: MemoryState::Retired,
+                updated_at: forgotten.updated_at,
+                ..entry
+            }),
+            candidates: Vec::new(),
+        }
+    );
+    Ok(())
+}
+
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
 /// Verifies: a follow-up selection cannot retire an ID outside the server-recorded candidate set.
 #[tokio::test]

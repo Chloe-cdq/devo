@@ -447,11 +447,24 @@ mod tests {
     #[test]
     fn forget_tool_schema_exposes_only_stable_id_selector() {
         let schema = memory_forget_spec().input_schema;
-        let properties = schema.properties.expect("forget tool properties");
         assert_eq!(
-            properties.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["entry_id", "source_user_item_id"]
+            schema,
+            JsonSchema::object(
+                BTreeMap::from([
+                    (
+                        "entry_id".to_string(),
+                        JsonSchema::string(Some("Stable memory entry id to retire exactly.")),
+                    ),
+                    (
+                        "source_user_item_id".to_string(),
+                        JsonSchema::string(Some(
+                            "The item id of the current user message that explicitly requested forgetting.",
+                        )),
+                    ),
+                ]),
+                Some(vec!["entry_id".to_string()]),
+                Some(/*additional_properties*/ false),
+            )
         );
-        assert_eq!(schema.required, Some(vec!["entry_id".to_string()]));
     }
 }

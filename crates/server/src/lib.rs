@@ -36,6 +36,8 @@ pub use connection::*;
 pub use event::*;
 pub use execution::ServerRuntimeDependencies;
 pub use execution::empty_mcp_manager;
+#[doc(hidden)]
+pub use memory::command_execution::MemoryCommandExecutor;
 pub use projection::*;
 pub use protocol::*;
 pub use protocols::*;

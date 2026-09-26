@@ -37,9 +37,9 @@ use devo_protocol::WaitAgentResult;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
+use devo_server::MemoryCommandExecutor;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
-use devo_server::memory::MemoryCommandExecutor;
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -317,7 +317,7 @@ pub fn build_runtime_with_overrides(
         )),
     );
     let dependencies = if let Some(executor) = memory_command_executor {
-        dependencies.with_memory_command_executor(executor)
+        dependencies.with_test_memory_command_executor(executor)
     } else {
         dependencies
     };

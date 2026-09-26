@@ -2,9 +2,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use devo_server::memory::{
-    MemoryCommand, MemoryCommandExecutor, MemoryCommandResult, MemoryError, MemoryRuntime,
-};
+use devo_server::MemoryCommandExecutor;
+use devo_server::memory::{MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime};
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 

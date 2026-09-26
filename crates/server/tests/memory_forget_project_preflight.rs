@@ -4,9 +4,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use devo_protocol::native::rpc_memory::{MemoryEntry, MemoryScope};
 use devo_protocol::{ErrorResponse, ProtocolError, ProtocolErrorCode};
-use devo_server::memory::{
-    MemoryCommand, MemoryCommandExecutor, MemoryCommandResult, MemoryError, MemoryRuntime,
-};
+use devo_server::MemoryCommandExecutor;
+use devo_server::memory::{MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime};
 use pretty_assertions::assert_eq;
 
 #[path = "support/memory_forget_runtime.rs"]

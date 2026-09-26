@@ -2,11 +2,13 @@ use async_trait::async_trait;
 
 use super::{MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime};
 
-/// Executes one memory command on the supplied runtime.
+/// Internal orchestration seam exposed only for deterministic server
+/// integration tests that must pause a real memory command.
 ///
 /// Implementations must preserve command results and storage errors. They may
 /// delay execution for deterministic concurrency control, but must invoke the
 /// supplied [`MemoryRuntime`] exactly once when execution proceeds.
+#[doc(hidden)]
 #[async_trait]
 pub trait MemoryCommandExecutor: Send + Sync {
     async fn execute(

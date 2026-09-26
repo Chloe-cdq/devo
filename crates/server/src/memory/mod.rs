@@ -3,7 +3,7 @@
 //! This module deliberately exposes one high-level command surface. SQLite
 //! tables are an implementation detail and are never returned to callers.
 
-mod command_execution;
+pub(crate) mod command_execution;
 mod command_types;
 mod entries;
 mod equivalence;
@@ -43,8 +43,6 @@ use devo_protocol::native::session::MemorySetting;
 use rusqlite::Connection;
 use thiserror::Error;
 
-pub use command_execution::MemoryCommandExecutor;
-pub(crate) use command_execution::RuntimeMemoryCommandExecutor;
 #[cfg(test)]
 pub(crate) use command_types::MemoryInferredRememberRequest;
 pub use command_types::{

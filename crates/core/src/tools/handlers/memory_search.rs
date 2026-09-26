@@ -148,9 +148,13 @@ fn parse_memory_search_input(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     use super::{memory_search_spec, parse_memory_search_input};
+    use crate::json_schema::JsonSchema;
     use devo_protocol::native::rpc_memory::{MemoryKind, MemoryScope, MemoryState};
 
     /// Trace: L2-DES-MEM-001
@@ -183,15 +187,52 @@ mod tests {
         let spec = memory_search_spec();
 
         assert_eq!(spec.supports_parallel, false);
-        assert_eq!(spec.input_schema.required, Some(vec!["query".to_string()]));
         assert_eq!(
-            spec.input_schema
-                .properties
-                .expect("memory search properties")
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            vec!["kind", "query", "scope", "state"]
+            spec.input_schema,
+            JsonSchema::object(
+                BTreeMap::from([
+                    (
+                        "query".to_string(),
+                        JsonSchema::string(Some("Text to search for in memory summaries.")),
+                    ),
+                    (
+                        "scope".to_string(),
+                        JsonSchema {
+                            enum_values: Some(vec![json!("user"), json!("project")]),
+                            ..JsonSchema::string(Some("Optional memory scope."))
+                        },
+                    ),
+                    (
+                        "kind".to_string(),
+                        JsonSchema {
+                            enum_values: Some(vec![
+                                json!("preference"),
+                                json!("feedback"),
+                                json!("fact"),
+                                json!("reference"),
+                            ]),
+                            ..JsonSchema::string(Some("Optional semantic kind."))
+                        },
+                    ),
+                    (
+                        "state".to_string(),
+                        JsonSchema {
+                            enum_values: Some(vec![
+                                json!("active"),
+                                json!("stale"),
+                                json!("conflicted"),
+                                json!("retired"),
+                                json!("restored"),
+                            ]),
+                            ..JsonSchema::string(Some(
+                                "Optional lifecycle state; active and restored entries by default.",
+                            ))
+                        },
+                    ),
+                ]),
+                Some(vec!["query".to_string()]),
+                Some(/*additional_properties*/ false),
+            )
         );
     }
 }

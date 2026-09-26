@@ -157,7 +157,17 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         })
         .await
         .expect("prepare restored memory recall");
-    assert_eq!(prepared.user_entries, vec![restored.clone()]);
+    let project_scope_id = prepared
+        .project_scope_id
+        .clone()
+        .expect("prepared project scope");
+    assert_eq!(
+        prepared,
+        devo_server::memory::PreparedMemory {
+            project_scope_id: Some(project_scope_id),
+            user_entries: vec![restored.clone()],
+        }
+    );
     let projection = fs::read_to_string(database_root.path().join("user").join("MEMORY.md"))
         .expect("read restored user projection");
     assert!(projection.contains("state: restored"));

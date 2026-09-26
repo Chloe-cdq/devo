@@ -90,7 +90,7 @@ fn pending_selection_is_turn_bound_candidate_bound_and_consumed_once() {
         authorizations
             .authorize_agent(
                 &search,
-                &format!("Confirm forget memory entry {selected_id}"),
+                "Remove the selected memory",
                 &selected_id,
                 MemoryScope::User,
             )
@@ -203,6 +203,32 @@ fn same_turn_search_does_not_shadow_direct_exact_id_authority() {
     drop(authorized);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-12
+/// Verifies: a same-turn search result cannot shadow Direct authority for that exact byte-bound ID.
+#[test]
+fn same_turn_search_for_direct_id_does_not_shadow_exact_id_authority() {
+    let authorizations = MemoryForgetCoordinator::default();
+    let invocation = invocation();
+    let direct_id = MemoryEntryId::from("mem_direct");
+    authorizations
+        .record_search(
+            &invocation,
+            &[candidate(direct_id.clone(), MemoryScope::User)],
+        )
+        .expect("record pending search");
+
+    let authorized = authorizations
+        .authorize_agent(
+            &invocation,
+            &format!("Forget memory entry {direct_id}"),
+            &direct_id,
+            MemoryScope::User,
+        )
+        .expect("byte-bound direct command takes precedence over same-turn pending state");
+
+    drop(authorized);
+}
+
 /// Trace: L2-DES-MEM-001 DD-12
 /// Verifies: a direct mutation lease blocks a pending confirmation from another session.
 #[test]
@@ -235,7 +261,7 @@ fn direct_inflight_blocks_pending_confirmation() {
     let blocked = authorizations
         .authorize_agent(
             &confirmation,
-            &format!("Confirm forget memory entry {selected_id}"),
+            "Remove the selected memory",
             &selected_id,
             MemoryScope::User,
         )
@@ -249,7 +275,7 @@ fn direct_inflight_blocks_pending_confirmation() {
     authorizations
         .authorize_agent(
             &confirmation,
-            &format!("Confirm forget memory entry {selected_id}"),
+            "Remove the selected memory",
             &selected_id,
             MemoryScope::User,
         )
@@ -277,7 +303,7 @@ fn inflight_selection_blocks_direct_exact_id_authority() {
     let _reservation = authorizations
         .authorize_agent(
             &selection,
-            &format!("Confirm forget memory entry {selected_id}"),
+            "Remove the selected memory",
             &selected_id,
             MemoryScope::User,
         )
@@ -330,7 +356,7 @@ fn successful_forget_removes_entry_from_all_pending_selections() {
     let reservation = authorizations
         .authorize_agent(
             &confirmation,
-            &format!("Confirm forget memory entry {deleted_id}"),
+            "Remove the selected memory",
             &deleted_id,
             MemoryScope::User,
         )
@@ -422,7 +448,7 @@ fn abandoned_inflight_selection_can_be_retried() {
     let reservation = authorizations
         .authorize_agent(
             &selection,
-            &format!("Confirm forget memory entry {entry_id}"),
+            "Remove the selected memory",
             &entry_id,
             MemoryScope::User,
         )
@@ -431,7 +457,7 @@ fn abandoned_inflight_selection_can_be_retried() {
         authorizations
             .authorize_agent(
                 &selection,
-                &format!("Confirm forget memory entry {entry_id}"),
+                "Remove the selected memory",
                 &entry_id,
                 MemoryScope::User,
             )
@@ -443,7 +469,7 @@ fn abandoned_inflight_selection_can_be_retried() {
     authorizations
         .authorize_agent(
             &selection,
-            &format!("Confirm forget memory entry {entry_id}"),
+            "Remove the selected memory",
             &entry_id,
             MemoryScope::User,
         )
@@ -476,7 +502,7 @@ fn active_confirmation_protects_its_selection_from_search_and_expiry() {
     let reservation = authorizations
         .authorize_agent_at(
             &confirmation,
-            &format!("Confirm forget memory entry {selected_id}"),
+            "Remove the selected memory",
             &selected_id,
             MemoryScope::User,
             started_at,

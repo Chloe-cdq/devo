@@ -240,7 +240,9 @@ impl MemoryForgetCoordinator {
         Self::prune_expired(&mut state, now);
         let selection = state.pending_by_session.get(&invocation.session_id);
         let direct = user_text.contains(entry_id.as_str());
-        let kind = if let Some(selection) = selection {
+        let kind = if direct {
+            ActiveForgetKind::AgentDirect
+        } else if let Some(selection) = selection {
             if let Some(candidate) = selection
                 .candidates
                 .iter()
@@ -262,15 +264,11 @@ impl MemoryForgetCoordinator {
                 ActiveForgetKind::AgentConfirmed {
                     selection_id: selection.selection_id,
                 }
-            } else if direct {
-                ActiveForgetKind::AgentDirect
             } else {
                 return Err(ToolCallError::InvalidInput(
                     "memory_forget target is not one of the pending candidates".to_string(),
                 ));
             }
-        } else if direct {
-            ActiveForgetKind::AgentDirect
         } else {
             return Err(ToolCallError::InvalidInput(
                 "memory_forget requires a current exact stable ID or a pending selection"
