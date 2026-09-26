@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 #[cfg(test)]
 use super::MemoryInferredRememberRequest;
-use super::equivalence;
+use super::entry_identity::MemoryEntryIdentity;
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
 use super::stored_values::{parse_kind, parse_origin, parse_scope, parse_state, parse_timestamp};
@@ -35,8 +35,14 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let mut statement = connection.prepare(
-            "SELECT DISTINCT scope_type, scope_id
-             FROM memory_entries
+            "SELECT scope_type, scope_id
+             FROM (
+                 SELECT scope_type, scope_id FROM memory_entries
+                 UNION
+                 SELECT scope_type, scope_id FROM memory_revocations
+                 UNION
+                 SELECT scope_type, scope_id FROM memory_scope_state
+             ) AS stored_scopes
              ORDER BY scope_type ASC, scope_id ASC",
         )?;
         let scopes = statement
@@ -89,19 +95,11 @@ impl MemoryRuntime {
         if contains_secret(&body) {
             return Err(MemoryError::SecretContentRejected);
         }
-        let canonical_normalized_key = equivalence::explicit_memory_key(&body);
-        let legacy_normalized_key = body
-            .chars()
-            .filter(|character| character.is_alphanumeric() || character.is_whitespace())
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_ascii_lowercase();
+        let identity = MemoryEntryIdentity::from_body(&body);
         let normalized_key = match &mode {
-            MemoryWriteMode::Explicit => canonical_normalized_key.clone(),
+            MemoryWriteMode::Explicit => identity.canonical_key.clone(),
             #[cfg(test)]
-            MemoryWriteMode::Inferred { .. } => legacy_normalized_key.clone(),
+            MemoryWriteMode::Inferred { .. } => identity.legacy_inferred_key.clone(),
         };
         let kind = request
             .kind
@@ -134,19 +132,9 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let existing: Option<(String, String)> = transaction
-            .query_row(
-                "SELECT entry_id, origin
-                 FROM memory_entries
-                 WHERE scope_type = ?1 AND scope_id = ?2 AND normalized_key = ?3",
-                rusqlite::params![scope_name(request.scope), scope_id, normalized_key],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let existing_origin = existing
-            .as_ref()
-            .map(|(_, origin)| parse_origin(origin))
-            .transpose()?;
+        let existing =
+            identity.resolve_and_merge_existing(&transaction, request.scope, &scope_id)?;
+        let existing_origin = existing.as_ref().map(|entry| entry.origin);
         let mut revocation_statement = transaction.prepare(
             "SELECT revoked_at, restored_at
              FROM memory_revocations
@@ -158,8 +146,8 @@ impl MemoryRuntime {
                 rusqlite::params![
                     scope_name(request.scope),
                     scope_id,
-                    canonical_normalized_key,
-                    legacy_normalized_key,
+                    identity.canonical_key,
+                    identity.legacy_inferred_key,
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )?
@@ -197,7 +185,7 @@ impl MemoryRuntime {
         }
         let preserve_existing =
             source_observed_at.is_some() && existing_origin == Some(MemoryOrigin::ExplicitUser);
-        let existing_id = existing.as_ref().map(|(entry_id, _)| entry_id);
+        let existing_id = existing.as_ref().map(|entry| &entry.entry_id);
         let state = if revocation.is_some() {
             MemoryState::Restored
         } else {
@@ -214,8 +202,8 @@ impl MemoryRuntime {
                     now,
                     scope_name(request.scope),
                     scope_id,
-                    canonical_normalized_key,
-                    legacy_normalized_key,
+                    identity.canonical_key,
+                    identity.legacy_inferred_key,
                 ],
             )?;
         }
@@ -230,11 +218,12 @@ impl MemoryRuntime {
             } else {
                 transaction.execute(
                     "UPDATE memory_entries
-                     SET kind = ?1, body = ?2, origin = ?3, state = ?4,
-                         updated_at = ?5, replacement_entry_id = NULL
-                     WHERE entry_id = ?6",
+                     SET kind = ?1, normalized_key = ?2, body = ?3, origin = ?4, state = ?5,
+                         updated_at = ?6, replacement_entry_id = NULL
+                     WHERE entry_id = ?7",
                     rusqlite::params![
                         kind_name(kind),
+                        normalized_key,
                         body,
                         origin_name(origin),
                         state_name(state),

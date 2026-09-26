@@ -6,6 +6,7 @@
 pub(crate) mod command_execution;
 mod command_types;
 mod entries;
+mod entry_identity;
 mod equivalence;
 mod forget;
 mod identity;

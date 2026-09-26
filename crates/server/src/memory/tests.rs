@@ -136,6 +136,71 @@ async fn structured_inferred_evidence_cannot_bypass_revocation_identity() {
     assert_eq!(replay, None);
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8
+/// Verifies: legacy inferred normalization reuses an active structured explicit identity.
+#[tokio::test]
+async fn structured_inferred_evidence_preserves_active_explicit_identity() {
+    let database_root = tempfile::tempdir().expect("temporary memory root");
+    let runtime = open_runtime(database_root.path());
+    let remembered = match runtime
+        .execute_command(MemoryCommand::Remember(remember_request("Use API_KEY")))
+        .await
+        .expect("remember structured identity")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+    };
+
+    let inferred = runtime
+        .record_inferred(inferred_request(
+            "Use API_KEY",
+            remembered.updated_at + chrono::Duration::seconds(1),
+        ))
+        .expect("record structured inferred evidence")
+        .expect("evidence-preserving inference");
+    let expected = MemoryEntry {
+        updated_at: inferred.updated_at,
+        provenance: vec![
+            remembered.provenance[0].clone(),
+            MemoryProvenance {
+                source_session_id: Some(
+                    SessionId::from(deterministic_uuid("session-2")).to_string(),
+                ),
+                source_turn_id: Some(TurnId::from(deterministic_uuid("turn-2")).to_string()),
+                source_user_item_id: None,
+            },
+        ],
+        ..remembered
+    };
+    assert_eq!(inferred, expected);
+
+    let listed = match runtime
+        .execute_command(MemoryCommand::List(super::ListMemoryRequest {
+            scope: Some(MemoryScope::User),
+            workspace_root: PathBuf::new(),
+            ..Default::default()
+        }))
+        .await
+        .expect("list structured identity")
+    {
+        MemoryCommandResult::List(page) => page,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Status(_) => panic!("expected memory list"),
+    };
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![inferred],
+            next_cursor: None,
+        }
+    );
+}
+
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8, DD-9
 /// Verifies: an old inferred observation cannot overwrite an explicitly restored identity.
 #[tokio::test]
