@@ -15,12 +15,13 @@ impl ServerRuntime {
                 "failed to clear pending memory forget authorization"
             );
         }
-        if let Some(turn_id) = self
-            .active_goal_continuation_turns
-            .lock()
-            .await
-            .remove(&session_id)
-        {
+        let continuation_turn_id = {
+            self.active_goal_continuation_turns
+                .lock()
+                .await
+                .remove(&session_id)
+        };
+        if let Some(turn_id) = continuation_turn_id {
             self.goal_continuation_turn_goals
                 .lock()
                 .await

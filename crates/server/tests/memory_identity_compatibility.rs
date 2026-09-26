@@ -287,10 +287,123 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
     );
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9, DD-12
-/// Verifies: exact forget retires one canonical identity after merging its legacy inferred alias.
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8
+/// Verifies: a lossy legacy-key collision cannot merge incompatible structured claims.
 #[tokio::test]
-async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
+async fn explicit_remember_preserves_incompatible_legacy_key_collision() {
+    let data_root = TempDir::new().expect("memory data root");
+    let memory_root = data_root.path().join("memory");
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("create memory runtime");
+    drop(runtime);
+
+    let database_path = memory_root.join("memory.sqlite3");
+    let connection = Connection::open(&database_path).expect("open memory database");
+    connection
+        .execute_batch(
+            "INSERT INTO memory_entries (
+                 entry_id, scope_type, scope_id, kind, normalized_key, body,
+                 origin, state, created_at, updated_at
+             ) VALUES (
+                 'legacy-entry', 'user', 'user', 'preference', 'use foo1',
+                 'Use foo1', 'inferred_session', 'active',
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+             );
+             INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
+                 SELECT entry_id, normalized_key, body FROM memory_entries;",
+        )
+        .expect("insert incompatible legacy claim");
+    drop(connection);
+
+    let runtime =
+        MemoryRuntime::open(memory_root, enabled_config()).expect("reopen memory runtime");
+    let remembered = match runtime
+        .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
+            text: "Use FOO=1".to_owned(),
+            scope: MemoryScope::User,
+            kind: Some(MemoryKind::Preference),
+            source: memory_test_support::test_source(
+                Some("user-item-1"),
+                "session-1",
+                Some("turn-1"),
+                PathBuf::new(),
+            ),
+        }))
+        .await
+        .expect("remember structured claim")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
+    };
+    let expected_remembered = MemoryEntry {
+        entry_id: remembered.entry_id.clone(),
+        scope: MemoryScope::User,
+        scope_id: "user".to_owned(),
+        kind: MemoryKind::Preference,
+        normalized_key: "Use FOO=1".to_owned(),
+        body: "Use FOO=1".to_owned(),
+        origin: MemoryOrigin::ExplicitUser,
+        state: MemoryState::Active,
+        created_at: remembered.created_at,
+        updated_at: remembered.updated_at,
+        replacement_entry_id: None,
+        provenance: remembered.provenance.clone(),
+    };
+    assert_eq!(remembered, expected_remembered);
+
+    let listed = match runtime
+        .execute_command(MemoryCommand::List(ListMemoryRequest {
+            scope: Some(MemoryScope::User),
+            workspace_root: PathBuf::new(),
+            ..ListMemoryRequest::default()
+        }))
+        .await
+        .expect("list distinct identities")
+    {
+        MemoryCommandResult::List(page) => page,
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Search(_) => panic!("expected memory list"),
+    };
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![
+                expected_remembered,
+                MemoryEntry {
+                    entry_id: MemoryEntryId::from_string("legacy-entry".to_owned()),
+                    scope: MemoryScope::User,
+                    scope_id: "user".to_owned(),
+                    kind: MemoryKind::Preference,
+                    normalized_key: "use foo1".to_owned(),
+                    body: "Use foo1".to_owned(),
+                    origin: MemoryOrigin::InferredSession,
+                    state: MemoryState::Active,
+                    created_at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                        .expect("created timestamp")
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                        .expect("updated timestamp")
+                        .with_timezone(&Utc),
+                    replacement_entry_id: None,
+                    provenance: Vec::new(),
+                },
+            ],
+            next_cursor: None,
+        }
+    );
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9, DD-12
+/// Verifies: exact forget retires only the requested stable ID without merging a legacy neighbor.
+#[tokio::test]
+async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
     let data_root = TempDir::new().expect("memory data root");
     let memory_root = data_root.path().join("memory");
     let runtime =
@@ -336,7 +449,7 @@ async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
     let prepared = match runtime
         .execute_command(MemoryCommand::PrepareForget(MemoryForgetRequest {
             selector: MemoryForgetSelector::EntryId(MemoryEntryId::from_string(
-                "canonical-entry".to_owned(),
+                "legacy-entry".to_owned(),
             )),
             scope: MemoryScope::User,
             source: MemoryForgetSource {
@@ -362,7 +475,7 @@ async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
     let forgotten = match runtime
         .execute_command(MemoryCommand::Forget(prepared))
         .await
-        .expect("forget canonical identity")
+        .expect("forget exact legacy identity")
     {
         MemoryCommandResult::Forget(result) => result.forgotten.expect("forgotten entry"),
         MemoryCommandResult::Status(_)
@@ -371,7 +484,29 @@ async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
-    let expected = MemoryEntry {
+    let expected_forgotten = MemoryEntry {
+        entry_id: MemoryEntryId::from_string("legacy-entry".to_owned()),
+        scope: MemoryScope::User,
+        scope_id: "user".to_owned(),
+        kind: MemoryKind::Preference,
+        normalized_key: "use apikey".to_owned(),
+        body: "Use API_KEY".to_owned(),
+        origin: MemoryOrigin::InferredSession,
+        state: MemoryState::Retired,
+        created_at: DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z")
+            .expect("created timestamp")
+            .with_timezone(&Utc),
+        updated_at: forgotten.updated_at,
+        replacement_entry_id: None,
+        provenance: vec![MemoryProvenance {
+            source_session_id: Some("legacy-session".to_owned()),
+            source_turn_id: None,
+            source_user_item_id: None,
+        }],
+    };
+    assert_eq!(forgotten, expected_forgotten);
+
+    let expected_canonical = MemoryEntry {
         entry_id: MemoryEntryId::from_string("canonical-entry".to_owned()),
         scope: MemoryScope::User,
         scope_id: "user".to_owned(),
@@ -379,26 +514,20 @@ async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
         normalized_key: "Use API_KEY".to_owned(),
         body: "Use API_KEY".to_owned(),
         origin: MemoryOrigin::ExplicitUser,
-        state: MemoryState::Retired,
+        state: MemoryState::Active,
         created_at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
             .expect("created timestamp")
             .with_timezone(&Utc),
-        updated_at: forgotten.updated_at,
+        updated_at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .expect("updated timestamp")
+            .with_timezone(&Utc),
         replacement_entry_id: None,
-        provenance: vec![
-            MemoryProvenance {
-                source_session_id: Some("canonical-session".to_owned()),
-                source_turn_id: None,
-                source_user_item_id: None,
-            },
-            MemoryProvenance {
-                source_session_id: Some("legacy-session".to_owned()),
-                source_turn_id: None,
-                source_user_item_id: None,
-            },
-        ],
+        provenance: vec![MemoryProvenance {
+            source_session_id: Some("canonical-session".to_owned()),
+            source_turn_id: None,
+            source_user_item_id: None,
+        }],
     };
-    assert_eq!(forgotten, expected);
 
     let listed = match runtime
         .execute_command(MemoryCommand::List(ListMemoryRequest {
@@ -419,7 +548,7 @@ async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
     assert_eq!(
         listed,
         Page {
-            data: vec![expected],
+            data: vec![expected_forgotten, expected_canonical],
             next_cursor: None,
         }
     );
@@ -429,7 +558,7 @@ async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
             row.get::<_, i64>(0)
         })
         .expect("count searchable entries");
-    assert_eq!(fts_count, 0);
+    assert_eq!(fts_count, 1);
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-4, DD-9

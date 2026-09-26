@@ -133,7 +133,7 @@ impl MemoryRuntime {
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
         let existing =
-            identity.resolve_and_merge_existing(&transaction, request.scope, &scope_id)?;
+            identity.resolve_and_merge_existing(&transaction, request.scope, &scope_id, &body)?;
         let existing_origin = existing.as_ref().map(|entry| entry.origin);
         let mut revocation_statement = transaction.prepare(
             "SELECT revoked_at, restored_at

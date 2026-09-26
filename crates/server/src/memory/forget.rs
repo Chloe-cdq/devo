@@ -1,6 +1,5 @@
 use super::command_types::{PreparedMemoryForgetScope, PreparedMemoryForgetTarget};
 use super::entries::{load_entry, normalize_body};
-use super::entry_identity::MemoryEntryIdentity;
 use super::{
     MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryForgetSource, MemoryRuntime,
     PreparedMemoryForgetRequest, ResolvedProjectMemorySession, scope_name,
@@ -9,6 +8,7 @@ use super::{
 use chrono::Utc;
 use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::rpc_memory::{MemoryForgetResult, MemoryScope, MemoryState};
+use rusqlite::OptionalExtension;
 
 impl MemoryRuntime {
     pub(super) fn prepare_forget(
@@ -146,21 +146,24 @@ impl MemoryRuntime {
         let transaction = connection.unchecked_transaction()?;
         let (entry_id, normalized_key, scope_id) = match request.target {
             PreparedMemoryForgetTarget::Exact(prepared_entry_id) => {
-                let existing = MemoryEntryIdentity::resolve_exact_and_merge(
-                    &transaction,
-                    prepared_entry_id.as_str(),
-                    scope,
-                    &prepared_scope_id,
-                )?
-                .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?;
-                let entry = load_entry(
-                    &transaction,
-                    &MemoryEntryId::from_string(existing.entry_id.clone()),
-                )?
-                .ok_or_else(|| {
-                    MemoryError::InvalidStoredValue("forget target is missing".into())
-                })?;
-                (existing.entry_id, entry.normalized_key, prepared_scope_id)
+                let normalized_key = transaction
+                    .query_row(
+                        "SELECT normalized_key FROM memory_entries
+                         WHERE entry_id = ?1 AND scope_type = ?2 AND scope_id = ?3",
+                        rusqlite::params![
+                            prepared_entry_id.as_str(),
+                            scope_name(scope),
+                            prepared_scope_id,
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?;
+                (
+                    prepared_entry_id.to_string(),
+                    normalized_key,
+                    prepared_scope_id,
+                )
             }
             PreparedMemoryForgetTarget::Text(text) => {
                 let scope_id = prepared_scope_id.clone();

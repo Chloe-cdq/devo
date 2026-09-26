@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::{
@@ -16,6 +17,7 @@ use devo_provider::ModelProviderSDK;
 use devo_server::ServerRuntime;
 use futures::Stream;
 use pretty_assertions::assert_eq;
+use rusqlite::Connection;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
@@ -493,11 +495,32 @@ async fn exact_stable_id_command_can_delete_directly() -> Result<()> {
         ProviderAction::Complete("exact memory forgotten"),
     ]));
     let mut harness = MemoryAgentHarness::new(Arc::clone(&provider)).await?;
-    let entry = harness.remember("I prefer tabs", MemoryScope::User).await?;
-    provider.set_target(entry.entry_id.clone());
+    let canonical = harness.remember("Use API_KEY", MemoryScope::User).await?;
+    let legacy_id = MemoryEntryId::from_string("legacy-entry".to_owned());
+    let connection = Connection::open(
+        harness
+            ._data_root
+            .path()
+            .join("memory")
+            .join("memory.sqlite3"),
+    )?;
+    connection.execute_batch(
+        "INSERT INTO memory_entries (
+             entry_id, scope_type, scope_id, kind, normalized_key, body,
+             origin, state, created_at, updated_at
+         ) VALUES (
+             'legacy-entry', 'user', 'user', 'preference', 'use apikey',
+             'Use API_KEY', 'inferred_session', 'active',
+             '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z'
+         );
+         INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
+             VALUES ('legacy-entry', 'use apikey', 'Use API_KEY');",
+    )?;
+    drop(connection);
+    provider.set_target(legacy_id.clone());
 
     harness
-        .run_turn(&format!("Forget memory entry {}", entry.entry_id))
+        .run_turn(&format!("Forget memory entry {legacy_id}"))
         .await?;
 
     let requests = provider.requests();
@@ -509,11 +532,29 @@ async fn exact_stable_id_command_can_delete_directly() -> Result<()> {
         result,
         MemoryForgetResult {
             forgotten: Some(MemoryEntry {
+                entry_id: legacy_id,
+                scope: MemoryScope::User,
+                scope_id: "user".to_owned(),
+                kind: devo_protocol::native::rpc_memory::MemoryKind::Preference,
+                normalized_key: "use apikey".to_owned(),
+                body: "Use API_KEY".to_owned(),
+                origin: devo_protocol::native::rpc_memory::MemoryOrigin::InferredSession,
                 state: MemoryState::Retired,
+                created_at: DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z")
+                    .expect("created timestamp")
+                    .with_timezone(&Utc),
                 updated_at: forgotten.updated_at,
-                ..entry
+                replacement_entry_id: None,
+                provenance: Vec::new(),
             }),
             candidates: Vec::new(),
+        }
+    );
+    assert_eq!(
+        harness.list(MemoryScope::User, MemoryState::Active).await?,
+        Page {
+            data: vec![canonical],
+            next_cursor: None,
         }
     );
     Ok(())

@@ -1,5 +1,5 @@
 use devo_protocol::native::rpc_memory::{MemoryOrigin, MemoryScope};
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::Transaction;
 
 use super::equivalence;
 use super::stored_values::parse_origin;
@@ -35,14 +35,19 @@ impl MemoryEntryIdentity {
         transaction: &Transaction<'_>,
         scope: MemoryScope,
         scope_id: &str,
+        body: &str,
     ) -> Result<Option<ExistingMemoryEntry>, MemoryError> {
         let mut statement = transaction.prepare(
-            "SELECT entry_id, origin, normalized_key
+            "SELECT entry_id, origin
              FROM memory_entries
              WHERE scope_type = ?1 AND scope_id = ?2
                AND (
                    normalized_key = ?3
-                   OR (normalized_key = ?4 AND origin = 'inferred_session')
+                   OR (
+                       normalized_key = ?4
+                       AND origin = 'inferred_session'
+                       AND body = ?5
+                   )
                )
              ORDER BY CASE WHEN normalized_key = ?3 THEN 0 ELSE 1 END, entry_id ASC",
         )?;
@@ -53,6 +58,7 @@ impl MemoryEntryIdentity {
                     scope_id,
                     self.canonical_key,
                     self.legacy_inferred_key,
+                    body,
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?
@@ -61,7 +67,6 @@ impl MemoryEntryIdentity {
         let Some((keeper_id, keeper_origin)) = matches.first() else {
             return Ok(None);
         };
-
         let redirects = merge_entry_records(
             transaction,
             keeper_id,
@@ -76,27 +81,6 @@ impl MemoryEntryIdentity {
             entry_id: keeper_id.clone(),
             origin: parse_origin(keeper_origin)?,
         }))
-    }
-
-    pub(super) fn resolve_exact_and_merge(
-        transaction: &Transaction<'_>,
-        entry_id: &str,
-        scope: MemoryScope,
-        scope_id: &str,
-    ) -> Result<Option<ExistingMemoryEntry>, MemoryError> {
-        let body = transaction
-            .query_row(
-                "SELECT body FROM memory_entries
-                 WHERE entry_id = ?1 AND scope_type = ?2 AND scope_id = ?3",
-                rusqlite::params![entry_id, scope_name(scope), scope_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        body.map(|body| {
-            Self::from_body(&body).resolve_and_merge_existing(transaction, scope, scope_id)
-        })
-        .transpose()
-        .map(Option::flatten)
     }
 }
 
