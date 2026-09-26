@@ -5,19 +5,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use devo_protocol::{
-    ModelRequest, ModelResponse, RequestContent, ResponseContent, ResponseMetadata, StopReason,
-    StreamEvent, Usage,
-};
+use devo_protocol::{ModelRequest, ModelResponse, RequestContent, StreamEvent};
 use devo_provider::ModelProviderSDK;
 use futures::Stream;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
+#[path = "support/model_events.rs"]
+mod model_events;
 #[path = "support/subagent_lifecycle.rs"]
 #[allow(dead_code)]
 mod support;
 
+use model_events::{text_events, tool_call_events};
 use support::{
     build_runtime, initialize_connection, start_parent_session, start_turn,
     start_turn_with_approval_policy, wait_for_parent_turn_completed,
@@ -239,48 +239,6 @@ fn extract_background_task_id(request: &ModelRequest) -> Result<String> {
         .find_map(|line| line.strip_prefix(marker))
         .map(str::to_string)
         .context("background task id")
-}
-
-fn tool_call_events(id: &str, name: &str, input: serde_json::Value) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::ToolCallStart {
-            index: 0,
-            id: id.to_string(),
-            name: name.to_string(),
-            input: input.clone(),
-        },
-        StreamEvent::MessageDone {
-            response: ModelResponse {
-                id: format!("response-{id}"),
-                content: vec![ResponseContent::ToolUse {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    input,
-                }],
-                stop_reason: Some(StopReason::ToolUse),
-                usage: Usage::default(),
-                metadata: ResponseMetadata::default(),
-            },
-        },
-    ]
-}
-
-fn text_events(text: &str) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::TextDelta {
-            index: 0,
-            text: text.to_string(),
-        },
-        StreamEvent::MessageDone {
-            response: ModelResponse {
-                id: "response-final".to_string(),
-                content: vec![ResponseContent::Text(text.to_string())],
-                stop_reason: Some(StopReason::EndTurn),
-                usage: Usage::default(),
-                metadata: ResponseMetadata::default(),
-            },
-        },
-    ]
 }
 
 #[tokio::test]

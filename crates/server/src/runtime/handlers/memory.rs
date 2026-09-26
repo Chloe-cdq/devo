@@ -37,6 +37,7 @@ impl ServerRuntime {
             Some(memory) => match memory.execute_command(MemoryCommand::Status).await {
                 Ok(MemoryCommandResult::Status(status)) => status,
                 Ok(MemoryCommandResult::Remember(_))
+                | Ok(MemoryCommandResult::PreparedForget(_))
                 | Ok(MemoryCommandResult::Forget(_))
                 | Ok(MemoryCommandResult::List(_)) => {
                     tracing::error!("memory status command returned an unexpected result");
@@ -180,6 +181,7 @@ impl ServerRuntime {
             })
             .expect("serialize memory/remember response"),
             Ok(MemoryCommandResult::Status(_))
+            | Ok(MemoryCommandResult::PreparedForget(_))
             | Ok(MemoryCommandResult::Forget(_))
             | Ok(MemoryCommandResult::List(_)) => self.error_response(
                 request_id,
@@ -265,6 +267,7 @@ impl ServerRuntime {
             .expect("serialize memory/list response"),
             Ok(MemoryCommandResult::Status(_))
             | Ok(MemoryCommandResult::Remember(_))
+            | Ok(MemoryCommandResult::PreparedForget(_))
             | Ok(MemoryCommandResult::Forget(_)) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,

@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use devo_protocol::{
-    ModelRequest, ModelResponse, RequestContent, ResponseContent, ResponseMetadata, SessionId,
-    StopReason, StreamEvent, Usage,
-};
+use devo_protocol::{ModelRequest, RequestContent, SessionId};
 use devo_server::ServerRuntime;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -13,6 +10,12 @@ use crate::support::{
     StreamScript, initialize_connection, start_parent_session, start_turn_with_approval_policy,
     wait_for_parent_turn_completed,
 };
+
+#[path = "model_events.rs"]
+#[allow(dead_code)]
+mod model_events;
+
+use model_events::tool_call_events;
 
 pub fn configured_data_root() -> Result<TempDir> {
     let data_root = TempDir::new()?;
@@ -89,27 +92,7 @@ pub async fn remember(
 }
 
 pub fn tool_call_script(id: &str, name: &str, input: serde_json::Value) -> StreamScript {
-    StreamScript::Events(vec![
-        StreamEvent::ToolCallStart {
-            index: 0,
-            id: id.to_string(),
-            name: name.to_string(),
-            input: input.clone(),
-        },
-        StreamEvent::MessageDone {
-            response: ModelResponse {
-                id: format!("response-{id}"),
-                content: vec![ResponseContent::ToolUse {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    input,
-                }],
-                stop_reason: Some(StopReason::ToolUse),
-                usage: Usage::default(),
-                metadata: ResponseMetadata::default(),
-            },
-        },
-    ])
+    StreamScript::Events(tool_call_events(id, name, input))
 }
 
 pub fn tool_result<'a>(request: &'a ModelRequest, tool_use_id: &str) -> Option<&'a str> {

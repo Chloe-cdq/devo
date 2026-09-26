@@ -13,7 +13,7 @@ use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
 use pretty_assertions::assert_eq;
 
-use super::runtime_test_support::{forget_request, open_runtime, remember_request};
+use super::runtime_test_support::{forget_request, open_runtime, prepare_forget, remember_request};
 use super::test_support::{deterministic_uuid, test_source};
 use super::{
     MemoryCommand, MemoryCommandResult, MemoryForgetSelector, MemoryInferredRememberRequest,
@@ -48,18 +48,24 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone())),
+    )
+    .await
+    .expect("prepare forget entry");
     let forgotten = match runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
-        )))
+        .execute_command(MemoryCommand::Forget(prepared))
         .await
         .expect("forget entry")
     {
         MemoryCommandResult::Forget(result) => result.forgotten.expect("forgotten entry"),
         MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
@@ -82,6 +88,7 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected retired list"),
     };
@@ -107,13 +114,18 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone())),
+    )
+    .await
+    .expect("prepare forget entry");
     runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
-        )))
+        .execute_command(MemoryCommand::Forget(prepared))
         .await
         .expect("forget entry");
     let restored = match runtime
@@ -123,6 +135,7 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected restored entry"),
     };
@@ -163,6 +176,7 @@ async fn inferred_memory_does_not_replace_explicit_content() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
@@ -201,6 +215,7 @@ async fn inferred_memory_does_not_replace_explicit_content() {
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected memory list"),
     };

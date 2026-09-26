@@ -1,8 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
 
-use devo_server::memory::MemorySourceContext;
-
 #[path = "../src/memory/runtime_test_support.rs"]
 mod runtime_support;
 #[path = "../src/memory/test_support.rs"]
@@ -13,11 +11,13 @@ use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryForgetResult, MemoryScope, MemoryState,
 };
 use devo_server::memory::{
-    MemoryCommand, MemoryCommandResult, MemoryForgetRequest, MemoryForgetSelector,
-    MemoryRememberRequest, MemoryRuntime, PrepareMemoryRequest,
+    MemoryCommand, MemoryCommandResult, MemoryError, MemoryForgetRequest, MemoryForgetSelector,
+    MemoryForgetSource, MemoryRememberRequest, MemoryRuntime, MemorySourceContext,
+    PrepareMemoryRequest, PreparedMemoryForgetRequest, ProjectMemorySession,
+    ProjectMemorySessionActivity,
 };
 use pretty_assertions::assert_eq;
-use runtime_support::{forget_request, open_runtime, remember_request};
+use runtime_support::{forget_request, open_runtime, prepare_forget, remember_request};
 use rusqlite::Connection;
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
@@ -34,6 +34,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("expected remembered entry")
@@ -70,6 +71,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("expected restored entry")
@@ -110,6 +112,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected active list"),
     };
@@ -135,6 +138,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected restored list"),
     };
@@ -174,19 +178,25 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
 
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone())),
+    )
+    .await
+    .expect("prepare forget entry");
     let result = match runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::EntryId(remembered.entry_id.clone()),
-        )))
+        .execute_command(MemoryCommand::Forget(prepared))
         .await
         .expect("forget entry")
     {
         MemoryCommandResult::Forget(result) => result,
         MemoryCommandResult::List(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
@@ -221,6 +231,7 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected retired list"),
     };
@@ -254,9 +265,9 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-9, DD-12
-/// Verifies: exact forget resolves the entry's persisted scope instead of the request default.
+/// Verifies: exact forget accepts a Project identity prepared before mutation.
 #[tokio::test]
-async fn exact_forget_uses_persisted_scope_for_project_entry() {
+async fn exact_forget_prepares_project_scope_from_workspace() {
     let database_root = tempfile::tempdir().expect("temporary memory root");
     let project_root = database_root.path().join("project");
     std::fs::create_dir_all(&project_root).expect("project root");
@@ -271,20 +282,26 @@ async fn exact_forget_uses_persisted_scope_for_project_entry() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
 
     let mut forget = forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone()));
-    forget.source.workspace_root = project_root;
+    forget.scope = MemoryScope::Project;
+    forget.source.sessions[0].workspace_root = Some(project_root);
+    let prepared = prepare_forget(&runtime, forget)
+        .await
+        .expect("prepare project forget");
     let result = runtime
-        .execute_command(MemoryCommand::Forget(forget))
+        .execute_command(MemoryCommand::Forget(prepared))
         .await
         .expect("forget project entry by stable ID");
 
     let result = match result {
         MemoryCommandResult::Forget(result) => result,
         MemoryCommandResult::List(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
@@ -323,14 +340,15 @@ async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
     };
 
     let mut request = forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone()));
-    request.source.workspace_root = project_b;
-    let error = runtime
-        .execute_command(MemoryCommand::Forget(request))
+    request.scope = MemoryScope::Project;
+    request.source.sessions[0].workspace_root = Some(project_b);
+    let error = prepare_forget(&runtime, request)
         .await
         .expect_err("unrelated Project scope must reject the stable ID");
     assert_eq!(
@@ -351,6 +369,7 @@ async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected Project list"),
     };
@@ -360,6 +379,48 @@ async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
             data: vec![remembered],
             next_cursor: None,
         }
+    );
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev4 DD-12
+/// Verifies: exact forget uses its prepared scope as the atomic mutation predicate.
+#[tokio::test]
+async fn exact_forget_does_not_parse_scope_after_preparation() {
+    let database_root = tempfile::tempdir().expect("temporary memory root");
+    let runtime = open_runtime(database_root.path());
+    let remembered = match runtime
+        .execute_command(MemoryCommand::Remember(remember_request("Use tabs")))
+        .await
+        .expect("remember entry")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+    };
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone())),
+    )
+    .await
+    .expect("prepare forget entry");
+    let connection =
+        Connection::open(database_root.path().join("memory.sqlite3")).expect("memory database");
+    connection
+        .execute(
+            "UPDATE memory_entries SET scope_type = 'invalid' WHERE entry_id = ?1",
+            [remembered.entry_id.as_str()],
+        )
+        .expect("corrupt stored scope after preparation");
+
+    let error = runtime
+        .execute_command(MemoryCommand::Forget(prepared))
+        .await
+        .expect_err("prepared scope must constrain the mutation");
+    assert_eq!(
+        error.to_string(),
+        "invalid memory request: memory entry not found"
     );
 }
 
@@ -378,21 +439,27 @@ async fn ambiguous_text_forget_returns_candidates_without_mutation() {
         {
             MemoryCommandResult::Remember(entry) => entry,
             MemoryCommandResult::Forget(_)
+            | MemoryCommandResult::PreparedForget(_)
             | MemoryCommandResult::List(_)
             | MemoryCommandResult::Status(_) => panic!("expected remembered candidate"),
         };
         expected_candidates.push(remembered);
     }
 
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::Text("I prefer".to_owned())),
+    )
+    .await
+    .expect("prepare ambiguous forget");
     let result = match runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::Text("I prefer".to_owned()),
-        )))
+        .execute_command(MemoryCommand::Forget(prepared))
         .await
         .expect("ambiguous forget")
     {
         MemoryCommandResult::Forget(result) => result,
         MemoryCommandResult::List(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_) => panic!("expected forget result"),
     };
@@ -435,10 +502,14 @@ async fn text_forget_selector_treats_sql_wildcards_as_literal_text() {
         .await
         .expect("remember entry");
 
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::Text("%".to_owned())),
+    )
+    .await
+    .expect("prepare wildcard forget");
     let error = runtime
-        .execute_command(MemoryCommand::Forget(forget_request(
-            MemoryForgetSelector::Text("%".to_owned()),
-        )))
+        .execute_command(MemoryCommand::Forget(prepared))
         .await
         .expect_err("a wildcard must not select the only entry");
     assert_eq!(

@@ -17,8 +17,10 @@ pub enum MemoryCommand {
     Status,
     /// Validate, commit, and project an explicit user memory request.
     Remember(MemoryRememberRequest),
-    /// Retire one exact identity or return candidates for an ambiguous text match.
-    Forget(MemoryForgetRequest),
+    /// Resolve and validate every fallible prerequisite for a forget mutation.
+    PrepareForget(MemoryForgetRequest),
+    /// Retire one prepared identity or return candidates for an ambiguous text match.
+    Forget(PreparedMemoryForgetRequest),
     /// Return a filtered, paginated view of canonical memory entries.
     List(ListMemoryRequest),
     /// Resolve Native Session candidates to one canonical Project scope and
@@ -73,6 +75,8 @@ pub enum MemoryCommandResult {
     Status(MemoryStatus),
     /// Result of [`MemoryCommand::Remember`].
     Remember(MemoryEntry),
+    /// Opaque authorization input produced before a forget lease is acquired.
+    PreparedForget(PreparedMemoryForgetRequest),
     /// Result of [`MemoryCommand::Forget`].
     Forget(MemoryForgetResult),
     /// Result of [`MemoryCommand::List`].
@@ -143,13 +147,53 @@ impl MemoryForgetSelector {
     }
 }
 
-/// Input passed through the server-owned memory command seam for a forget
-/// request. Exactly one selector is required: a stable entry ID or text.
+/// Input for resolving every fallible prerequisite before a forget lease is acquired.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryForgetRequest {
     pub selector: MemoryForgetSelector,
     pub scope: MemoryScope,
-    pub source: MemorySourceContext,
+    pub source: MemoryForgetSource,
+}
+
+/// Server-verified Session facts used to bind a forget request to one scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryForgetSource {
+    /// Session already bound to the current user item, when Agent provenance exists.
+    pub bound_session_id: Option<SessionId>,
+    /// Native Session used for User scope when no Agent binding exists.
+    pub user_session_id: Option<SessionId>,
+    /// Runtime-owned Session/workspace facts available for Project resolution.
+    pub sessions: Vec<ProjectMemorySession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PreparedMemoryForgetScope {
+    pub(super) scope: MemoryScope,
+    pub(super) scope_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PreparedMemoryForgetTarget {
+    Exact(MemoryEntry),
+    Text(String),
+}
+
+/// Opaque forget command whose scope identity has passed fallible validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedMemoryForgetRequest {
+    pub(super) target: PreparedMemoryForgetTarget,
+    pub(super) scope: PreparedMemoryForgetScope,
+    pub(super) source_session_id: SessionId,
+}
+
+impl PreparedMemoryForgetRequest {
+    pub(crate) fn scope(&self) -> MemoryScope {
+        self.scope.scope
+    }
+
+    pub(crate) fn source_session_id(&self) -> SessionId {
+        self.source_session_id
+    }
 }
 
 /// Filter and paging input for a memory inspection command.

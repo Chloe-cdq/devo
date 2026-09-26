@@ -7,7 +7,7 @@ use crate::runtime::session_actor::SessionActorState;
 impl ServerRuntime {
     pub(super) async fn clear_deleted_session_runtime_state(&self, session_id: SessionId) {
         self.signal_active_turn_interrupt(session_id).await;
-        self.active_turns.clear_runtime_handles(session_id).await;
+        self.clear_active_turn_runtime_handles(session_id).await;
         if let Err(error) = self.memory_forget_coordinator.remove_session(session_id) {
             tracing::warn!(
                 session_id = %session_id,

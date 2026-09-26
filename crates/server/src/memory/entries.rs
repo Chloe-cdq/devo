@@ -92,7 +92,14 @@ impl MemoryRuntime {
         let normalized_key = match &mode {
             MemoryWriteMode::Explicit => equivalence::explicit_memory_key(&body),
             #[cfg(test)]
-            MemoryWriteMode::Inferred { .. } => normalize_inferred_key(&body),
+            MemoryWriteMode::Inferred { .. } => body
+                .chars()
+                .filter(|character| character.is_alphanumeric() || character.is_whitespace())
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase(),
         };
         let kind = request
             .kind
@@ -291,6 +298,17 @@ impl MemoryRuntime {
         }
     }
 
+    pub(super) fn entry_by_id(
+        &self,
+        entry_id: &MemoryEntryId,
+    ) -> Result<Option<MemoryEntry>, MemoryError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| MemoryError::LockPoisoned)?;
+        load_entry(&connection, entry_id)
+    }
+
     pub(super) fn refresh_projection(
         &self,
         connection: &Connection,
@@ -315,17 +333,6 @@ pub(super) fn normalize_body(text: &str) -> Result<String, MemoryError> {
         ));
     }
     Ok(body)
-}
-
-#[cfg(test)]
-fn normalize_inferred_key(body: &str) -> String {
-    body.chars()
-        .filter(|character| character.is_alphanumeric() || character.is_whitespace())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
 }
 
 fn classify_kind(body: &str) -> MemoryKind {

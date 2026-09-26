@@ -11,10 +11,7 @@ use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryForgetResult, MemoryScope, MemorySearchResult, MemoryState,
 };
-use devo_protocol::{
-    ModelRequest, ModelResponse, RequestContent, ResponseContent, ResponseMetadata, SessionId,
-    StopReason, StreamEvent, Usage,
-};
+use devo_protocol::{ModelRequest, ModelResponse, SessionId, StreamEvent};
 use devo_provider::ModelProviderSDK;
 use devo_server::ServerRuntime;
 use futures::Stream;
@@ -22,10 +19,17 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
+#[path = "support/memory_forget_runtime.rs"]
+#[allow(dead_code)]
+mod memory_forget_runtime_support;
+#[path = "support/model_events.rs"]
+mod model_events;
 #[path = "support/subagent_lifecycle.rs"]
 #[allow(dead_code)]
 mod support;
 
+use memory_forget_runtime_support::tool_result;
+use model_events::{text_events, tool_call_events};
 use support::{
     build_runtime_with_workspace_config, initialize_connection, start_parent_session,
     start_turn_with_approval_policy, wait_for_parent_turn_completed,
@@ -690,64 +694,4 @@ fn search_entry(entry: &MemoryEntry) -> devo_protocol::native::rpc_memory::Memor
         state: entry.state,
         summary: entry.body.clone(),
     }
-}
-
-fn tool_call_events(id: &str, name: &str, input: serde_json::Value) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::ToolCallStart {
-            index: 0,
-            id: id.to_string(),
-            name: name.to_string(),
-            input: input.clone(),
-        },
-        StreamEvent::MessageDone {
-            response: ModelResponse {
-                id: format!("response-{id}"),
-                content: vec![ResponseContent::ToolUse {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    input,
-                }],
-                stop_reason: Some(StopReason::ToolUse),
-                usage: Usage::default(),
-                metadata: ResponseMetadata::default(),
-            },
-        },
-    ]
-}
-
-fn text_events(text: &str) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::TextDelta {
-            index: 0,
-            text: text.to_string(),
-        },
-        StreamEvent::MessageDone {
-            response: ModelResponse {
-                id: "response-final".to_string(),
-                content: vec![ResponseContent::Text(text.to_string())],
-                stop_reason: Some(StopReason::EndTurn),
-                usage: Usage::default(),
-                metadata: ResponseMetadata::default(),
-            },
-        },
-    ]
-}
-
-fn tool_result<'a>(request: &'a ModelRequest, tool_use_id: &str) -> Option<&'a str> {
-    request
-        .messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .find_map(|content| {
-            let RequestContent::ToolResult {
-                tool_use_id: result_id,
-                content,
-                ..
-            } = content
-            else {
-                return None;
-            };
-            (result_id == tool_use_id).then_some(content.as_str())
-        })
 }

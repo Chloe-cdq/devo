@@ -6,18 +6,49 @@ use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryScope;
 
 use super::test_support::test_source;
-use super::{MemoryForgetRequest, MemoryForgetSelector, MemoryRememberRequest, MemoryRuntime};
+use super::{
+    MemoryCommand, MemoryCommandResult, MemoryError, MemoryForgetRequest, MemoryForgetSelector,
+    MemoryForgetSource, MemoryRememberRequest, MemoryRuntime, PreparedMemoryForgetRequest,
+    ProjectMemorySession, ProjectMemorySessionActivity,
+};
 
 pub fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
+    let source = test_source(
+        /*user_item_id*/ None,
+        "session-1",
+        /*turn_id*/ None,
+        PathBuf::new(),
+    );
     MemoryForgetRequest {
         selector,
         scope: MemoryScope::User,
-        source: test_source(
-            /*user_item_id*/ None,
-            "session-1",
-            /*turn_id*/ None,
-            PathBuf::new(),
-        ),
+        source: MemoryForgetSource {
+            bound_session_id: Some(source.session_id),
+            user_session_id: Some(source.session_id),
+            sessions: vec![ProjectMemorySession {
+                session_id: source.session_id,
+                workspace_root: Some(source.workspace_root),
+                activity: ProjectMemorySessionActivity::Active,
+            }],
+        },
+    }
+}
+
+pub async fn prepare_forget(
+    runtime: &MemoryRuntime,
+    request: MemoryForgetRequest,
+) -> Result<PreparedMemoryForgetRequest, MemoryError> {
+    match runtime
+        .execute_command(MemoryCommand::PrepareForget(request))
+        .await?
+    {
+        MemoryCommandResult::PreparedForget(prepared) => Ok(prepared),
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_) => Err(MemoryError::InvalidStoredValue(
+            "forget preparation returned an unexpected result".to_string(),
+        )),
     }
 }
 

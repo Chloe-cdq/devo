@@ -307,6 +307,7 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     let first = match first {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected remember result")
@@ -323,6 +324,7 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     let second = match second {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected remember result")
@@ -343,6 +345,7 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
     let listed: Page<_> = match listed {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
@@ -482,6 +485,7 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     let first_page: Page<_> = match first_page {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
@@ -503,6 +507,7 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     let second_page: Page<_> = match second_page {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected list result")
@@ -786,6 +791,7 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected project remember result")
@@ -802,6 +808,7 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected linked project remember result")
@@ -827,6 +834,7 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected linked project list result")
@@ -845,6 +853,7 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected unrelated project remember result")
@@ -863,6 +872,7 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
     {
         MemoryCommandResult::List(page) => page,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Remember(_) => {
             panic!("unexpected main project list result")

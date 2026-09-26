@@ -73,6 +73,7 @@ pub(super) async fn remember(
     match result {
         crate::memory::MemoryCommandResult::Remember(entry) => Ok(entry),
         crate::memory::MemoryCommandResult::Status(_)
+        | crate::memory::MemoryCommandResult::PreparedForget(_)
         | crate::memory::MemoryCommandResult::Forget(_)
         | crate::memory::MemoryCommandResult::List(_) => Err(ToolCallError::InternalError(
             "memory_remember returned an unexpected result".to_string(),
@@ -109,25 +110,42 @@ pub(super) async fn forget(
         .await
         .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
     let context = MemoryMutationContext::new(&runtime, &invocation).await?;
-    let authorized = runtime.memory_forget_coordinator.authorize_agent(
+    let selector = crate::memory::MemoryForgetSelector::EntryId(entry_id.clone());
+    let source_session_id = context.source.session_id;
+    let prepared = crate::runtime::memory_forget_preparation::prepare_forget(
+        &runtime,
+        &context.memory,
+        crate::memory::MemoryForgetRequest {
+            selector,
+            scope: params.scope,
+            source: crate::memory::MemoryForgetSource {
+                bound_session_id: Some(source_session_id),
+                user_session_id: Some(source_session_id),
+                sessions: vec![crate::memory::ProjectMemorySession {
+                    session_id: source_session_id,
+                    workspace_root: Some(context.source.workspace_root),
+                    activity: crate::memory::ProjectMemorySessionActivity::Active,
+                }],
+            },
+        },
+    )
+    .await
+    .map_err(memory_tool_error)?;
+    let reservation = runtime.memory_forget_coordinator.authorize_agent(
         &invocation,
         &user_text,
         &entry_id,
-        params.scope,
+        prepared.scope(),
     )?;
     let execution = runtime
         .deps
         .memory_command_executor
         .execute(
             &context.memory,
-            crate::memory::MemoryCommand::Forget(crate::memory::MemoryForgetRequest {
-                selector: crate::memory::MemoryForgetSelector::EntryId(entry_id),
-                scope: authorized.scope,
-                source: context.source,
-            }),
+            crate::memory::MemoryCommand::Forget(prepared),
         )
         .await;
-    match complete_forget_execution(authorized.reservation, execution) {
+    match complete_forget_execution(reservation, execution) {
         Ok(result) => Ok(result),
         Err(MemoryForgetExecutionError::Coordinator(error)) => Err(error),
         Err(MemoryForgetExecutionError::Storage(error)) => Err(memory_tool_error(error)),
@@ -200,6 +218,7 @@ pub(super) async fn search(
             crate::memory::MemoryCommandResult::List(page) => entries.extend(page.data),
             crate::memory::MemoryCommandResult::Status(_)
             | crate::memory::MemoryCommandResult::Remember(_)
+            | crate::memory::MemoryCommandResult::PreparedForget(_)
             | crate::memory::MemoryCommandResult::Forget(_) => {
                 return Err(ToolCallError::InternalError(
                     "memory_search returned an unexpected result".to_string(),

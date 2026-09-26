@@ -49,9 +49,10 @@ pub(crate) use command_execution::RuntimeMemoryCommandExecutor;
 pub(crate) use command_types::MemoryInferredRememberRequest;
 pub use command_types::{
     EnqueueOutcome, ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
-    MemoryForgetSelector, MemoryRememberRequest, MemorySourceBinding, MemorySourceContext,
-    PrepareMemoryRequest, PreparedMemory, ProjectMemoryOperation, ProjectMemorySession,
-    ProjectMemorySessionActivity, SessionMemorySource,
+    MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
+    MemorySourceContext, PrepareMemoryRequest, PreparedMemory, PreparedMemoryForgetRequest,
+    ProjectMemoryOperation, ProjectMemorySession, ProjectMemorySessionActivity,
+    SessionMemorySource,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
@@ -228,6 +229,14 @@ impl MemoryRuntime {
                 }
                 Ok(MemoryCommandResult::Remember(self.remember(request)?))
             }
+            MemoryCommand::PrepareForget(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                Ok(MemoryCommandResult::PreparedForget(
+                    self.prepare_forget(request)?,
+                ))
+            }
             MemoryCommand::Forget(request) => {
                 if !self.config.enabled {
                     return Err(MemoryError::Disabled);
@@ -300,59 +309,24 @@ impl MemoryRuntime {
         &self,
         candidates: Vec<ProjectMemorySession>,
     ) -> Result<(SessionId, PathBuf), MemoryError> {
-        let mut selected: Option<(SessionId, PathBuf, ProjectMemorySessionActivity, String)> = None;
-        for candidate in candidates {
-            let workspace_root = candidate
-                .workspace_root
-                .ok_or(MemoryError::ProjectSessionUnavailable)?;
-            let identity = identity::resolve_project_memory_identity(&workspace_root)
-                .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
-            if let Some((_, _, current_activity, current_scope_id)) = selected.as_ref() {
-                if *current_scope_id != identity.scope_id {
-                    return Err(MemoryError::AmbiguousProjectScope);
-                }
-                if candidate.activity == ProjectMemorySessionActivity::Active
-                    && *current_activity == ProjectMemorySessionActivity::Inactive
-                {
-                    selected = Some((
-                        candidate.session_id,
-                        workspace_root,
-                        candidate.activity,
-                        identity.scope_id,
-                    ));
-                }
-            } else {
-                selected = Some((
-                    candidate.session_id,
+        let candidates = candidates
+            .into_iter()
+            .map(|candidate| {
+                let workspace_root = candidate
+                    .workspace_root
+                    .ok_or(MemoryError::ProjectSessionUnavailable)?;
+                let identity = identity::resolve_project_memory_identity(&workspace_root)
+                    .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
+                Ok(ResolvedProjectMemorySession {
+                    session_id: candidate.session_id,
                     workspace_root,
-                    candidate.activity,
-                    identity.scope_id,
-                ));
-            }
-        }
-        selected
-            .map(|(session_id, workspace_root, _, _)| (session_id, workspace_root))
-            .ok_or(MemoryError::ProjectSessionRequired)
-    }
-
-    /// Resolves all fallible Project provenance before a caller acquires a
-    /// mutation lease.
-    pub(crate) fn resolve_project_mutation_source(
-        &self,
-        candidates: Vec<ProjectMemorySession>,
-        source: MemorySourceBinding,
-    ) -> Result<MemorySourceContext, MemoryError> {
-        if !self.config.enabled {
-            return Err(MemoryError::Disabled);
-        }
-        let (selected_session_id, workspace_root) =
-            self.resolve_project_memory_source(candidates)?;
-        Ok(MemorySourceContext {
-            user_item_id: source.user_item_id,
-            session_id: source.session_id.unwrap_or(selected_session_id),
-            turn_id: source.turn_id,
-            workspace_root,
-        })
+                    activity: candidate.activity,
+                    scope_id: identity.scope_id,
+                })
+            })
+            .collect::<Result<Vec<_>, MemoryError>>()?;
+        let selected = select_project_memory_session(candidates)?;
+        Ok((selected.session_id, selected.workspace_root))
     }
 
     /// Records one observation from the server-owned passive extraction path.
@@ -397,6 +371,34 @@ impl MemoryRuntime {
             error_classes: error_classes(&connection)?,
         })
     }
+}
+
+struct ResolvedProjectMemorySession {
+    session_id: SessionId,
+    workspace_root: PathBuf,
+    activity: ProjectMemorySessionActivity,
+    scope_id: String,
+}
+
+fn select_project_memory_session(
+    candidates: Vec<ResolvedProjectMemorySession>,
+) -> Result<ResolvedProjectMemorySession, MemoryError> {
+    let mut selected: Option<ResolvedProjectMemorySession> = None;
+    for candidate in candidates {
+        if let Some(current) = selected.as_ref() {
+            if current.scope_id != candidate.scope_id {
+                return Err(MemoryError::AmbiguousProjectScope);
+            }
+            if candidate.activity == ProjectMemorySessionActivity::Active
+                && current.activity == ProjectMemorySessionActivity::Inactive
+            {
+                selected = Some(candidate);
+            }
+        } else {
+            selected = Some(candidate);
+        }
+    }
+    selected.ok_or(MemoryError::ProjectSessionRequired)
 }
 
 fn count_rows(connection: &Connection, sql: &str) -> Result<u64, MemoryError> {

@@ -1,12 +1,11 @@
 use super::super::*;
 
-use crate::memory::MemoryForgetRequest;
-use crate::memory::MemoryForgetSelector;
+use crate::memory::{MemoryForgetRequest, MemoryForgetSelector, MemoryForgetSource};
 
-use super::memory_source::MemoryMutationSource;
 use crate::runtime::memory_forget_authorization::{
     MemoryForgetExecutionError, complete_forget_execution,
 };
+use crate::runtime::memory_forget_preparation::prepare_forget;
 
 impl ServerRuntime {
     /// Native `memory/forget`: retires an exact entry or returns candidates
@@ -41,10 +40,9 @@ impl ServerRuntime {
                 return self.error_response(request_id, ProtocolErrorCode::InvalidParams, message);
             }
         };
-        let source = match self
-            .resolve_memory_mutation_source(
+        let active_source = match self
+            .resolve_active_memory_mutation_source(
                 connection_id,
-                params.scope,
                 params.source_user_item_id.as_ref(),
                 "memory/forget",
                 &request_id,
@@ -54,24 +52,45 @@ impl ServerRuntime {
             Ok(source) => source,
             Err(response) => return response,
         };
-        let source = match source {
-            MemoryMutationSource::User(source) => source,
-            MemoryMutationSource::Project { candidates, source } => {
-                match memory.resolve_project_mutation_source(candidates, source) {
-                    Ok(source) => source,
-                    Err(error) => {
-                        return self.memory_error_response(request_id, "memory/forget", error);
-                    }
-                }
-            }
+        let user_session_id = match active_source
+            .source
+            .as_ref()
+            .and_then(|source| source.session_id)
+        {
+            Some(session_id) => Some(session_id),
+            None => self.subscribed_session_for_connection(connection_id).await,
         };
+        let sessions = self
+            .project_memory_sessions(connection_id, &active_source.active_session_ids)
+            .await;
         let entry_id = match &selector {
-            MemoryForgetSelector::EntryId(entry_id) => Some(entry_id),
+            MemoryForgetSelector::EntryId(entry_id) => Some(entry_id.clone()),
             MemoryForgetSelector::Text(_) => None,
         };
+        let prepared = match prepare_forget(
+            self,
+            memory,
+            MemoryForgetRequest {
+                selector,
+                scope: params.scope,
+                source: MemoryForgetSource {
+                    bound_session_id: active_source.source.and_then(|source| source.session_id),
+                    user_session_id,
+                    sessions,
+                },
+            },
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return self.memory_error_response(request_id, "memory/forget", error);
+            }
+        };
+        let source_session_id = prepared.source_session_id();
         let reservation = match self
             .memory_forget_coordinator
-            .authorize_native(source.session_id, entry_id)
+            .authorize_native(source_session_id, entry_id.as_ref())
         {
             Ok(reservation) => reservation,
             Err(error) => {
@@ -82,11 +101,7 @@ impl ServerRuntime {
                 );
             }
         };
-        let command = crate::memory::MemoryCommand::Forget(MemoryForgetRequest {
-            selector,
-            scope: params.scope,
-            source,
-        });
+        let command = crate::memory::MemoryCommand::Forget(prepared);
         let result = self
             .deps
             .memory_command_executor

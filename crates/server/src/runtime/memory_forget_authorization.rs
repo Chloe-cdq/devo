@@ -60,12 +60,6 @@ pub(super) struct MemoryForgetCoordinator {
 }
 
 #[derive(Debug)]
-pub(super) struct AuthorizedForget<'a> {
-    pub(super) scope: MemoryScope,
-    pub(super) reservation: MemoryForgetReservation<'a>,
-}
-
-#[derive(Debug)]
 pub(super) struct MemoryForgetReservation<'a> {
     coordinator: &'a MemoryForgetCoordinator,
     reservation_id: u64,
@@ -118,6 +112,7 @@ pub(super) fn complete_forget_execution(
         Err(error) => Err(MemoryForgetExecutionError::Storage(error)),
         Ok(crate::memory::MemoryCommandResult::Status(_))
         | Ok(crate::memory::MemoryCommandResult::Remember(_))
+        | Ok(crate::memory::MemoryCommandResult::PreparedForget(_))
         | Ok(crate::memory::MemoryCommandResult::List(_)) => {
             Err(MemoryForgetExecutionError::UnexpectedResult)
         }
@@ -221,13 +216,13 @@ impl MemoryForgetCoordinator {
         invocation: &MemoryToolInvocation,
         user_text: &str,
         entry_id: &MemoryEntryId,
-        requested_scope: MemoryScope,
-    ) -> Result<AuthorizedForget<'_>, ToolCallError> {
+        prepared_scope: MemoryScope,
+    ) -> Result<MemoryForgetReservation<'_>, ToolCallError> {
         self.authorize_agent_at(
             invocation,
             user_text,
             entry_id,
-            requested_scope,
+            prepared_scope,
             Instant::now(),
         )
     }
@@ -237,15 +232,15 @@ impl MemoryForgetCoordinator {
         invocation: &MemoryToolInvocation,
         user_text: &str,
         entry_id: &MemoryEntryId,
-        requested_scope: MemoryScope,
+        prepared_scope: MemoryScope,
         now: Instant,
-    ) -> Result<AuthorizedForget<'_>, ToolCallError> {
+    ) -> Result<MemoryForgetReservation<'_>, ToolCallError> {
         let mut state = self.lock_state()?;
         Self::reject_active(&state)?;
         Self::prune_expired(&mut state, now);
         let selection = state.pending_by_session.get(&invocation.session_id);
         let direct = user_text.contains(entry_id.as_str());
-        let (scope, kind) = if let Some(selection) = selection {
+        let kind = if let Some(selection) = selection {
             if let Some(candidate) = selection
                 .candidates
                 .iter()
@@ -259,21 +254,23 @@ impl MemoryForgetCoordinator {
                             .to_string(),
                     ));
                 }
-                (
-                    candidate.scope,
-                    ActiveForgetKind::AgentConfirmed {
-                        selection_id: selection.selection_id,
-                    },
-                )
+                if candidate.scope != prepared_scope {
+                    return Err(ToolCallError::InvalidInput(
+                        "memory_forget target is not one of the pending candidates".to_string(),
+                    ));
+                }
+                ActiveForgetKind::AgentConfirmed {
+                    selection_id: selection.selection_id,
+                }
             } else if direct {
-                (requested_scope, ActiveForgetKind::AgentDirect)
+                ActiveForgetKind::AgentDirect
             } else {
                 return Err(ToolCallError::InvalidInput(
                     "memory_forget target is not one of the pending candidates".to_string(),
                 ));
             }
         } else if direct {
-            (requested_scope, ActiveForgetKind::AgentDirect)
+            ActiveForgetKind::AgentDirect
         } else {
             return Err(ToolCallError::InvalidInput(
                 "memory_forget requires a current exact stable ID or a pending selection"
@@ -286,7 +283,7 @@ impl MemoryForgetCoordinator {
             kind,
             Some(entry_id.clone()),
         )?;
-        Ok(AuthorizedForget { scope, reservation })
+        Ok(reservation)
     }
 
     pub(super) fn authorize_native(

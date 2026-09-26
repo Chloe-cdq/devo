@@ -121,6 +121,7 @@ async fn project_command_uses_active_same_repository_session_for_provenance() {
     let entry = match result {
         MemoryCommandResult::Remember(entry) => entry,
         MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_) => {
             panic!("unexpected Project remember result")

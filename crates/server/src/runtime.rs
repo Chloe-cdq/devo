@@ -137,6 +137,7 @@ mod items;
 mod lifecycle;
 mod mcp;
 mod memory_forget_authorization;
+mod memory_forget_preparation;
 mod memory_scope;
 mod model_api;
 mod outbound;

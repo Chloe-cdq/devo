@@ -59,7 +59,7 @@ fn direct_exact_id_authorization_accepts_arbitrary_wording() {
     let authorizations = MemoryForgetCoordinator::default();
     let invocation = invocation();
     let entry_id = MemoryEntryId::from("mem_test");
-    let authorized = authorizations
+    let reservation = authorizations
         .authorize_agent(
             &invocation,
             "Could you retire mem_test from persistent storage?",
@@ -68,7 +68,7 @@ fn direct_exact_id_authorization_accepts_arbitrary_wording() {
         )
         .expect("structurally bound exact-ID action is authorized");
 
-    assert_eq!(authorized.scope, MemoryScope::User);
+    drop(reservation);
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-12
@@ -115,7 +115,7 @@ fn pending_selection_is_turn_bound_candidate_bound_and_consumed_once() {
             .to_string(),
         "invalid input: memory_forget target is not one of the pending candidates"
     );
-    let authorized = authorizations
+    let reservation = authorizations
         .authorize_agent(
             &selection,
             "Remove the selected memory",
@@ -124,8 +124,7 @@ fn pending_selection_is_turn_bound_candidate_bound_and_consumed_once() {
         )
         .expect("selected candidate is authorized");
     let forgotten = forgotten_entry(selected_id.clone());
-    authorized
-        .reservation
+    reservation
         .commit(Some(&forgotten))
         .expect("successful mutation consumes selection");
     assert_eq!(
@@ -172,7 +171,7 @@ fn pending_selection_does_not_shadow_direct_exact_id_authority() {
             MemoryScope::User,
         )
         .expect("direct command is authorized despite unrelated pending state");
-    assert_eq!(authorized.scope, MemoryScope::User);
+    drop(authorized);
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-12
@@ -201,7 +200,7 @@ fn same_turn_search_does_not_shadow_direct_exact_id_authority() {
         )
         .expect("same-turn direct command is independent of unrelated search state");
 
-    assert_eq!(authorized.scope, MemoryScope::User);
+    drop(authorized);
 }
 
 /// Trace: L2-DES-MEM-001 DD-12
@@ -282,8 +281,7 @@ fn inflight_selection_blocks_direct_exact_id_authority() {
             &selected_id,
             MemoryScope::User,
         )
-        .expect("reserve selected candidate")
-        .reservation;
+        .expect("reserve selected candidate");
     let direct = invocation();
     let direct_id = MemoryEntryId::from("mem_direct");
 
@@ -329,7 +327,7 @@ fn successful_forget_removes_entry_from_all_pending_selections() {
         user_item_id: devo_protocol::native::ids::ItemId::new(),
         ..confirming_search
     };
-    let authorized = authorizations
+    let reservation = authorizations
         .authorize_agent(
             &confirmation,
             &format!("Confirm forget memory entry {deleted_id}"),
@@ -338,8 +336,7 @@ fn successful_forget_removes_entry_from_all_pending_selections() {
         )
         .expect("reserve confirmed candidate");
     let forgotten = forgotten_entry(deleted_id.clone());
-    authorized
-        .reservation
+    reservation
         .commit(Some(&forgotten))
         .expect("commit confirmed deletion");
     let other_confirmation = MemoryToolInvocation {
@@ -589,8 +586,7 @@ fn stale_reservation_cannot_clear_new_active_lease() {
             &first_id,
             MemoryScope::User,
         )
-        .expect("reserve first direct mutation")
-        .reservation;
+        .expect("reserve first direct mutation");
     authorizations.release(stale.reservation_id);
     let second = invocation();
     let second_id = MemoryEntryId::from("mem_second");
@@ -601,8 +597,7 @@ fn stale_reservation_cannot_clear_new_active_lease() {
             &second_id,
             MemoryScope::User,
         )
-        .expect("reserve replacement direct mutation")
-        .reservation;
+        .expect("reserve replacement direct mutation");
 
     assert_eq!(
         stale
