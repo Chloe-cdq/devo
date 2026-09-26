@@ -89,17 +89,19 @@ impl MemoryRuntime {
         if contains_secret(&body) {
             return Err(MemoryError::SecretContentRejected);
         }
+        let canonical_normalized_key = equivalence::explicit_memory_key(&body);
+        let legacy_normalized_key = body
+            .chars()
+            .filter(|character| character.is_alphanumeric() || character.is_whitespace())
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
         let normalized_key = match &mode {
-            MemoryWriteMode::Explicit => equivalence::explicit_memory_key(&body),
+            MemoryWriteMode::Explicit => canonical_normalized_key.clone(),
             #[cfg(test)]
-            MemoryWriteMode::Inferred { .. } => body
-                .chars()
-                .filter(|character| character.is_alphanumeric() || character.is_whitespace())
-                .collect::<String>()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_ascii_lowercase(),
+            MemoryWriteMode::Inferred { .. } => legacy_normalized_key.clone(),
         };
         let kind = request
             .kind
@@ -145,23 +147,41 @@ impl MemoryRuntime {
             .as_ref()
             .map(|(_, origin)| parse_origin(origin))
             .transpose()?;
-        let revocation = transaction
-            .query_row(
-                "SELECT revoked_at, restored_at
-                 FROM memory_revocations
-                 WHERE scope_type = ?1 AND scope_id = ?2 AND normalized_key = ?3",
-                rusqlite::params![scope_name(request.scope), scope_id, normalized_key],
+        let mut revocation_statement = transaction.prepare(
+            "SELECT revoked_at, restored_at
+             FROM memory_revocations
+             WHERE scope_type = ?1 AND scope_id = ?2
+               AND (normalized_key = ?3 OR normalized_key = ?4)",
+        )?;
+        let revocations = revocation_statement
+            .query_map(
+                rusqlite::params![
+                    scope_name(request.scope),
+                    scope_id,
+                    canonical_normalized_key,
+                    legacy_normalized_key,
+                ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-            )
-            .optional()?;
-        let revocation = revocation
-            .map(|(revoked_at, restored_at)| -> Result<_, MemoryError> {
-                Ok((
-                    parse_timestamp(&revoked_at)?,
-                    restored_at.as_deref().map(parse_timestamp).transpose()?,
-                ))
-            })
-            .transpose()?;
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(revocation_statement);
+        let mut latest_revoked_at = None;
+        let mut latest_restored_at = None;
+        for (revoked_at, restored_at) in revocations {
+            let revoked_at = parse_timestamp(&revoked_at)?;
+            latest_revoked_at = Some(
+                latest_revoked_at
+                    .map_or(revoked_at, |latest: DateTime<Utc>| latest.max(revoked_at)),
+            );
+            if let Some(restored_at) = restored_at {
+                let restored_at = parse_timestamp(&restored_at)?;
+                latest_restored_at = Some(
+                    latest_restored_at
+                        .map_or(restored_at, |latest: DateTime<Utc>| latest.max(restored_at)),
+                );
+            }
+        }
+        let revocation = latest_revoked_at.map(|revoked_at| (revoked_at, latest_restored_at));
         let revocation_active = revocation
             .as_ref()
             .is_some_and(|(revoked_at, restored_at)| {
@@ -187,9 +207,16 @@ impl MemoryRuntime {
             transaction.execute(
                 "UPDATE memory_revocations
                  SET restored_at = ?1
-                 WHERE scope_type = ?2 AND scope_id = ?3 AND normalized_key = ?4
+                 WHERE scope_type = ?2 AND scope_id = ?3
+                   AND (normalized_key = ?4 OR normalized_key = ?5)
                    AND (restored_at IS NULL OR restored_at < revoked_at)",
-                rusqlite::params![now, scope_name(request.scope), scope_id, normalized_key,],
+                rusqlite::params![
+                    now,
+                    scope_name(request.scope),
+                    scope_id,
+                    canonical_normalized_key,
+                    legacy_normalized_key,
+                ],
             )?;
         }
         let entry_id = if let Some(existing_id) = existing_id {

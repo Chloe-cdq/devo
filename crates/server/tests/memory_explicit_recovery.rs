@@ -634,3 +634,91 @@ async fn schema_upgrade_restores_identity_when_restore_is_latest() {
         .expect("query restored memory FTS index");
     assert_eq!(fts_matches, 1);
 }
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9
+/// Verifies: a v4 tombstone without an entry remains authoritative for an explicit v5 restore.
+#[tokio::test]
+async fn v4_tombstone_without_entry_restores_the_v5_identity() {
+    let data_root = TempDir::new().expect("memory data root");
+    let memory_root = data_root.path().join("memory");
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("open memory runtime");
+    drop(runtime);
+
+    let database_path = memory_root.join("memory.sqlite3");
+    let connection = Connection::open(&database_path).expect("open memory database");
+    connection
+        .execute(
+            "INSERT INTO memory_revocations (
+                 revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
+             ) VALUES (?1, 'user', 'user', ?2, ?3, NULL)",
+            rusqlite::params![
+                "legacy-structured-revocation",
+                "use apikey",
+                "2027-01-01T00:00:00Z",
+            ],
+        )
+        .expect("insert legacy tombstone");
+    connection
+        .execute(
+            "UPDATE memory_schema_meta SET value = '4' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("downgrade fixture schema marker");
+    drop(connection);
+
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("upgrade memory runtime");
+    let restored = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use API_KEY".to_string(),
+            scope: MemoryScope::User,
+            kind: Some(MemoryKind::Preference),
+            source: memory_test_support::test_source(
+                Some("restored-structured-item"),
+                "restored-structured-session",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
+        },
+    )
+    .await;
+    let expected = MemoryEntry {
+        entry_id: restored.entry_id.clone(),
+        scope: MemoryScope::User,
+        scope_id: "user".to_string(),
+        kind: MemoryKind::Preference,
+        normalized_key: "Use API_KEY".to_string(),
+        body: "Use API_KEY".to_string(),
+        origin: MemoryOrigin::ExplicitUser,
+        state: MemoryState::Restored,
+        created_at: restored.created_at,
+        updated_at: restored.updated_at,
+        replacement_entry_id: None,
+        provenance: restored.provenance.clone(),
+    };
+    assert_eq!(restored, expected);
+    assert_eq!(
+        list(&runtime, MemoryScope::User, data_root.path()).await,
+        vec![expected.clone()]
+    );
+    drop(runtime);
+
+    let connection = Connection::open(database_path).expect("inspect restored tombstone");
+    let lifecycle: (String, Option<String>) = connection
+        .query_row(
+            "SELECT revoked_at, restored_at FROM memory_revocations
+             WHERE revocation_id = 'legacy-structured-revocation'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read restored tombstone");
+    assert_eq!(
+        lifecycle,
+        (
+            "2027-01-01T00:00:00Z".to_string(),
+            Some(expected.updated_at.to_rfc3339()),
+        )
+    );
+}

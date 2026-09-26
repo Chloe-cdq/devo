@@ -101,6 +101,41 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
     );
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9
+/// Verifies: legacy inferred normalization cannot bypass a structured identity tombstone.
+#[tokio::test]
+async fn structured_inferred_evidence_cannot_bypass_revocation_identity() {
+    let database_root = tempfile::tempdir().expect("temporary memory root");
+    let runtime = open_runtime(database_root.path());
+    let remembered = match runtime
+        .execute_command(MemoryCommand::Remember(remember_request("Use API_KEY")))
+        .await
+        .expect("remember structured identity")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+    };
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone())),
+    )
+    .await
+    .expect("prepare structured identity forget");
+    runtime
+        .execute_command(MemoryCommand::Forget(prepared))
+        .await
+        .expect("forget structured identity");
+
+    let replay = runtime
+        .record_inferred(inferred_request("Use API_KEY", remembered.updated_at))
+        .expect("replay structured evidence");
+
+    assert_eq!(replay, None);
+}
+
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8, DD-9
 /// Verifies: an old inferred observation cannot overwrite an explicitly restored identity.
 #[tokio::test]
