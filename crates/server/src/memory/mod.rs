@@ -51,7 +51,7 @@ pub use command_types::{
     MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
     MemorySourceContext, PrepareMemoryRequest, PreparedMemory, PreparedMemoryForgetRequest,
     ProjectMemoryOperation, ProjectMemorySession, ProjectMemorySessionActivity,
-    SessionMemorySource,
+    SearchMemoryRequest, SessionMemorySource,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
@@ -250,6 +250,15 @@ impl MemoryRuntime {
                     }));
                 }
                 Ok(MemoryCommandResult::List(self.list(request)?))
+            }
+            MemoryCommand::Search(request) => {
+                if !self.config.enabled {
+                    return Ok(MemoryCommandResult::Search(Page {
+                        data: Vec::new(),
+                        next_cursor: None,
+                    }));
+                }
+                Ok(MemoryCommandResult::Search(self.search(request)?))
             }
             MemoryCommand::Project {
                 candidates,

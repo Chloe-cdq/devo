@@ -653,7 +653,8 @@ async fn memory_status_reports_last_successful_scan_and_error_classes() -> Resul
         MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory status result")
         }
     };

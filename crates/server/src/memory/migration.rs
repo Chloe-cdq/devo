@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use rusqlite::Transaction;
 
 use super::MemoryError;
+use super::entry_identity::{apply_replacement_redirects, merge_entry_records};
 use super::equivalence;
 
 struct StoredEntry {
@@ -106,18 +107,7 @@ pub(super) fn migrate_explicit_equivalence(
     for ((_, _, normalized_key), entries) in groups {
         replacement_redirects.extend(merge_group(transaction, &normalized_key, &entries)?);
     }
-    for (duplicate_id, keeper_id) in replacement_redirects {
-        transaction.execute(
-            "UPDATE memory_entries SET replacement_entry_id = ?1
-             WHERE replacement_entry_id = ?2",
-            rusqlite::params![keeper_id, duplicate_id],
-        )?;
-    }
-    transaction.execute(
-        "UPDATE memory_entries SET replacement_entry_id = NULL
-         WHERE replacement_entry_id = entry_id",
-        [],
-    )?;
+    apply_replacement_redirects(transaction, &replacement_redirects)?;
     deduplicate_evidence(transaction)?;
     transaction.execute_batch(
         "UPDATE memory_entries AS entry
@@ -234,33 +224,11 @@ fn merge_group(
         .filter_map(|entry| entry.last_recalled_at.as_deref())
         .max();
 
-    let mut replacement_redirects = Vec::new();
-    for duplicate in entries
+    let duplicate_ids = entries
         .iter()
         .filter(|entry| entry.entry_id != keeper.entry_id)
-    {
-        replacement_redirects.push((duplicate.entry_id.clone(), keeper.entry_id.clone()));
-        transaction.execute(
-            "DELETE FROM memory_evidence AS duplicate
-             WHERE duplicate.entry_id = ?1
-               AND EXISTS (
-                   SELECT 1 FROM memory_evidence AS kept
-                   WHERE kept.entry_id = ?2
-                     AND kept.session_id = duplicate.session_id
-                     AND kept.turn_id IS duplicate.turn_id
-                     AND kept.source_user_item_id IS duplicate.source_user_item_id
-               )",
-            rusqlite::params![duplicate.entry_id, keeper.entry_id],
-        )?;
-        transaction.execute(
-            "UPDATE memory_evidence SET entry_id = ?1 WHERE entry_id = ?2",
-            rusqlite::params![keeper.entry_id, duplicate.entry_id],
-        )?;
-        transaction.execute(
-            "DELETE FROM memory_entries WHERE entry_id = ?1",
-            [&duplicate.entry_id],
-        )?;
-    }
+        .map(|entry| entry.entry_id.as_str());
+    let replacement_redirects = merge_entry_records(transaction, &keeper.entry_id, duplicate_ids)?;
 
     transaction.execute(
         "UPDATE memory_entries

@@ -36,7 +36,8 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("expected remembered entry")
         }
     };
@@ -73,7 +74,8 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("expected restored entry")
         }
     };
@@ -114,7 +116,8 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected active list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected active list"),
     };
     assert_eq!(
         listed,
@@ -140,7 +143,8 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected restored list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected restored list"),
     };
     assert_eq!(
         restored_list,
@@ -201,7 +205,8 @@ async fn explicit_remember_restores_a_tombstone_without_an_entry() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let lifecycle: (String, Option<String>) = connection
         .query_row(
@@ -235,7 +240,8 @@ async fn explicit_remember_restores_a_tombstone_without_an_entry() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected restored list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected restored list"),
     };
     assert_eq!(
         listed,
@@ -261,7 +267,8 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
     let prepared = prepare_forget(
@@ -279,7 +286,8 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         MemoryCommandResult::List(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected forget result"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     let forgotten = result
         .forgotten
@@ -314,7 +322,8 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected retired list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected retired list"),
     };
     assert_eq!(
         listed,
@@ -365,7 +374,8 @@ async fn exact_forget_prepares_project_scope_from_workspace() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
     let mut forget = forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone()));
@@ -384,7 +394,8 @@ async fn exact_forget_prepares_project_scope_from_workspace() {
         MemoryCommandResult::List(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected forget result"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     let forgotten = result.forgotten.clone().expect("forgotten project entry");
     let expected_forgotten = MemoryEntry {
@@ -423,7 +434,8 @@ async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
     let mut request = forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone()));
@@ -452,7 +464,8 @@ async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected Project list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected Project list"),
     };
     assert_eq!(
         listed,
@@ -478,7 +491,8 @@ async fn exact_forget_does_not_parse_scope_after_preparation() {
         MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let prepared = prepare_forget(
         &runtime,
@@ -505,6 +519,66 @@ async fn exact_forget_does_not_parse_scope_after_preparation() {
     );
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev4 DD-8, DD-12
+/// Verifies: exact forget reloads the authoritative entry after preparation before returning it.
+#[tokio::test]
+async fn exact_forget_returns_the_entry_committed_after_preparation() {
+    let database_root = tempfile::tempdir().expect("temporary memory root");
+    let runtime = open_runtime(database_root.path());
+    let remembered = match runtime
+        .execute_command(MemoryCommand::Remember(remember_request("I prefer tabs")))
+        .await
+        .expect("remember entry")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
+    };
+    let prepared = prepare_forget(
+        &runtime,
+        forget_request(MemoryForgetSelector::EntryId(remembered.entry_id.clone())),
+    )
+    .await
+    .expect("prepare forget entry");
+    let refreshed = match runtime
+        .execute_command(MemoryCommand::Remember(remember_request("I prefer tabs!")))
+        .await
+        .expect("refresh entry after preparation")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected refreshed entry"),
+    };
+    assert_eq!(refreshed.entry_id, remembered.entry_id);
+
+    let forgotten = match runtime
+        .execute_command(MemoryCommand::Forget(prepared))
+        .await
+        .expect("forget refreshed entry")
+    {
+        MemoryCommandResult::Forget(result) => result.forgotten.expect("forgotten entry"),
+        MemoryCommandResult::List(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected forget result"),
+    };
+    assert_eq!(
+        forgotten,
+        MemoryEntry {
+            state: MemoryState::Retired,
+            updated_at: forgotten.updated_at,
+            ..refreshed
+        }
+    );
+}
+
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-12
 /// Verifies: ambiguous text forget returns candidates without mutation.
 #[tokio::test]
@@ -522,7 +596,8 @@ async fn ambiguous_text_forget_returns_candidates_without_mutation() {
             MemoryCommandResult::Forget(_)
             | MemoryCommandResult::PreparedForget(_)
             | MemoryCommandResult::List(_)
-            | MemoryCommandResult::Status(_) => panic!("expected remembered candidate"),
+            | MemoryCommandResult::Status(_)
+            | MemoryCommandResult::Search(_) => panic!("expected remembered candidate"),
         };
         expected_candidates.push(remembered);
     }
@@ -542,7 +617,8 @@ async fn ambiguous_text_forget_returns_candidates_without_mutation() {
         MemoryCommandResult::List(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected forget result"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     expected_candidates.sort_by_key(|entry| entry.entry_id.to_string());
     let mut actual_candidates = result.candidates;

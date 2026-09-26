@@ -1,5 +1,6 @@
 use super::command_types::{PreparedMemoryForgetScope, PreparedMemoryForgetTarget};
 use super::entries::{load_entry, normalize_body};
+use super::entry_identity::MemoryEntryIdentity;
 use super::{
     MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryForgetSource, MemoryRuntime,
     PreparedMemoryForgetRequest, ResolvedProjectMemorySession, scope_name,
@@ -7,44 +8,45 @@ use super::{
 };
 use chrono::Utc;
 use devo_protocol::native::ids::MemoryEntryId;
-use devo_protocol::native::rpc_memory::{
-    MemoryEntry, MemoryForgetResult, MemoryScope, MemoryState,
-};
+use devo_protocol::native::rpc_memory::{MemoryForgetResult, MemoryScope, MemoryState};
 
 impl MemoryRuntime {
     pub(super) fn prepare_forget(
         &self,
         request: MemoryForgetRequest,
     ) -> Result<PreparedMemoryForgetRequest, MemoryError> {
-        let (target, scope) = match request.selector {
+        let (target, scope, expected_project_scope_id) = match request.selector {
             MemoryForgetSelector::EntryId(entry_id) => {
                 let entry = self
                     .entry_by_id(&entry_id)?
                     .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?;
                 let scope = entry.scope;
-                (PreparedMemoryForgetTarget::Exact(entry), scope)
+                let expected_project_scope_id = match scope {
+                    MemoryScope::User if entry.scope_id != super::USER_SCOPE_ID => {
+                        return Err(MemoryError::InvalidRequest(
+                            "memory entry not found".to_string(),
+                        ));
+                    }
+                    MemoryScope::User => None,
+                    MemoryScope::Project => Some(entry.scope_id),
+                };
+                (
+                    PreparedMemoryForgetTarget::Exact(entry.entry_id),
+                    scope,
+                    expected_project_scope_id,
+                )
             }
             MemoryForgetSelector::Text(text) => (
                 PreparedMemoryForgetTarget::Text(normalize_body(&text)?),
                 request.scope,
+                None,
             ),
         };
-        let expected_project_scope_id = match &target {
-            PreparedMemoryForgetTarget::Exact(entry) if scope == MemoryScope::Project => {
-                Some(entry.scope_id.as_str())
-            }
-            PreparedMemoryForgetTarget::Exact(_) | PreparedMemoryForgetTarget::Text(_) => None,
-        };
-        let (source_session_id, scope_id) =
-            self.resolve_forget_source(scope, expected_project_scope_id, request.source)?;
-        if matches!(
-            &target,
-            PreparedMemoryForgetTarget::Exact(entry) if entry.scope_id != scope_id
-        ) {
-            return Err(MemoryError::InvalidRequest(
-                "memory entry not found".to_string(),
-            ));
-        }
+        let (source_session_id, scope_id) = self.resolve_forget_source(
+            scope,
+            expected_project_scope_id.as_deref(),
+            request.source,
+        )?;
         Ok(PreparedMemoryForgetRequest {
             target,
             scope: PreparedMemoryForgetScope { scope, scope_id },
@@ -142,13 +144,24 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let (entry_id, normalized_key, scope_id, prepared_entry) = match request.target {
-            PreparedMemoryForgetTarget::Exact(entry) => (
-                entry.entry_id.to_string(),
-                entry.normalized_key.clone(),
-                prepared_scope_id,
-                Some(entry),
-            ),
+        let (entry_id, normalized_key, scope_id) = match request.target {
+            PreparedMemoryForgetTarget::Exact(prepared_entry_id) => {
+                let existing = MemoryEntryIdentity::resolve_exact_and_merge(
+                    &transaction,
+                    prepared_entry_id.as_str(),
+                    scope,
+                    &prepared_scope_id,
+                )?
+                .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?;
+                let entry = load_entry(
+                    &transaction,
+                    &MemoryEntryId::from_string(existing.entry_id.clone()),
+                )?
+                .ok_or_else(|| {
+                    MemoryError::InvalidStoredValue("forget target is missing".into())
+                })?;
+                (existing.entry_id, entry.normalized_key, prepared_scope_id)
+            }
             PreparedMemoryForgetTarget::Text(text) => {
                 let scope_id = prepared_scope_id.clone();
                 let targets = {
@@ -191,12 +204,11 @@ impl MemoryRuntime {
                 let (entry_id, normalized_key) = targets.into_iter().next().ok_or_else(|| {
                     MemoryError::InvalidStoredValue("forget target is missing".into())
                 })?;
-                (entry_id, normalized_key, scope_id, None)
+                (entry_id, normalized_key, scope_id)
             }
         };
 
-        let updated_at = Utc::now();
-        let now = updated_at.to_rfc3339();
+        let now = Utc::now().to_rfc3339();
         transaction.execute(
             "INSERT INTO memory_revocations (
                  revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
@@ -234,16 +246,8 @@ impl MemoryRuntime {
             [entry_id.as_str()],
         )?;
         let entry_id = MemoryEntryId::from_string(entry_id);
-        let entry = match prepared_entry {
-            Some(entry) => MemoryEntry {
-                state: MemoryState::Retired,
-                updated_at,
-                ..entry
-            },
-            None => load_entry(&transaction, &entry_id)?.ok_or_else(|| {
-                MemoryError::InvalidStoredValue("forgotten entry is missing".into())
-            })?,
-        };
+        let entry = load_entry(&transaction, &entry_id)?
+            .ok_or_else(|| MemoryError::InvalidStoredValue("forgotten entry is missing".into()))?;
         let result = MemoryForgetResult {
             forgotten: Some(entry),
             candidates: Vec::new(),

@@ -309,7 +309,8 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected remember result")
         }
     };
@@ -326,7 +327,8 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected remember result")
         }
     };
@@ -347,7 +349,8 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::Remember(_) => {
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected list result")
         }
     };
@@ -487,7 +490,8 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::Remember(_) => {
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected list result")
         }
     };
@@ -509,7 +513,8 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::Remember(_) => {
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected list result")
         }
     };
@@ -793,7 +798,8 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected project remember result")
         }
     };
@@ -810,7 +816,8 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected linked project remember result")
         }
     };
@@ -836,7 +843,8 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::Remember(_) => {
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected linked project list result")
         }
     };
@@ -855,7 +863,8 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => {
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected unrelated project remember result")
         }
     };
@@ -874,7 +883,8 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::Remember(_) => {
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected main project list result")
         }
     };

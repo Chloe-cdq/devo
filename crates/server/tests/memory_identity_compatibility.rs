@@ -11,7 +11,9 @@ use devo_protocol::native::rpc_memory::{
 use devo_protocol::{SessionId, TurnId};
 use devo_server::memory::MemorySourceContext;
 use devo_server::memory::{
-    ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryRememberRequest, MemoryRuntime,
+    ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
+    MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemoryRuntime,
+    ProjectMemorySession, ProjectMemorySessionActivity,
 };
 use pretty_assertions::assert_eq;
 use rusqlite::Connection;
@@ -82,7 +84,8 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected = MemoryEntry {
         entry_id: MemoryEntryId::from_string("legacy-inferred-entry".to_owned()),
@@ -115,7 +118,8 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
-        | MemoryCommandResult::Forget(_) => panic!("expected memory list"),
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
         listed,
@@ -191,7 +195,8 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
-        | MemoryCommandResult::List(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected = MemoryEntry {
         entry_id: MemoryEntryId::from_string("canonical-entry".to_owned()),
@@ -248,7 +253,8 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
         MemoryCommandResult::Status(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
-        | MemoryCommandResult::Forget(_) => panic!("expected memory list"),
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
         listed,
@@ -279,6 +285,151 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
             next_cursor: None,
         }
     );
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9, DD-12
+/// Verifies: exact forget retires one canonical identity after merging its legacy inferred alias.
+#[tokio::test]
+async fn exact_forget_merges_canonical_and_legacy_aliases_before_retiring() {
+    let data_root = TempDir::new().expect("memory data root");
+    let memory_root = data_root.path().join("memory");
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("create memory runtime");
+    drop(runtime);
+
+    let database_path = memory_root.join("memory.sqlite3");
+    let connection = Connection::open(&database_path).expect("open memory database");
+    connection
+        .execute_batch(
+            "INSERT INTO memory_entries (
+                 entry_id, scope_type, scope_id, kind, normalized_key, body,
+                 origin, state, created_at, updated_at
+             ) VALUES
+                 ('canonical-entry', 'user', 'user', 'preference', 'Use API_KEY',
+                  'Use API_KEY', 'explicit_user', 'active',
+                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+                 ('legacy-entry', 'user', 'user', 'preference', 'use apikey',
+                  'Use API_KEY', 'inferred_session', 'active',
+                  '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z');
+             INSERT INTO memory_evidence (
+                 evidence_id, entry_id, session_id, turn_id, source_user_item_id,
+                 observed_at, source_watermark
+             ) VALUES
+                 ('canonical-evidence', 'canonical-entry', 'canonical-session', NULL, NULL,
+                  '2026-01-01T00:00:00Z', 'canonical-watermark'),
+                 ('legacy-evidence', 'legacy-entry', 'legacy-session', NULL, NULL,
+                  '2026-01-02T00:00:00Z', 'legacy-watermark');
+             INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
+                 SELECT entry_id, normalized_key, body FROM memory_entries;",
+        )
+        .expect("insert canonical and legacy aliases");
+    drop(connection);
+
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("reopen memory runtime");
+    let source = memory_test_support::test_source(
+        /*user_item_id*/ None,
+        "session-1",
+        /*turn_id*/ None,
+        PathBuf::new(),
+    );
+    let prepared = match runtime
+        .execute_command(MemoryCommand::PrepareForget(MemoryForgetRequest {
+            selector: MemoryForgetSelector::EntryId(MemoryEntryId::from_string(
+                "canonical-entry".to_owned(),
+            )),
+            scope: MemoryScope::User,
+            source: MemoryForgetSource {
+                bound_session_id: Some(source.session_id),
+                user_session_id: Some(source.session_id),
+                sessions: vec![ProjectMemorySession {
+                    session_id: source.session_id,
+                    workspace_root: Some(source.workspace_root),
+                    activity: ProjectMemorySessionActivity::Active,
+                }],
+            },
+        }))
+        .await
+        .expect("prepare exact forget")
+    {
+        MemoryCommandResult::PreparedForget(prepared) => prepared,
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => panic!("expected prepared forget"),
+    };
+    let forgotten = match runtime
+        .execute_command(MemoryCommand::Forget(prepared))
+        .await
+        .expect("forget canonical identity")
+    {
+        MemoryCommandResult::Forget(result) => result.forgotten.expect("forgotten entry"),
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => panic!("expected forget result"),
+    };
+    let expected = MemoryEntry {
+        entry_id: MemoryEntryId::from_string("canonical-entry".to_owned()),
+        scope: MemoryScope::User,
+        scope_id: "user".to_owned(),
+        kind: MemoryKind::Preference,
+        normalized_key: "Use API_KEY".to_owned(),
+        body: "Use API_KEY".to_owned(),
+        origin: MemoryOrigin::ExplicitUser,
+        state: MemoryState::Retired,
+        created_at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .expect("created timestamp")
+            .with_timezone(&Utc),
+        updated_at: forgotten.updated_at,
+        replacement_entry_id: None,
+        provenance: vec![
+            MemoryProvenance {
+                source_session_id: Some("canonical-session".to_owned()),
+                source_turn_id: None,
+                source_user_item_id: None,
+            },
+            MemoryProvenance {
+                source_session_id: Some("legacy-session".to_owned()),
+                source_turn_id: None,
+                source_user_item_id: None,
+            },
+        ],
+    };
+    assert_eq!(forgotten, expected);
+
+    let listed = match runtime
+        .execute_command(MemoryCommand::List(ListMemoryRequest {
+            scope: Some(MemoryScope::User),
+            workspace_root: PathBuf::new(),
+            ..ListMemoryRequest::default()
+        }))
+        .await
+        .expect("list retired identity")
+    {
+        MemoryCommandResult::List(page) => page,
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Search(_) => panic!("expected memory list"),
+    };
+    assert_eq!(
+        listed,
+        Page {
+            data: vec![expected],
+            next_cursor: None,
+        }
+    );
+    let connection = Connection::open(database_path).expect("reopen memory database");
+    let fts_count = connection
+        .query_row("SELECT COUNT(*) FROM memory_entries_fts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count searchable entries");
+    assert_eq!(fts_count, 0);
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-4, DD-9

@@ -2,11 +2,12 @@ use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryListResult;
 use devo_protocol::native::rpc_memory::MemoryScope;
+use devo_protocol::native::rpc_memory::{MemorySearchEntry, MemorySearchResult};
 
 use super::entries::load_entry;
 use super::{
-    DEFAULT_LIST_LIMIT, ListMemoryRequest, MAX_LIST_LIMIT, MemoryError, MemoryRuntime, kind_name,
-    origin_name, scope_name, state_name,
+    DEFAULT_LIST_LIMIT, ListMemoryRequest, MAX_LIST_LIMIT, MemoryError, MemoryRuntime,
+    SearchMemoryRequest, kind_name, origin_name, scope_name, state_name,
 };
 
 enum MemoryListMode {
@@ -15,6 +16,76 @@ enum MemoryListMode {
 }
 
 impl MemoryRuntime {
+    pub(super) fn search(
+        &self,
+        request: SearchMemoryRequest,
+    ) -> Result<MemorySearchResult, MemoryError> {
+        const SEARCH_LIMIT: u32 = 20;
+        const MAX_SUMMARY_CHARS: usize = 240;
+
+        let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| MemoryError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT entry_id
+             FROM memory_entries
+             WHERE scope_type = ?1
+               AND scope_id = ?2
+               AND (?3 IS NULL OR kind = ?3)
+               AND ((?4 IS NULL AND state IN ('active', 'restored')) OR state = ?4)
+               AND (body LIKE '%' || ?5 || '%' OR normalized_key LIKE '%' || ?5 || '%')
+             ORDER BY updated_at DESC, entry_id ASC
+             LIMIT ?6",
+        )?;
+        let ids = statement
+            .query_map(
+                rusqlite::params![
+                    scope_name(request.scope),
+                    scope_id,
+                    request.kind.map(kind_name),
+                    request.state.map(state_name),
+                    request.query,
+                    SEARCH_LIMIT,
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let entries = ids
+            .iter()
+            .map(|entry_id| {
+                load_entry(&connection, &MemoryEntryId::from_string(entry_id.clone()))?.ok_or_else(
+                    || MemoryError::InvalidStoredValue("searched entry is missing".into()),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Page {
+            data: entries
+                .into_iter()
+                .map(|entry| {
+                    let mut summary = entry
+                        .body
+                        .chars()
+                        .take(MAX_SUMMARY_CHARS)
+                        .collect::<String>();
+                    if entry.body.chars().count() > MAX_SUMMARY_CHARS {
+                        summary.push('…');
+                    }
+                    MemorySearchEntry {
+                        entry_id: entry.entry_id,
+                        scope: entry.scope,
+                        kind: entry.kind,
+                        state: entry.state,
+                        summary,
+                    }
+                })
+                .collect(),
+            next_cursor: None,
+        })
+    }
+
     pub(super) fn list(&self, request: ListMemoryRequest) -> Result<MemoryListResult, MemoryError> {
         self.list_with_mode(request, MemoryListMode::Management)
     }

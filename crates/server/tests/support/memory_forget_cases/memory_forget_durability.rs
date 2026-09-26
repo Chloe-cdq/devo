@@ -10,9 +10,7 @@ use crate::memory_forget_runtime_support::{
     configured_data_root, remember, run_turn, start_subscribed_session, tool_call_script,
     tool_result,
 };
-use crate::memory_forget_support::{
-    BlockingSecondMemoryListExecutor, build_runtime_with_overrides,
-};
+use crate::memory_forget_support::{BlockingMemorySearchExecutor, build_runtime_with_overrides};
 use crate::support::{
     ScriptedProvider, start_turn_with_approval_policy, wait_for_parent_turn_completed,
 };
@@ -24,7 +22,7 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
 {
     let data_root = configured_data_root()?;
     let provider = Arc::new(ScriptedProvider::new([]));
-    let executor = Arc::new(BlockingSecondMemoryListExecutor::new());
+    let executor = Arc::new(BlockingMemorySearchExecutor::new());
     let runtime = build_runtime_with_overrides(
         data_root.path(),
         Arc::clone(&provider) as _,
@@ -187,7 +185,7 @@ async fn native_durable_commit_with_projection_failure_invalidates_search_and_co
 -> Result<()> {
     let data_root = configured_data_root()?;
     let provider = Arc::new(ScriptedProvider::new([]));
-    let executor = Arc::new(BlockingSecondMemoryListExecutor::new());
+    let executor = Arc::new(BlockingMemorySearchExecutor::new());
     let runtime = build_runtime_with_overrides(
         data_root.path(),
         Arc::clone(&provider) as _,

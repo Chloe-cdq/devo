@@ -50,7 +50,8 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let prepared = prepare_forget(
         &runtime,
@@ -67,7 +68,8 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
         MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected forget result"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
 
     let old_observed_at = remembered.updated_at;
@@ -90,7 +92,8 @@ async fn old_inferred_evidence_cannot_reactivate_a_revoked_identity() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected retired list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected retired list"),
     };
     assert_eq!(
         listed,
@@ -116,7 +119,8 @@ async fn structured_inferred_evidence_cannot_bypass_revocation_identity() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let prepared = prepare_forget(
         &runtime,
@@ -151,7 +155,8 @@ async fn structured_inferred_evidence_preserves_active_explicit_identity() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
     let inferred = runtime
@@ -190,7 +195,8 @@ async fn structured_inferred_evidence_preserves_active_explicit_identity() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected memory list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
         listed,
@@ -216,7 +222,8 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let prepared = prepare_forget(
         &runtime,
@@ -237,7 +244,8 @@ async fn restored_explicit_memory_rejects_old_inferred_replay() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected restored entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected restored entry"),
     };
 
     let old_observed_at = remembered.updated_at;
@@ -278,7 +286,8 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
-        | MemoryCommandResult::Status(_) => panic!("expected remembered entry"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
     let inferred_observed_at = remembered.updated_at + chrono::Duration::seconds(1);
@@ -317,7 +326,8 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         MemoryCommandResult::Forget(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
-        | MemoryCommandResult::Status(_) => panic!("expected memory list"),
+        | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
         listed,

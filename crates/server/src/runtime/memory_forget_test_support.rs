@@ -17,25 +17,22 @@ pub(crate) struct BlockingFirstMemoryCommandExecutor {
     release_mutation: Notify,
 }
 
-pub(crate) struct BlockingSecondMemoryListExecutor {
+pub(crate) struct BlockingMemorySearchExecutor {
     armed: AtomicBool,
-    list_calls: AtomicUsize,
     snapshot_ready: Notify,
     release_snapshot: Notify,
 }
 
-impl BlockingSecondMemoryListExecutor {
+impl BlockingMemorySearchExecutor {
     pub(crate) fn new() -> Self {
         Self {
             armed: AtomicBool::new(false),
-            list_calls: AtomicUsize::new(0),
             snapshot_ready: Notify::new(),
             release_snapshot: Notify::new(),
         }
     }
 
     pub(crate) fn block_next_search(&self) {
-        self.list_calls.store(0, Ordering::SeqCst);
         self.armed.store(true, Ordering::SeqCst);
     }
 
@@ -90,21 +87,17 @@ impl MemoryCommandExecutor for BlockingFirstMemoryCommandExecutor {
 }
 
 #[async_trait]
-impl MemoryCommandExecutor for BlockingSecondMemoryListExecutor {
+impl MemoryCommandExecutor for BlockingMemorySearchExecutor {
     async fn execute(
         &self,
         memory: &MemoryRuntime,
         command: MemoryCommand,
     ) -> Result<MemoryCommandResult, MemoryError> {
-        let is_list = matches!(command, MemoryCommand::List(_));
+        let is_search = matches!(command, MemoryCommand::Search(_));
         let result = memory.execute_command(command).await?;
-        if is_list
-            && self.armed.load(Ordering::SeqCst)
-            && self.list_calls.fetch_add(1, Ordering::SeqCst) == 1
-        {
+        if is_search && self.armed.swap(false, Ordering::SeqCst) {
             self.snapshot_ready.notify_one();
             self.release_snapshot.notified().await;
-            self.armed.store(false, Ordering::SeqCst);
         }
         Ok(result)
     }

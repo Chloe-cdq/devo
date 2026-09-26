@@ -75,7 +75,8 @@ pub(super) async fn remember(
         crate::memory::MemoryCommandResult::Status(_)
         | crate::memory::MemoryCommandResult::PreparedForget(_)
         | crate::memory::MemoryCommandResult::Forget(_)
-        | crate::memory::MemoryCommandResult::List(_) => Err(ToolCallError::InternalError(
+        | crate::memory::MemoryCommandResult::List(_)
+        | crate::memory::MemoryCommandResult::Search(_) => Err(ToolCallError::InternalError(
             "memory_remember returned an unexpected result".to_string(),
         )),
     }
@@ -184,80 +185,33 @@ pub(super) async fn search(
     } else {
         std::path::PathBuf::new()
     };
-    let states = params.state.map_or_else(
-        || {
-            vec![
-                devo_protocol::native::rpc_memory::MemoryState::Active,
-                devo_protocol::native::rpc_memory::MemoryState::Restored,
-            ]
-        },
-        |state| vec![state],
-    );
     let search_epoch = runtime.memory_forget_coordinator.begin_search()?;
-    let mut entries = Vec::new();
-    for state in states {
-        let result = runtime
-            .deps
-            .memory_command_executor
-            .execute(
-                &memory,
-                crate::memory::MemoryCommand::List(crate::memory::ListMemoryRequest {
-                    scope: Some(scope),
-                    kind: params.kind,
-                    state: Some(state),
-                    origin: None,
-                    text: Some(params.query.clone()),
-                    cursor: None,
-                    limit: Some(20),
-                    workspace_root: workspace_root.clone(),
-                }),
-            )
-            .await
-            .map_err(memory_tool_error)?;
-        match result {
-            crate::memory::MemoryCommandResult::List(page) => entries.extend(page.data),
-            crate::memory::MemoryCommandResult::Status(_)
-            | crate::memory::MemoryCommandResult::Remember(_)
-            | crate::memory::MemoryCommandResult::PreparedForget(_)
-            | crate::memory::MemoryCommandResult::Forget(_) => {
-                return Err(ToolCallError::InternalError(
-                    "memory_search returned an unexpected result".to_string(),
-                ));
-            }
+    let result = runtime
+        .deps
+        .memory_command_executor
+        .execute(
+            &memory,
+            crate::memory::MemoryCommand::Search(crate::memory::SearchMemoryRequest {
+                query: params.query,
+                scope,
+                kind: params.kind,
+                state: params.state,
+                workspace_root,
+            }),
+        )
+        .await
+        .map_err(memory_tool_error)?;
+    let result = match result {
+        crate::memory::MemoryCommandResult::Search(result) => result,
+        crate::memory::MemoryCommandResult::Status(_)
+        | crate::memory::MemoryCommandResult::Remember(_)
+        | crate::memory::MemoryCommandResult::PreparedForget(_)
+        | crate::memory::MemoryCommandResult::Forget(_)
+        | crate::memory::MemoryCommandResult::List(_) => {
+            return Err(ToolCallError::InternalError(
+                "memory_search returned an unexpected result".to_string(),
+            ));
         }
-    }
-    entries.sort_by(|left, right| {
-        right
-            .updated_at
-            .cmp(&left.updated_at)
-            .then_with(|| left.entry_id.cmp(&right.entry_id))
-    });
-    entries.truncate(20);
-    let result = devo_protocol::native::page::Page {
-        data: entries
-            .into_iter()
-            .map(
-                |entry| devo_protocol::native::rpc_memory::MemorySearchEntry {
-                    entry_id: entry.entry_id,
-                    scope: entry.scope,
-                    kind: entry.kind,
-                    state: entry.state,
-                    summary: {
-                        const MAX_SUMMARY_CHARS: usize = 240;
-                        let mut summary = entry
-                            .body
-                            .chars()
-                            .take(MAX_SUMMARY_CHARS)
-                            .collect::<String>();
-                        if entry.body.chars().count() > MAX_SUMMARY_CHARS {
-                            summary.push('…');
-                        }
-                        summary
-                    },
-                },
-            )
-            .collect::<Vec<_>>(),
-        next_cursor: None,
     };
     runtime.memory_forget_coordinator.record_search_snapshot(
         &invocation,

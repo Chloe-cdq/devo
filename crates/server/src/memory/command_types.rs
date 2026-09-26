@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::{ItemId, MemoryEntryId};
 use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryForgetParams, MemoryForgetResult, MemoryKind, MemoryListResult,
-    MemoryOrigin, MemoryScope, MemoryState, MemoryStatus,
+    MemoryOrigin, MemoryScope, MemorySearchResult, MemoryState, MemoryStatus,
 };
 use devo_protocol::native::session::MemorySetting;
 use devo_protocol::{SessionId, TurnId};
@@ -23,6 +23,8 @@ pub enum MemoryCommand {
     Forget(PreparedMemoryForgetRequest),
     /// Return a filtered, paginated view of canonical memory entries.
     List(ListMemoryRequest),
+    /// Return bounded recall-eligible candidates for the root-agent search tool.
+    Search(SearchMemoryRequest),
     /// Resolve Native Session candidates to one canonical Project scope and
     /// execute the requested management operation within that scope.
     Project {
@@ -81,6 +83,8 @@ pub enum MemoryCommandResult {
     Forget(MemoryForgetResult),
     /// Result of [`MemoryCommand::List`].
     List(MemoryListResult),
+    /// Result of [`MemoryCommand::Search`].
+    Search(MemorySearchResult),
 }
 
 /// Input passed through the server-owned memory command seam for an explicit
@@ -174,7 +178,7 @@ pub(super) struct PreparedMemoryForgetScope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PreparedMemoryForgetTarget {
-    Exact(MemoryEntry),
+    Exact(MemoryEntryId),
     Text(String),
 }
 
@@ -206,6 +210,17 @@ pub struct ListMemoryRequest {
     pub text: Option<String>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    pub workspace_root: PathBuf,
+}
+
+/// Runtime-owned search input. Eligibility, ordering, limits, and safe
+/// projection are applied inside the memory deep module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchMemoryRequest {
+    pub query: String,
+    pub scope: MemoryScope,
+    pub kind: Option<MemoryKind>,
+    pub state: Option<MemoryState>,
     pub workspace_root: PathBuf,
 }
 

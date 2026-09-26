@@ -14,8 +14,7 @@ use crate::memory_forget_runtime_support::{
     tool_result,
 };
 use crate::memory_forget_support::{
-    BlockingFirstMemoryCommandExecutor, BlockingSecondMemoryListExecutor,
-    build_runtime_with_overrides,
+    BlockingFirstMemoryCommandExecutor, BlockingMemorySearchExecutor, build_runtime_with_overrides,
 };
 use crate::support::{
     ScriptedProvider, initialize_connection, start_parent_session, start_turn_with_approval_policy,
@@ -242,7 +241,7 @@ async fn deletion_invalidates_search_snapshot_before_pending_publish() -> Result
         data_root.path().join(".devo").join("config.toml"),
         "[memory]\nenabled = true\n",
     )?;
-    let executor = Arc::new(BlockingSecondMemoryListExecutor::new());
+    let executor = Arc::new(BlockingMemorySearchExecutor::new());
     executor.block_next_search();
     let runtime = build_runtime_with_overrides(
         data_root.path(),
