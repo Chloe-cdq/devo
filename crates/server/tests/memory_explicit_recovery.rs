@@ -1,6 +1,10 @@
 use std::fs;
 use std::path::Path;
 
+use devo_server::memory::MemorySourceContext;
+#[path = "../src/memory/test_support.rs"]
+mod memory_test_support;
+
 use chrono::{DateTime, Utc};
 use devo_core::MemoryConfig;
 use devo_protocol::native::ids::{ItemId, MemoryEntryId};
@@ -21,7 +25,11 @@ async fn remember(runtime: &MemoryRuntime, request: MemoryRememberRequest) -> Me
         .expect("remember explicit memory")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }
     }
@@ -42,7 +50,11 @@ async fn list(
         .expect("list explicit memory")
     {
         MemoryCommandResult::List(page) => page.data,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }
     }
@@ -236,10 +248,12 @@ async fn restart_repairs_projection_after_database_commit() {
             text: "I prefer repaired projections".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Preference),
-            source_user_item_id: Some("projection-repair".to_string()),
-            source_session_id: "session-repair".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("projection-repair"),
+                "session-repair",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -258,24 +272,27 @@ async fn restart_repairs_projection_after_database_commit() {
     assert!(!repaired.contains("stale projection"));
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-4, DD-8
-/// Verifies: schema migration merges legacy keys and honors the latest revocation.
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-4, DD-8, DD-9
+/// Verifies: v4-to-v5 migration merges legacy keys without reviving a revoked identity.
 #[tokio::test]
 async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     let data_root = TempDir::new().expect("memory data root");
     let memory_root = data_root.path().join("memory");
     let runtime =
         MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("open memory runtime");
+    let legacy_source = memory_test_support::test_source(
+        Some("legacy-item"),
+        "legacy-session",
+        Some("legacy-turn"),
+        data_root.path().to_path_buf(),
+    );
     let oldest = remember(
         &runtime,
         MemoryRememberRequest {
             text: "I prefer compact responses".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Preference),
-            source_user_item_id: Some("legacy-item".to_string()),
-            source_session_id: "legacy-session".to_string(),
-            source_turn_id: Some("legacy-turn".to_string()),
-            workspace_root: data_root.path().to_path_buf(),
+            source: legacy_source.clone(),
         },
     )
     .await;
@@ -324,12 +341,32 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
         .expect("insert duplicate provenance");
     connection
         .execute(
+            "INSERT INTO memory_entries (
+                 entry_id, scope_type, scope_id, kind, normalized_key, body,
+                 origin, state, created_at, updated_at
+             ) VALUES (?1, 'user', ?2, 'preference', ?3, ?4,
+                       'explicit_user', 'retired', ?5, ?5)",
+            rusqlite::params![
+                "legacy-retired-duplicate",
+                oldest.scope_id,
+                "legacy-retired-claim",
+                "I prefer compact responses.",
+                "2029-01-01T00:00:00Z",
+            ],
+        )
+        .expect("insert retired equivalent legacy entry");
+    connection
+        .execute(
             "INSERT INTO memory_evidence (
                  evidence_id, entry_id, session_id, turn_id, source_user_item_id,
                  observed_at, source_watermark
-             ) VALUES ('legacy-evidence-replay', 'legacy-duplicate', 'legacy-session',
-                       'legacy-turn', 'legacy-item', ?1, ?1)",
-            ["2030-01-01T00:00:00Z"],
+             ) VALUES ('legacy-evidence-replay', 'legacy-duplicate', ?1, ?2, ?3, ?4, ?4)",
+            rusqlite::params![
+                legacy_source.session_id.to_string(),
+                legacy_source.turn_id.map(|turn_id| turn_id.to_string()),
+                legacy_source.user_item_id.as_ref().map(ToString::to_string),
+                "2030-01-01T00:00:00Z",
+            ],
         )
         .expect("insert replayed duplicate provenance");
     connection
@@ -409,14 +446,14 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     expected.body = "i prefer compact responses!".to_string();
     expected.kind = MemoryKind::Fact;
     expected.state = MemoryState::Retired;
-    expected.updated_at = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
+    expected.updated_at = DateTime::parse_from_rfc3339("2035-01-01T00:00:00Z")
         .expect("parse fixture timestamp")
         .with_timezone(&Utc);
     expected.provenance = vec![
         MemoryProvenance {
-            source_session_id: Some("legacy-session".to_string()),
-            source_turn_id: Some("legacy-turn".to_string()),
-            source_user_item_id: Some(ItemId::from_string("legacy-item".to_string())),
+            source_session_id: Some(legacy_source.session_id.to_string()),
+            source_turn_id: legacy_source.turn_id.map(|turn_id| turn_id.to_string()),
+            source_user_item_id: legacy_source.user_item_id,
         },
         MemoryProvenance {
             source_session_id: Some("new-session".to_string()),
@@ -480,7 +517,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
         (
             "5".to_string(),
             2,
-            1,
+            0,
             Some("2031-01-01T00:00:00Z".to_string())
         )
     );
@@ -514,7 +551,176 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
         .expect("read migrated projection");
     assert!(projection.contains("i prefer compact responses!"));
-    assert!(!projection.contains("state: active"));
+    assert!(projection.contains("state: retired"));
     assert!(!projection.contains("Model inferred a compact-response preference"));
     assert!(!projection.contains("stale legacy projection"));
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 DD-8, DD-9
+/// Verifies: schema migration preserves the public Restored state when restoration is the latest lifecycle event.
+#[tokio::test]
+async fn schema_upgrade_restores_identity_when_restore_is_latest() {
+    let data_root = TempDir::new().expect("memory data root");
+    let memory_root = data_root.path().join("memory");
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("open memory runtime");
+    let remembered = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "I prefer restored migrations".to_string(),
+            scope: MemoryScope::User,
+            kind: Some(MemoryKind::Preference),
+            source: memory_test_support::test_source(
+                Some("restored-item"),
+                "restored-session",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
+        },
+    )
+    .await;
+    drop(runtime);
+
+    let connection = Connection::open(memory_root.join("memory.sqlite3"))
+        .expect("open memory database for restored fixture");
+    connection
+        .execute(
+            "UPDATE memory_entries SET normalized_key = ?1 WHERE entry_id = ?2",
+            rusqlite::params!["legacy-restored-claim", remembered.entry_id.as_str(),],
+        )
+        .expect("restore legacy normalized key");
+    connection
+        .execute(
+            "INSERT INTO memory_revocations (
+                 revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
+             ) VALUES (?1, 'user', 'user', ?2, ?3, ?4)",
+            rusqlite::params![
+                "legacy-restored-revocation",
+                "legacy-restored-claim",
+                "2027-01-01T00:00:00Z",
+                "2030-01-01T00:00:00Z",
+            ],
+        )
+        .expect("insert restored legacy revocation");
+    connection
+        .execute(
+            "UPDATE memory_schema_meta SET value = '4' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("downgrade fixture schema marker");
+    drop(connection);
+
+    let reopened = MemoryRuntime::open(memory_root.clone(), enabled_config())
+        .expect("upgrade restored memory runtime");
+    let mut expected = remembered;
+    expected.normalized_key = "i prefer restored migrations".to_string();
+    expected.state = MemoryState::Restored;
+    expected.updated_at = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
+        .expect("parse restored fixture timestamp")
+        .with_timezone(&Utc);
+    assert_eq!(
+        list(&reopened, MemoryScope::User, data_root.path()).await,
+        vec![expected]
+    );
+    drop(reopened);
+
+    let connection = Connection::open(memory_root.join("memory.sqlite3"))
+        .expect("open upgraded restored memory database");
+    let fts_matches: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) AS fts_matches FROM memory_entries_fts
+             WHERE memory_entries_fts MATCH 'restored'",
+            [],
+            |row| row.get("fts_matches"),
+        )
+        .expect("query restored memory FTS index");
+    assert_eq!(fts_matches, 1);
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9
+/// Verifies: a v4 tombstone without an entry remains authoritative for an explicit v5 restore.
+#[tokio::test]
+async fn v4_tombstone_without_entry_restores_the_v5_identity() {
+    let data_root = TempDir::new().expect("memory data root");
+    let memory_root = data_root.path().join("memory");
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("open memory runtime");
+    drop(runtime);
+
+    let database_path = memory_root.join("memory.sqlite3");
+    let connection = Connection::open(&database_path).expect("open memory database");
+    connection
+        .execute(
+            "INSERT INTO memory_revocations (
+                 revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
+             ) VALUES (?1, 'user', 'user', ?2, ?3, NULL)",
+            rusqlite::params![
+                "legacy-structured-revocation",
+                "use apikey",
+                "2027-01-01T00:00:00Z",
+            ],
+        )
+        .expect("insert legacy tombstone");
+    connection
+        .execute(
+            "UPDATE memory_schema_meta SET value = '4' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("downgrade fixture schema marker");
+    drop(connection);
+
+    let runtime =
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("upgrade memory runtime");
+    let restored = remember(
+        &runtime,
+        MemoryRememberRequest {
+            text: "Use API_KEY".to_string(),
+            scope: MemoryScope::User,
+            kind: Some(MemoryKind::Preference),
+            source: memory_test_support::test_source(
+                Some("restored-structured-item"),
+                "restored-structured-session",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
+        },
+    )
+    .await;
+    let expected = MemoryEntry {
+        entry_id: restored.entry_id.clone(),
+        scope: MemoryScope::User,
+        scope_id: "user".to_string(),
+        kind: MemoryKind::Preference,
+        normalized_key: "Use API_KEY".to_string(),
+        body: "Use API_KEY".to_string(),
+        origin: MemoryOrigin::ExplicitUser,
+        state: MemoryState::Restored,
+        created_at: restored.created_at,
+        updated_at: restored.updated_at,
+        replacement_entry_id: None,
+        provenance: restored.provenance.clone(),
+    };
+    assert_eq!(restored, expected);
+    assert_eq!(
+        list(&runtime, MemoryScope::User, data_root.path()).await,
+        vec![expected.clone()]
+    );
+    drop(runtime);
+
+    let connection = Connection::open(database_path).expect("inspect restored tombstone");
+    let lifecycle: (String, Option<String>) = connection
+        .query_row(
+            "SELECT revoked_at, restored_at FROM memory_revocations
+             WHERE revocation_id = 'legacy-structured-revocation'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read restored tombstone");
+    assert_eq!(
+        lifecycle,
+        (
+            "2027-01-01T00:00:00Z".to_string(),
+            Some(expected.updated_at.to_rfc3339()),
+        )
+    );
 }

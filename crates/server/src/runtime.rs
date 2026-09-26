@@ -126,6 +126,7 @@ mod connection_selectors;
 pub(crate) mod context_occupancy;
 mod context_usage;
 mod control_requests;
+mod current_user_item;
 mod goal_accounting;
 mod goal_continuation;
 mod goal_handlers;
@@ -135,6 +136,8 @@ mod interaction_items;
 mod items;
 mod lifecycle;
 mod mcp;
+mod memory_forget_authorization;
+mod memory_forget_preparation;
 mod memory_scope;
 mod model_api;
 mod outbound;
@@ -180,6 +183,8 @@ pub struct ServerRuntime {
     /// Optional memory runtime; initialization failure is isolated from
     /// ordinary session operation and reported through `memory/status`.
     memory: Option<Arc<crate::memory::MemoryRuntime>>,
+    /// Global Agent/Native deletion lease and root-agent pending selections.
+    memory_forget_coordinator: memory_forget_authorization::MemoryForgetCoordinator,
     /// Per-session actor handles; map lock must not be held across await.
     sessions: Mutex<HashMap<SessionId, SessionHandle>>,
     /// Interactive approval and user-input waits outside session actors.
@@ -396,6 +401,8 @@ impl ServerRuntime {
             goal_durable_store,
             usage_ledger,
             memory,
+            memory_forget_coordinator:
+                memory_forget_authorization::MemoryForgetCoordinator::default(),
             sessions: Mutex::new(HashMap::new()),
             session_interactive: SessionInteractiveLanes::default(),
             event_subscriptions: Mutex::new(HashMap::new()),

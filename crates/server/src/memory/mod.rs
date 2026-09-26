@@ -3,12 +3,24 @@
 //! This module deliberately exposes one high-level command surface. SQLite
 //! tables are an implementation detail and are never returned to callers.
 
+pub(crate) mod command_execution;
+mod command_types;
 mod entries;
+mod entry_identity;
 mod equivalence;
+mod forget;
 mod identity;
 mod migration;
 mod projection;
+mod queries;
+#[cfg(test)]
+mod runtime_test_support;
 mod schema;
+mod stored_values;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -18,11 +30,12 @@ use std::sync::Mutex;
 use chrono::DateTime;
 use chrono::Utc;
 use devo_core::MemoryConfig;
-use devo_core::SessionId;
+use devo_protocol::SessionId;
 use devo_protocol::native::page::Page;
+#[cfg(test)]
 use devo_protocol::native::rpc_memory::MemoryEntry;
+use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use devo_protocol::native::rpc_memory::MemoryKind;
-use devo_protocol::native::rpc_memory::MemoryListResult;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
@@ -30,6 +43,16 @@ use devo_protocol::native::rpc_memory::MemoryStatus;
 use devo_protocol::native::session::MemorySetting;
 use rusqlite::Connection;
 use thiserror::Error;
+
+#[cfg(test)]
+pub(crate) use command_types::MemoryInferredRememberRequest;
+pub use command_types::{
+    EnqueueOutcome, ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
+    MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
+    MemorySourceContext, PrepareMemoryRequest, PreparedMemory, PreparedMemoryForgetRequest,
+    ProjectMemoryOperation, ProjectMemorySession, ProjectMemorySessionActivity,
+    SearchMemoryRequest, SessionMemorySource,
+};
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
 const MEMORY_SCHEMA_VERSION: &str = "5";
@@ -89,6 +112,12 @@ pub enum MemoryError {
     SecretContentRejected,
     #[error("memory database contains an invalid value: {0}")]
     InvalidStoredValue(String),
+    #[error("memory forget committed but projection refresh failed: {projection_error}")]
+    ForgetCommitted {
+        result: Box<MemoryForgetResult>,
+        #[source]
+        projection_error: Box<MemoryError>,
+    },
 }
 
 /// Server-owned runtime for General Persistent Memory.
@@ -120,6 +149,7 @@ pub(super) fn state_name(state: MemoryState) -> &'static str {
         MemoryState::Stale => "stale",
         MemoryState::Conflicted => "conflicted",
         MemoryState::Retired => "retired",
+        MemoryState::Restored => "restored",
     }
 }
 
@@ -157,7 +187,7 @@ impl MemoryRuntime {
         let identity = identity::resolve_project_memory_identity(&request.workspace_root)
             .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
         let user_entries = self
-            .list(ListMemoryRequest {
+            .list_recallable(ListMemoryRequest {
                 scope: Some(MemoryScope::User),
                 state: Some(MemoryState::Active),
                 limit: Some(self.config.max_entries_per_turn),
@@ -198,6 +228,20 @@ impl MemoryRuntime {
                 }
                 Ok(MemoryCommandResult::Remember(self.remember(request)?))
             }
+            MemoryCommand::PrepareForget(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                Ok(MemoryCommandResult::PreparedForget(
+                    self.prepare_forget(request)?,
+                ))
+            }
+            MemoryCommand::Forget(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                Ok(MemoryCommandResult::Forget(self.forget(request)?))
+            }
             MemoryCommand::List(request) => {
                 if !self.config.enabled {
                     return Ok(MemoryCommandResult::List(Page {
@@ -206,6 +250,15 @@ impl MemoryRuntime {
                     }));
                 }
                 Ok(MemoryCommandResult::List(self.list(request)?))
+            }
+            MemoryCommand::Search(request) => {
+                if !self.config.enabled {
+                    return Ok(MemoryCommandResult::Search(Page {
+                        data: Vec::new(),
+                        next_cursor: None,
+                    }));
+                }
+                Ok(MemoryCommandResult::Search(self.search(request)?))
             }
             MemoryCommand::Project {
                 candidates,
@@ -222,62 +275,22 @@ impl MemoryRuntime {
                         }
                     };
                 }
-                let mut selected: Option<(
-                    SessionId,
-                    PathBuf,
-                    ProjectMemorySessionActivity,
-                    String,
-                )> = None;
-                for candidate in candidates {
-                    let workspace_root = candidate
-                        .workspace_root
-                        .ok_or(MemoryError::ProjectSessionUnavailable)?;
-                    let identity = identity::resolve_project_memory_identity(&workspace_root)
-                        .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
-                    if let Some((_, _, current_activity, current_scope_id)) = selected.as_ref() {
-                        if *current_scope_id != identity.scope_id {
-                            return Err(MemoryError::AmbiguousProjectScope);
-                        }
-                        if candidate.activity == ProjectMemorySessionActivity::Active
-                            && *current_activity == ProjectMemorySessionActivity::Inactive
-                        {
-                            selected = Some((
-                                candidate.session_id,
-                                workspace_root,
-                                candidate.activity,
-                                identity.scope_id,
-                            ));
-                        }
-                    } else {
-                        selected = Some((
-                            candidate.session_id,
-                            workspace_root,
-                            candidate.activity,
-                            identity.scope_id,
-                        ));
-                    }
-                }
-                let (selected_session_id, workspace_root, _, _) =
-                    selected.ok_or(MemoryError::ProjectSessionRequired)?;
+                let (selected_session_id, workspace_root) =
+                    self.resolve_project_memory_source(candidates)?;
                 match operation {
-                    ProjectMemoryOperation::Remember {
-                        text,
-                        kind,
-                        source_user_item_id,
-                        source_session_id,
-                        source_turn_id,
-                    } => Ok(MemoryCommandResult::Remember(self.remember(
-                        MemoryRememberRequest {
+                    ProjectMemoryOperation::Remember { text, kind, source } => Ok(
+                        MemoryCommandResult::Remember(self.remember(MemoryRememberRequest {
                             text,
                             scope: MemoryScope::Project,
                             kind,
-                            source_user_item_id,
-                            source_session_id:
-                                source_session_id.unwrap_or(selected_session_id).to_string(),
-                            source_turn_id,
-                            workspace_root,
-                        },
-                    )?)),
+                            source: MemorySourceContext {
+                                user_item_id: source.user_item_id,
+                                session_id: source.session_id.unwrap_or(selected_session_id),
+                                turn_id: source.turn_id,
+                                workspace_root,
+                            },
+                        })?),
+                    ),
                     ProjectMemoryOperation::List {
                         kind,
                         state,
@@ -298,6 +311,46 @@ impl MemoryRuntime {
                 }
             }
         }
+    }
+
+    fn resolve_project_memory_source(
+        &self,
+        candidates: Vec<ProjectMemorySession>,
+    ) -> Result<(SessionId, PathBuf), MemoryError> {
+        let candidates = candidates
+            .into_iter()
+            .map(|candidate| {
+                let workspace_root = candidate
+                    .workspace_root
+                    .ok_or(MemoryError::ProjectSessionUnavailable)?;
+                let identity = identity::resolve_project_memory_identity(&workspace_root)
+                    .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
+                Ok(ResolvedProjectMemorySession {
+                    session_id: candidate.session_id,
+                    workspace_root,
+                    activity: candidate.activity,
+                    scope_id: identity.scope_id,
+                })
+            })
+            .collect::<Result<Vec<_>, MemoryError>>()?;
+        let selected = select_project_memory_session(candidates)?;
+        Ok((selected.session_id, selected.workspace_root))
+    }
+
+    /// Records one observation from the server-owned passive extraction path.
+    ///
+    /// This remains crate-private so callers must first pass through the
+    /// server's source admission and scheduling boundary rather than invoking
+    /// inferred persistence as a public memory command.
+    #[cfg(test)]
+    pub(crate) fn record_inferred(
+        &self,
+        request: MemoryInferredRememberRequest,
+    ) -> Result<Option<MemoryEntry>, MemoryError> {
+        if !self.config.enabled {
+            return Err(MemoryError::Disabled);
+        }
+        self.remember_inferred(request)
     }
 
     fn status(&self) -> Result<MemoryStatus, MemoryError> {
@@ -328,130 +381,32 @@ impl MemoryRuntime {
     }
 }
 
-/// Commands supported by the memory runtime.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MemoryCommand {
-    /// Return effective feature state and safe aggregate health counts.
-    Status,
-    /// Validate, commit, and project an explicit user memory request.
-    Remember(MemoryRememberRequest),
-    /// Return a filtered, paginated view of canonical memory entries.
-    List(ListMemoryRequest),
-    /// Resolve Native Session candidates to one canonical Project scope and
-    /// execute the requested management operation within that scope.
-    Project {
-        candidates: Vec<ProjectMemorySession>,
-        operation: ProjectMemoryOperation,
-    },
+struct ResolvedProjectMemorySession {
+    session_id: SessionId,
+    workspace_root: PathBuf,
+    activity: ProjectMemorySessionActivity,
+    scope_id: String,
 }
 
-/// Project-scoped management operations accepted by [`MemoryCommand::Project`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectMemoryOperation {
-    /// Validate, commit, and project an explicit Project memory request.
-    Remember {
-        text: String,
-        kind: Option<MemoryKind>,
-        source_user_item_id: Option<String>,
-        /// Active-turn source Session; direct commands fall back to the
-        /// selected Project Session when absent.
-        source_session_id: Option<SessionId>,
-        source_turn_id: Option<String>,
-    },
-    /// Return a filtered, paginated Project memory view.
-    List {
-        kind: Option<MemoryKind>,
-        state: Option<MemoryState>,
-        origin: Option<MemoryOrigin>,
-        text: Option<String>,
-        cursor: Option<String>,
-        limit: Option<u32>,
-    },
-}
-
-/// Runtime-owned Native Session facts needed to resolve a Project scope.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectMemorySession {
-    pub session_id: SessionId,
-    /// The Session summary workspace, or `None` when that summary is
-    /// unavailable. Command execution applies the global gate before rejecting it.
-    pub workspace_root: Option<PathBuf>,
-    pub activity: ProjectMemorySessionActivity,
-}
-
-/// Whether a Project candidate owns an active turn or is only selected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectMemorySessionActivity {
-    Active,
-    Inactive,
-}
-
-/// Result returned by [`MemoryRuntime::execute_command`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MemoryCommandResult {
-    /// Result of [`MemoryCommand::Status`].
-    Status(MemoryStatus),
-    /// Result of [`MemoryCommand::Remember`].
-    Remember(MemoryEntry),
-    /// Result of [`MemoryCommand::List`].
-    List(MemoryListResult),
-}
-
-/// Input passed through the server-owned memory command seam for an explicit
-/// user request. The source identifiers are retained as provenance only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryRememberRequest {
-    pub text: String,
-    pub scope: MemoryScope,
-    pub kind: Option<MemoryKind>,
-    pub source_user_item_id: Option<String>,
-    pub source_session_id: String,
-    pub source_turn_id: Option<String>,
-    pub workspace_root: PathBuf,
-}
-
-/// Filter and paging input for a memory inspection command.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ListMemoryRequest {
-    pub scope: Option<MemoryScope>,
-    pub kind: Option<MemoryKind>,
-    pub state: Option<MemoryState>,
-    pub origin: Option<MemoryOrigin>,
-    pub text: Option<String>,
-    pub cursor: Option<String>,
-    pub limit: Option<u32>,
-    pub workspace_root: PathBuf,
-}
-
-/// Input for turn preparation.
-#[derive(Debug, Clone)]
-pub struct PrepareMemoryRequest {
-    pub workspace_root: PathBuf,
-    /// Raw per-session recall preference. The runtime resolves `inherit` using
-    /// its configured global default before preparing a snapshot.
-    pub session_recall: MemorySetting,
-}
-
-/// Prepared memory context for a turn.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PreparedMemory {
-    pub project_scope_id: Option<String>,
-    pub user_entries: Vec<MemoryEntry>,
-}
-
-/// A completed session source eligible for future memory extraction.
-#[derive(Debug, Clone, Default)]
-pub struct SessionMemorySource {
-    /// Raw per-session contribution preference read when a background scan
-    /// evaluates this source session.
-    pub session_contribution: MemorySetting,
-}
-
-/// Outcome of attempting to enqueue a session source.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EnqueueOutcome {
-    /// Whether this source was accepted for processing.
-    pub accepted: bool,
+fn select_project_memory_session(
+    candidates: Vec<ResolvedProjectMemorySession>,
+) -> Result<ResolvedProjectMemorySession, MemoryError> {
+    let mut selected: Option<ResolvedProjectMemorySession> = None;
+    for candidate in candidates {
+        if let Some(current) = selected.as_ref() {
+            if current.scope_id != candidate.scope_id {
+                return Err(MemoryError::AmbiguousProjectScope);
+            }
+            if candidate.activity == ProjectMemorySessionActivity::Active
+                && current.activity == ProjectMemorySessionActivity::Inactive
+            {
+                selected = Some(candidate);
+            }
+        } else {
+            selected = Some(candidate);
+        }
+    }
+    selected.ok_or(MemoryError::ProjectSessionRequired)
 }
 
 fn count_rows(connection: &Connection, sql: &str) -> Result<u64, MemoryError> {

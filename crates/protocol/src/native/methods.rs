@@ -7,6 +7,8 @@
 //! method registers its params/result types, error codes, capability and
 //! idempotency behavior exactly once, here.
 
+mod memory;
+
 use schemars::JsonSchema;
 use schemars::schema::RootSchema;
 use serde::Deserialize;
@@ -20,7 +22,6 @@ use super::item::Item;
 use super::item::ItemEnvelope;
 use super::page::Page;
 use super::rpc_admin::*;
-use super::rpc_memory::*;
 use super::rpc_search::*;
 use super::rpc_session::*;
 use super::rpc_turn::*;
@@ -101,30 +102,10 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
         required_capability: None,
         idempotency: Idempotency::None,
     },
-    MethodSpec {
-        name: "memory/status",
-        params_schema: schema_of::<MemoryStatusParams>,
-        result_schema: schema_of::<MemoryStatus>,
-        error_codes: &[],
-        required_capability: None,
-        idempotency: Idempotency::None,
-    },
-    MethodSpec {
-        name: "memory/remember",
-        params_schema: schema_of::<MemoryRememberParams>,
-        result_schema: schema_of::<MemoryEntry>,
-        error_codes: &[],
-        required_capability: None,
-        idempotency: Idempotency::None,
-    },
-    MethodSpec {
-        name: "memory/list",
-        params_schema: schema_of::<MemoryListParams>,
-        result_schema: schema_of::<MemoryListResult>,
-        error_codes: &[],
-        required_capability: None,
-        idempotency: Idempotency::None,
-    },
+    memory::STATUS,
+    memory::REMEMBER,
+    memory::FORGET,
+    memory::LIST,
     MethodSpec {
         name: "subscription/create",
         params_schema: schema_of::<SubscriptionCreateParams>,

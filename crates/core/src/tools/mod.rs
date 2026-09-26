@@ -69,7 +69,7 @@ pub use contracts::{
 pub use deferred_loading::*;
 pub use devo_tools::{
     AgentToolCoordinator, ClientFilesystem, ClientTextFileRead, ClientTextFileWrite,
-    FileReadFreshnessError, FileReadLedger,
+    FileReadFreshnessError, FileReadLedger, MemoryToolInvocation,
 };
 pub use errors::*;
 pub use events::ToolEvent;

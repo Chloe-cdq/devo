@@ -333,6 +333,10 @@ impl ServerRuntime {
                 self.handle_native_memory_remember(connection_id, id?, params)
                     .await,
             ),
+            "memory/forget" => Some(
+                self.handle_native_memory_forget(connection_id, id?, params)
+                    .await,
+            ),
             "memory/list" => Some(
                 self.handle_native_memory_list(connection_id, id?, params)
                     .await,

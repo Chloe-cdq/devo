@@ -281,6 +281,8 @@ const AGENT_COORDINATION_TOOL_NAMES: &[&str] = &[
     "list_agents",
     "close_agent",
     "memory_remember",
+    "memory_forget",
+    "memory_search",
 ];
 
 pub(super) fn without_agent_coordination_tools(

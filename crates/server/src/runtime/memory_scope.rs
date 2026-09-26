@@ -12,6 +12,11 @@ impl ServerRuntime {
         active_session_ids: &[SessionId],
     ) -> Vec<ProjectMemorySession> {
         let mut session_ids = active_session_ids.to_vec();
+        if let Some(session_id) = self.subscribed_session_for_connection(connection_id).await
+            && !session_ids.contains(&session_id)
+        {
+            session_ids.push(session_id);
+        }
         for session_id in self.native_session_ids_for_connection(connection_id).await {
             if !session_ids.contains(&session_id) {
                 session_ids.push(session_id);

@@ -17,7 +17,7 @@ pub use contracts::{
     ToolAgentScope, ToolCallError, ToolContext, ToolPermissionProfile, ToolProgress,
     ToolProgressSender, ToolResult, ToolResultContent, ToolTerminalStatus,
 };
-pub use coordinator::AgentToolCoordinator;
+pub use coordinator::{AgentToolCoordinator, MemoryToolInvocation};
 pub use errors::*;
 pub use events::ToolEvent;
 pub use file_read_ledger::{FileReadFreshnessError, FileReadLedger};

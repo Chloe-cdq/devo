@@ -14,6 +14,7 @@ use devo_core::ProviderVendorCatalog;
 use devo_core::SessionId;
 use devo_core::SkillsConfig;
 use devo_core::tools::AgentToolCoordinator;
+use devo_core::tools::MemoryToolInvocation;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::AgentToolPolicy;
 use devo_protocol::Model;
@@ -581,8 +582,11 @@ async fn root_memory_remember_accepts_current_user_intent_with_arbitrary_wording
     memory_notifications::wait_for_item_completed(&mut notifications, &source_user_item_id).await?;
     let remembered = Arc::clone(&runtime)
         .memory_remember(
-            session_id.clone(),
-            turn.id.to_string(),
+            MemoryToolInvocation {
+                session_id: SessionId::try_from(session_id.as_str())?,
+                turn_id: devo_protocol::TurnId::try_from(turn.id.as_str())?,
+                user_item_id: source_user_item_id.clone().into(),
+            },
             MemoryRememberParams {
                 text: "I prefer tabs".to_string(),
                 scope: MemoryScope::User,
@@ -669,8 +673,11 @@ async fn subagent_memory_remember_is_rejected_at_the_server_boundary() -> Result
     memory_notifications::wait_for_item_completed(&mut notifications, &source_user_item_id).await?;
     let error = Arc::clone(&runtime)
         .memory_remember(
-            child_id,
-            turn_id,
+            MemoryToolInvocation {
+                session_id: SessionId::try_from(child_id.as_str())?,
+                turn_id: devo_protocol::TurnId::try_from(turn_id.as_str())?,
+                user_item_id: source_user_item_id.clone().into(),
+            },
             MemoryRememberParams {
                 text: "I prefer tabs".to_string(),
                 scope: MemoryScope::User,
@@ -768,14 +775,25 @@ async fn root_memory_remember_rejects_stale_item_and_wrong_turn() -> Result<()> 
         }
     }
 
-    for (turn_id, item_id) in [
-        (turn_ids[1].clone(), item_ids[0].clone()),
-        (turn_ids[0].clone(), item_ids[1].clone()),
+    for (turn_id, item_id, expected_error) in [
+        (
+            turn_ids[1].clone(),
+            item_ids[0].clone(),
+            "invalid input: memory tool source must be the current user message",
+        ),
+        (
+            turn_ids[0].clone(),
+            item_ids[1].clone(),
+            "invalid input: memory tool turn context does not match the active turn",
+        ),
     ] {
         let error = Arc::clone(&runtime)
             .memory_remember(
-                session_id.clone(),
-                turn_id,
+                MemoryToolInvocation {
+                    session_id: SessionId::try_from(session_id.as_str())?,
+                    turn_id: devo_protocol::TurnId::try_from(turn_id.as_str())?,
+                    user_item_id: item_id.clone().into(),
+                },
                 MemoryRememberParams {
                     text: "I prefer tabs".to_string(),
                     scope: MemoryScope::User,
@@ -785,10 +803,7 @@ async fn root_memory_remember_rejects_stale_item_and_wrong_turn() -> Result<()> 
             )
             .await
             .expect_err("stale item or wrong turn must be rejected");
-        assert_eq!(
-            error.to_string(),
-            "invalid input: memory_remember source item is not the current user message"
-        );
+        assert_eq!(error.to_string(), expected_error);
     }
     release.notify_waiters();
     Ok(())

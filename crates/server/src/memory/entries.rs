@@ -1,22 +1,32 @@
 use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::MemoryEntryId;
-use devo_protocol::native::page::Page;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryKind;
-use devo_protocol::native::rpc_memory::MemoryListResult;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
 use devo_safety::{InMemorySecretDetectorRegistry, SecretDetectorRegistry};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::equivalence;
+#[cfg(test)]
+use super::MemoryInferredRememberRequest;
+use super::entry_identity::MemoryEntryIdentity;
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
+use super::stored_values::{parse_kind, parse_origin, parse_scope, parse_state, parse_timestamp};
 use super::{
-    DEFAULT_LIST_LIMIT, ListMemoryRequest, MAX_LIST_LIMIT, MemoryError, MemoryRememberRequest,
-    MemoryRuntime, USER_SCOPE_ID, kind_name, origin_name, scope_name, state_name,
+    MemoryError, MemoryRememberRequest, MemoryRuntime, USER_SCOPE_ID, kind_name, origin_name,
+    scope_name, state_name,
 };
+
+enum MemoryWriteMode {
+    Explicit,
+    #[cfg(test)]
+    Inferred {
+        source_observed_at: DateTime<Utc>,
+        source_watermark: String,
+    },
+}
 
 impl MemoryRuntime {
     pub(super) fn rebuild_projections(&self) -> Result<(), MemoryError> {
@@ -25,8 +35,14 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let mut statement = connection.prepare(
-            "SELECT DISTINCT scope_type, scope_id
-             FROM memory_entries
+            "SELECT scope_type, scope_id
+             FROM (
+                 SELECT scope_type, scope_id FROM memory_entries
+                 UNION
+                 SELECT scope_type, scope_id FROM memory_revocations
+                 UNION
+                 SELECT scope_type, scope_id FROM memory_scope_state
+             ) AS stored_scopes
              ORDER BY scope_type ASC, scope_id ASC",
         )?;
         let scopes = statement
@@ -45,46 +61,185 @@ impl MemoryRuntime {
         &self,
         request: MemoryRememberRequest,
     ) -> Result<MemoryEntry, MemoryError> {
+        self.remember_entry(request, MemoryWriteMode::Explicit)?
+            .ok_or_else(|| {
+                MemoryError::InvalidStoredValue("explicit memory write was skipped".into())
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn remember_inferred(
+        &self,
+        request: MemoryInferredRememberRequest,
+    ) -> Result<Option<MemoryEntry>, MemoryError> {
+        self.remember_entry(
+            MemoryRememberRequest {
+                text: request.text,
+                scope: request.scope,
+                kind: request.kind,
+                source: request.source,
+            },
+            MemoryWriteMode::Inferred {
+                source_observed_at: request.source_observed_at,
+                source_watermark: request.source_watermark,
+            },
+        )
+    }
+
+    fn remember_entry(
+        &self,
+        request: MemoryRememberRequest,
+        mode: MemoryWriteMode,
+    ) -> Result<Option<MemoryEntry>, MemoryError> {
         let body = normalize_body(&request.text)?;
         if contains_secret(&body) {
             return Err(MemoryError::SecretContentRejected);
         }
-        let normalized_key = equivalence::explicit_memory_key(&body);
+        let identity = MemoryEntryIdentity::from_body(&body);
+        let normalized_key = match &mode {
+            MemoryWriteMode::Explicit => identity.canonical_key.clone(),
+            #[cfg(test)]
+            MemoryWriteMode::Inferred { .. } => identity.legacy_inferred_key.clone(),
+        };
         let kind = request
             .kind
             .unwrap_or_else(|| classify_kind(&normalized_key));
-        let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
+        let scope_id = self.scope_id(request.scope, &request.source.workspace_root)?;
         let now = Utc::now().to_rfc3339();
-        let entry_id = MemoryEntryId::new();
+        let (origin, observed_at, source_watermark, source_observed_at, allow_restore) = match mode
+        {
+            MemoryWriteMode::Explicit => (
+                MemoryOrigin::ExplicitUser,
+                now.clone(),
+                now.clone(),
+                None::<DateTime<Utc>>,
+                true,
+            ),
+            #[cfg(test)]
+            MemoryWriteMode::Inferred {
+                source_observed_at,
+                source_watermark,
+            } => (
+                MemoryOrigin::InferredSession,
+                source_observed_at.to_rfc3339(),
+                source_watermark,
+                Some(source_observed_at),
+                false,
+            ),
+        };
         let connection = self
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let existing_id: Option<String> = transaction
-            .query_row(
-                "SELECT entry_id
-                 FROM memory_entries
-                 WHERE scope_type = ?1 AND scope_id = ?2 AND normalized_key = ?3",
-                rusqlite::params![scope_name(request.scope), scope_id, normalized_key],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let entry_id = if let Some(existing_id) = existing_id {
-            transaction.execute(
-                "UPDATE memory_entries
-                 SET kind = ?1, body = ?2, origin = 'explicit_user', state = 'active',
-                     updated_at = ?3, replacement_entry_id = NULL
-                 WHERE entry_id = ?4",
-                rusqlite::params![kind_name(kind), body, now, existing_id],
-            )?;
-            MemoryEntryId::from_string(existing_id)
+        let existing =
+            identity.resolve_and_merge_existing(&transaction, request.scope, &scope_id, &body)?;
+        let existing_origin = existing.as_ref().map(|entry| entry.origin);
+        let mut revocation_statement = transaction.prepare(
+            "SELECT revoked_at, restored_at
+             FROM memory_revocations
+             WHERE scope_type = ?1 AND scope_id = ?2
+               AND (normalized_key = ?3 OR normalized_key = ?4)",
+        )?;
+        let revocations = revocation_statement
+            .query_map(
+                rusqlite::params![
+                    scope_name(request.scope),
+                    scope_id,
+                    identity.canonical_key,
+                    identity.legacy_inferred_key,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(revocation_statement);
+        let mut latest_revoked_at = None;
+        let mut latest_restored_at = None;
+        for (revoked_at, restored_at) in revocations {
+            let revoked_at = parse_timestamp(&revoked_at)?;
+            latest_revoked_at = Some(
+                latest_revoked_at
+                    .map_or(revoked_at, |latest: DateTime<Utc>| latest.max(revoked_at)),
+            );
+            if let Some(restored_at) = restored_at {
+                let restored_at = parse_timestamp(&restored_at)?;
+                latest_restored_at = Some(
+                    latest_restored_at
+                        .map_or(restored_at, |latest: DateTime<Utc>| latest.max(restored_at)),
+                );
+            }
+        }
+        let revocation = latest_revoked_at.map(|revoked_at| (revoked_at, latest_restored_at));
+        let revocation_active = revocation
+            .as_ref()
+            .is_some_and(|(revoked_at, restored_at)| {
+                restored_at.is_none_or(|restored_at| restored_at < *revoked_at)
+            });
+        if let Some(source_observed_at) = source_observed_at
+            && (revocation
+                .as_ref()
+                .is_some_and(|(revoked_at, _)| source_observed_at <= *revoked_at)
+                || revocation_active)
+        {
+            return Ok(None);
+        }
+        let preserve_existing =
+            source_observed_at.is_some() && existing_origin == Some(MemoryOrigin::ExplicitUser);
+        let existing_id = existing.as_ref().map(|entry| &entry.entry_id);
+        let state = if revocation.is_some() {
+            MemoryState::Restored
         } else {
+            MemoryState::Active
+        };
+        if allow_restore {
+            transaction.execute(
+                "UPDATE memory_revocations
+                 SET restored_at = ?1
+                 WHERE scope_type = ?2 AND scope_id = ?3
+                   AND (normalized_key = ?4 OR normalized_key = ?5)
+                   AND (restored_at IS NULL OR restored_at < revoked_at)",
+                rusqlite::params![
+                    now,
+                    scope_name(request.scope),
+                    scope_id,
+                    identity.canonical_key,
+                    identity.legacy_inferred_key,
+                ],
+            )?;
+        }
+        let entry_id = if let Some(existing_id) = existing_id {
+            if preserve_existing {
+                transaction.execute(
+                    "UPDATE memory_entries
+                     SET updated_at = ?1
+                     WHERE entry_id = ?2",
+                    rusqlite::params![now, existing_id],
+                )?;
+            } else {
+                transaction.execute(
+                    "UPDATE memory_entries
+                     SET kind = ?1, normalized_key = ?2, body = ?3, origin = ?4, state = ?5,
+                         updated_at = ?6, replacement_entry_id = NULL
+                     WHERE entry_id = ?7",
+                    rusqlite::params![
+                        kind_name(kind),
+                        normalized_key,
+                        body,
+                        origin_name(origin),
+                        state_name(state),
+                        now,
+                        existing_id,
+                    ],
+                )?;
+            }
+            MemoryEntryId::from_string(existing_id.clone())
+        } else {
+            let entry_id = MemoryEntryId::new();
             transaction.execute(
                 "INSERT INTO memory_entries (
                      entry_id, scope_type, scope_id, kind, normalized_key, body,
                      origin, state, created_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'explicit_user', 'active', ?7, ?7)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
                 rusqlite::params![
                     entry_id.as_str(),
                     scope_name(request.scope),
@@ -92,28 +247,32 @@ impl MemoryRuntime {
                     kind_name(kind),
                     normalized_key,
                     body,
+                    origin_name(origin),
+                    state_name(state),
                     now,
                 ],
             )?;
             entry_id
         };
-        transaction.execute(
-            "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
-            [entry_id.as_str()],
-        )?;
-        transaction.execute(
-            "INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
-             SELECT entry_id, normalized_key, body
-             FROM memory_entries
-             WHERE entry_id = ?1",
-            [entry_id.as_str()],
-        )?;
+        if !preserve_existing {
+            transaction.execute(
+                "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
+                [entry_id.as_str()],
+            )?;
+            transaction.execute(
+                "INSERT INTO memory_entries_fts (entry_id, normalized_key, body)
+                 SELECT entry_id, normalized_key, body
+                 FROM memory_entries
+                 WHERE entry_id = ?1",
+                [entry_id.as_str()],
+            )?;
+        }
         transaction.execute(
             "INSERT INTO memory_evidence (
                  evidence_id, entry_id, session_id, turn_id, source_user_item_id,
                  observed_at, source_watermark
              )
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
              WHERE NOT EXISTS (
                  SELECT 1
                  FROM memory_evidence
@@ -125,78 +284,21 @@ impl MemoryRuntime {
             rusqlite::params![
                 uuid::Uuid::now_v7().simple().to_string(),
                 entry_id.as_str(),
-                request.source_session_id,
-                request.source_turn_id,
-                request.source_user_item_id,
-                now,
+                request.source.session_id.to_string(),
+                request.source.turn_id.map(|turn_id| turn_id.to_string()),
+                request
+                    .source
+                    .user_item_id
+                    .map(|item_id| item_id.to_string()),
+                observed_at,
+                source_watermark,
             ],
         )?;
         transaction.commit()?;
         let entry = load_entry(&connection, &entry_id)?
             .ok_or_else(|| MemoryError::InvalidStoredValue("committed entry is missing".into()))?;
         self.refresh_projection(&connection, request.scope, &scope_id)?;
-        Ok(entry)
-    }
-
-    pub(super) fn list(&self, request: ListMemoryRequest) -> Result<MemoryListResult, MemoryError> {
-        let scope = request.scope.unwrap_or(MemoryScope::User);
-        let scope_id = self.scope_id(scope, &request.workspace_root)?;
-        let limit = request
-            .limit
-            .unwrap_or(DEFAULT_LIST_LIMIT)
-            .clamp(1, MAX_LIST_LIMIT);
-        let offset = parse_cursor(request.cursor.as_deref())?;
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| MemoryError::LockPoisoned)?;
-        let mut statement = connection.prepare(
-            "SELECT entry_id
-             FROM memory_entries
-             WHERE scope_type = ?1
-               AND scope_id = ?2
-               AND (?3 IS NULL OR kind = ?3)
-               AND (?4 IS NULL OR state = ?4)
-               AND (?5 IS NULL OR origin = ?5)
-               AND (?6 IS NULL OR body LIKE '%' || ?6 || '%' OR normalized_key LIKE '%' || ?6 || '%')
-             ORDER BY updated_at DESC, entry_id ASC
-             LIMIT ?7 OFFSET ?8",
-        )?;
-        let kind = request.kind.map(kind_name);
-        let state = request.state.map(state_name);
-        let origin = request.origin.map(origin_name);
-        let ids = statement
-            .query_map(
-                rusqlite::params![
-                    scope_name(scope),
-                    scope_id,
-                    kind,
-                    state,
-                    origin,
-                    request.text,
-                    i64::from(limit) + 1,
-                    i64::try_from(offset).map_err(|_| {
-                        MemoryError::InvalidRequest("memory cursor is too large".into())
-                    })?,
-                ],
-                |row| row.get::<_, String>(0),
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        let has_next = ids.len() > usize::try_from(limit).unwrap_or(usize::MAX);
-        let ids = ids.into_iter().take(limit as usize).collect::<Vec<_>>();
-        drop(statement);
-        let entries = ids
-            .iter()
-            .map(|id| {
-                load_entry(&connection, &MemoryEntryId::from_string(id.clone()))?.ok_or_else(|| {
-                    MemoryError::InvalidStoredValue("listed entry is missing".into())
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Page {
-            data: entries,
-            next_cursor: has_next.then(|| (offset + usize::try_from(limit).unwrap()).to_string()),
-        })
+        Ok(Some(entry))
     }
 
     pub(super) fn scope_id(
@@ -212,7 +314,18 @@ impl MemoryRuntime {
         }
     }
 
-    fn refresh_projection(
+    pub(super) fn entry_by_id(
+        &self,
+        entry_id: &MemoryEntryId,
+    ) -> Result<Option<MemoryEntry>, MemoryError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| MemoryError::LockPoisoned)?;
+        load_entry(&connection, entry_id)
+    }
+
+    pub(super) fn refresh_projection(
         &self,
         connection: &Connection,
         scope: MemoryScope,
@@ -228,7 +341,7 @@ impl MemoryRuntime {
     }
 }
 
-fn normalize_body(text: &str) -> Result<String, MemoryError> {
+pub(super) fn normalize_body(text: &str) -> Result<String, MemoryError> {
     let body = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if body.is_empty() {
         return Err(MemoryError::InvalidRequest(
@@ -274,14 +387,7 @@ fn contains_secret(body: &str) -> bool {
             .any(|detector| !detector.detect(body).is_empty())
 }
 
-fn parse_cursor(cursor: Option<&str>) -> Result<usize, MemoryError> {
-    cursor
-        .unwrap_or("0")
-        .parse::<usize>()
-        .map_err(|_| MemoryError::InvalidRequest("memory cursor must be a number".into()))
-}
-
-fn load_entry(
+pub(super) fn load_entry(
     connection: &Connection,
     entry_id: &MemoryEntryId,
 ) -> Result<Option<MemoryEntry>, MemoryError> {
@@ -390,46 +496,4 @@ fn load_provenance(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
-}
-
-fn parse_scope(value: &str) -> Result<MemoryScope, MemoryError> {
-    match value {
-        "user" => Ok(MemoryScope::User),
-        "project" => Ok(MemoryScope::Project),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_kind(value: &str) -> Result<MemoryKind, MemoryError> {
-    match value {
-        "preference" => Ok(MemoryKind::Preference),
-        "feedback" => Ok(MemoryKind::Feedback),
-        "fact" => Ok(MemoryKind::Fact),
-        "reference" => Ok(MemoryKind::Reference),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_state(value: &str) -> Result<MemoryState, MemoryError> {
-    match value {
-        "active" => Ok(MemoryState::Active),
-        "stale" => Ok(MemoryState::Stale),
-        "conflicted" => Ok(MemoryState::Conflicted),
-        "retired" => Ok(MemoryState::Retired),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_origin(value: &str) -> Result<MemoryOrigin, MemoryError> {
-    match value {
-        "explicit_user" => Ok(MemoryOrigin::ExplicitUser),
-        "inferred_session" => Ok(MemoryOrigin::InferredSession),
-        _ => Err(MemoryError::InvalidStoredValue(value.into())),
-    }
-}
-
-fn parse_timestamp(value: &str) -> Result<DateTime<Utc>, MemoryError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-        .map_err(|_| MemoryError::InvalidTimestamp(value.into()))
 }

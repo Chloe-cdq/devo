@@ -4,6 +4,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use devo_server::memory::MemorySourceContext;
+
+#[path = "../src/memory/test_support.rs"]
+mod test_support;
+
 use anyhow::Context;
 use anyhow::Result;
 use devo_core::AgentsMdConfig;
@@ -21,6 +26,7 @@ use devo_protocol::ModelResponse;
 use devo_protocol::ProtocolErrorCode;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
+use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
@@ -106,10 +112,12 @@ fn remember_request(
         text: text.to_string(),
         scope: MemoryScope::User,
         kind: None,
-        source_user_item_id: Some(source_user_item_id.to_string()),
-        source_session_id: "ses-1".to_string(),
-        source_turn_id: Some("turn-1".to_string()),
-        workspace_root: workspace_root.to_path_buf(),
+        source: test_support::test_source(
+            Some(source_user_item_id),
+            "ses-1",
+            Some("turn-1"),
+            workspace_root.to_path_buf(),
+        ),
     }
 }
 
@@ -298,7 +306,11 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("commit explicit memory");
     let first = match first {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected remember result")
         }
     };
@@ -312,7 +324,11 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("deduplicate explicit memory");
     let second = match second {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected remember result")
         }
     };
@@ -330,7 +346,11 @@ async fn explicit_user_memory_is_committed_and_deduplicated() {
         .expect("list explicit memory");
     let listed: Page<_> = match listed {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected list result")
         }
     };
@@ -451,7 +471,10 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
     assert!(projection.contains("state: active"));
     assert!(projection.contains("origin: explicit_user"));
     assert!(projection.contains("created_at:"));
-    assert!(projection.contains("source_session_id: ses-1"));
+    assert!(projection.contains(&format!(
+        "source_session_id: {}",
+        SessionId::from(test_support::deterministic_uuid("ses-1"))
+    )));
 
     let first_page = runtime
         .execute_command(MemoryCommand::List(ListMemoryRequest {
@@ -464,7 +487,11 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         .expect("list first page");
     let first_page: Page<_> = match first_page {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected list result")
         }
     };
@@ -483,7 +510,11 @@ async fn user_memory_listing_is_paginated_and_projection_is_regenerated() {
         .expect("list second page");
     let second_page: Page<_> = match second_page {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected list result")
         }
     };
@@ -764,7 +795,11 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("remember project memory from main checkout")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected project remember result")
         }
     };
@@ -778,7 +813,11 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("remember project memory from linked worktree")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected linked project remember result")
         }
     };
@@ -801,7 +840,11 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("list linked project memory")
     {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected linked project list result")
         }
     };
@@ -817,7 +860,11 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("remember unrelated project memory")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected unrelated project remember result")
         }
     };
@@ -833,7 +880,11 @@ async fn project_memory_shares_linked_worktrees_and_isolates_unrelated_repositor
         .expect("list main project memory")
     {
         MemoryCommandResult::List(page) => page,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected main project list result")
         }
     };
