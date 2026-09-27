@@ -638,9 +638,9 @@ async fn schema_upgrade_restores_identity_when_restore_is_latest() {
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9
-/// Verifies: a v4 tombstone without an entry remains authoritative for an explicit v5 restore.
+/// Verifies: a tombstone-only lossy legacy alias cannot restore an incompatible v5 identity.
 #[tokio::test]
-async fn v4_tombstone_without_entry_restores_the_v5_identity() {
+async fn v4_tombstone_without_entry_does_not_restore_incompatible_v5_identity() {
     let data_root = TempDir::new().expect("memory data root");
     let memory_root = data_root.path().join("memory");
     let runtime =
@@ -656,7 +656,7 @@ async fn v4_tombstone_without_entry_restores_the_v5_identity() {
              ) VALUES (?1, 'user', 'user', ?2, ?3, NULL)",
             rusqlite::params![
                 "legacy-structured-revocation",
-                "use apikey",
+                "use foo1",
                 "2027-01-01T00:00:00Z",
             ],
         )
@@ -671,10 +671,10 @@ async fn v4_tombstone_without_entry_restores_the_v5_identity() {
 
     let runtime =
         MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("upgrade memory runtime");
-    let restored = remember(
+    let remembered = remember(
         &runtime,
         MemoryRememberRequest {
-            text: "Use API_KEY".to_string(),
+            text: "Use FOO=1".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Preference),
             source: memory_test_support::test_source(
@@ -687,27 +687,27 @@ async fn v4_tombstone_without_entry_restores_the_v5_identity() {
     )
     .await;
     let expected = MemoryEntry {
-        entry_id: restored.entry_id.clone(),
+        entry_id: remembered.entry_id.clone(),
         scope: MemoryScope::User,
         scope_id: "user".to_string(),
         kind: MemoryKind::Preference,
-        normalized_key: "Use API_KEY".to_string(),
-        body: "Use API_KEY".to_string(),
+        normalized_key: "Use FOO=1".to_string(),
+        body: "Use FOO=1".to_string(),
         origin: MemoryOrigin::ExplicitUser,
-        state: MemoryState::Restored,
-        created_at: restored.created_at,
-        updated_at: restored.updated_at,
+        state: MemoryState::Active,
+        created_at: remembered.created_at,
+        updated_at: remembered.updated_at,
         replacement_entry_id: None,
-        provenance: restored.provenance.clone(),
+        provenance: remembered.provenance.clone(),
     };
-    assert_eq!(restored, expected);
+    assert_eq!(remembered, expected);
     assert_eq!(
         list(&runtime, MemoryScope::User, data_root.path()).await,
         vec![expected.clone()]
     );
     drop(runtime);
 
-    let connection = Connection::open(database_path).expect("inspect restored tombstone");
+    let connection = Connection::open(database_path).expect("inspect unresolved tombstone");
     let lifecycle: (String, Option<String>) = connection
         .query_row(
             "SELECT revoked_at, restored_at FROM memory_revocations
@@ -715,12 +715,6 @@ async fn v4_tombstone_without_entry_restores_the_v5_identity() {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .expect("read restored tombstone");
-    assert_eq!(
-        lifecycle,
-        (
-            "2027-01-01T00:00:00Z".to_string(),
-            Some(expected.updated_at.to_rfc3339()),
-        )
-    );
+        .expect("read unresolved tombstone");
+    assert_eq!(lifecycle, ("2027-01-01T00:00:00Z".to_string(), None));
 }

@@ -135,6 +135,14 @@ impl MemoryRuntime {
         let existing =
             identity.resolve_and_merge_existing(&transaction, request.scope, &scope_id, &body)?;
         let existing_origin = existing.as_ref().map(|entry| entry.origin);
+        let compatible_legacy_key = if source_observed_at.is_some() {
+            &identity.legacy_inferred_key
+        } else {
+            existing
+                .as_ref()
+                .and_then(|entry| entry.proven_legacy_key.as_ref())
+                .unwrap_or(&identity.canonical_key)
+        };
         let mut revocation_statement = transaction.prepare(
             "SELECT revoked_at, restored_at
              FROM memory_revocations
@@ -147,7 +155,7 @@ impl MemoryRuntime {
                     scope_name(request.scope),
                     scope_id,
                     identity.canonical_key,
-                    identity.legacy_inferred_key,
+                    compatible_legacy_key,
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )?
@@ -203,7 +211,7 @@ impl MemoryRuntime {
                     scope_name(request.scope),
                     scope_id,
                     identity.canonical_key,
-                    identity.legacy_inferred_key,
+                    compatible_legacy_key,
                 ],
             )?;
         }

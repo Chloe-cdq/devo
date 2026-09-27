@@ -13,6 +13,8 @@ pub(super) struct MemoryEntryIdentity {
 pub(super) struct ExistingMemoryEntry {
     pub(super) entry_id: String,
     pub(super) origin: MemoryOrigin,
+    /// Present only when an inferred legacy row with the exact body proved equivalence.
+    pub(super) proven_legacy_key: Option<String>,
 }
 
 impl MemoryEntryIdentity {
@@ -38,7 +40,7 @@ impl MemoryEntryIdentity {
         body: &str,
     ) -> Result<Option<ExistingMemoryEntry>, MemoryError> {
         let mut statement = transaction.prepare(
-            "SELECT entry_id, origin
+            "SELECT entry_id, origin, normalized_key
              FROM memory_entries
              WHERE scope_type = ?1 AND scope_id = ?2
                AND (
@@ -60,26 +62,38 @@ impl MemoryEntryIdentity {
                     self.legacy_inferred_key,
                     body,
                 ],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )?
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
-        let Some((keeper_id, keeper_origin)) = matches.first() else {
+        let Some((keeper_id, keeper_origin, _)) = matches.first() else {
             return Ok(None);
         };
+        let proven_legacy_key = (self.canonical_key != self.legacy_inferred_key
+            && matches
+                .iter()
+                .any(|(_, _, normalized_key)| normalized_key == &self.legacy_inferred_key))
+        .then(|| self.legacy_inferred_key.clone());
         let redirects = merge_entry_records(
             transaction,
             keeper_id,
             matches
                 .iter()
                 .skip(1)
-                .map(|(entry_id, _)| entry_id.as_str()),
+                .map(|(entry_id, _, _)| entry_id.as_str()),
         )?;
         apply_replacement_redirects(transaction, &redirects)?;
 
         Ok(Some(ExistingMemoryEntry {
             entry_id: keeper_id.clone(),
             origin: parse_origin(keeper_origin)?,
+            proven_legacy_key,
         }))
     }
 }
