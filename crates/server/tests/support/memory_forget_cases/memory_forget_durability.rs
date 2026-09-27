@@ -115,7 +115,7 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
     let requests = provider.requests();
     let projection_failure = tool_result(
         requests
-            .get(/*result_index*/ 4)
+            .get(/*index*/ 4)
             .context("projection failure result request")?,
         "confirmed-forget",
     )
@@ -128,7 +128,7 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
     assert_eq!(
         tool_result(
             requests
-                .get(/*result_index*/ 5)
+                .get(/*index*/ 5)
                 .context("stale search result request")?,
             "stale-search"
         ),
@@ -139,7 +139,7 @@ async fn durable_commit_with_projection_failure_invalidates_search_and_confirmat
     assert_eq!(
         tool_result(
             requests
-                .get(/*result_index*/ 7)
+                .get(/*index*/ 7)
                 .context("retry result request")?,
             "retry-forget"
         ),
@@ -295,7 +295,7 @@ async fn native_durable_commit_with_projection_failure_invalidates_search_and_co
     assert_eq!(
         tool_result(
             requests
-                .get(/*result_index*/ 3)
+                .get(/*index*/ 3)
                 .context("stale search result request")?,
             "stale-search"
         ),
@@ -306,7 +306,7 @@ async fn native_durable_commit_with_projection_failure_invalidates_search_and_co
     assert_eq!(
         tool_result(
             requests
-                .get(/*result_index*/ 5)
+                .get(/*index*/ 5)
                 .context("retry result request")?,
             "retry-forget"
         ),

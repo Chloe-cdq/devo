@@ -30,7 +30,7 @@ fn enabled_config() -> MemoryConfig {
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8, DD-9
-/// Verifies: explicit restore reuses a retired legacy inferred entry and canonicalizes its identity.
+/// Verifies: explicit restore canonicalizes a legacy identity and remains restored when repeated.
 #[tokio::test]
 async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
     let data_root = TempDir::new().expect("memory data root");
@@ -64,7 +64,7 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
     drop(connection);
 
     let runtime =
-        MemoryRuntime::open(memory_root, enabled_config()).expect("reopen memory runtime");
+        MemoryRuntime::open(memory_root.clone(), enabled_config()).expect("reopen memory runtime");
     let restored = match runtime
         .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
             text: "Use API_KEY".to_owned(),
@@ -101,9 +101,64 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
             .with_timezone(&Utc),
         updated_at: restored.updated_at,
         replacement_entry_id: None,
-        provenance: restored.provenance.clone(),
+        provenance: vec![MemoryProvenance {
+            source_session_id: Some(
+                SessionId::from(memory_test_support::deterministic_uuid("session-1")).to_string(),
+            ),
+            source_turn_id: Some(
+                TurnId::from(memory_test_support::deterministic_uuid("turn-1")).to_string(),
+            ),
+            source_user_item_id: Some(ItemId::from_string(format!(
+                "item_{:032x}",
+                memory_test_support::deterministic_uuid("user-item-1").as_u128()
+            ))),
+        }],
     };
     assert_eq!(restored, expected);
+
+    let remembered_again = match runtime
+        .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
+            text: "Use API_KEY".to_owned(),
+            scope: MemoryScope::User,
+            kind: Some(MemoryKind::Preference),
+            source: memory_test_support::test_source(
+                Some("user-item-2"),
+                "session-2",
+                Some("turn-2"),
+                PathBuf::new(),
+            ),
+        }))
+        .await
+        .expect("repeat explicit remember")
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
+    };
+    let expected_after_repeat = MemoryEntry {
+        updated_at: remembered_again.updated_at,
+        provenance: vec![
+            expected.provenance[0].clone(),
+            MemoryProvenance {
+                source_session_id: Some(
+                    SessionId::from(memory_test_support::deterministic_uuid("session-2"))
+                        .to_string(),
+                ),
+                source_turn_id: Some(
+                    TurnId::from(memory_test_support::deterministic_uuid("turn-2")).to_string(),
+                ),
+                source_user_item_id: Some(ItemId::from_string(format!(
+                    "item_{:032x}",
+                    memory_test_support::deterministic_uuid("user-item-2").as_u128()
+                ))),
+            },
+        ],
+        ..expected.clone()
+    };
+    assert_eq!(remembered_again, expected_after_repeat);
 
     let listed = match runtime
         .execute_command(MemoryCommand::List(ListMemoryRequest {
@@ -124,10 +179,41 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
     assert_eq!(
         listed,
         Page {
-            data: vec![expected],
+            data: vec![expected_after_repeat],
             next_cursor: None,
         }
     );
+
+    let connection = Connection::open(database_path).expect("inspect canonical revocation");
+    let revocations = connection
+        .prepare(
+            "SELECT normalized_key, revoked_at, restored_at
+             FROM memory_revocations
+             WHERE scope_type = 'user' AND scope_id = 'user'
+             ORDER BY normalized_key",
+        )
+        .expect("prepare canonical revocation query")
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .expect("query canonical revocation")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read canonical revocation");
+    assert_eq!(
+        revocations,
+        vec![(
+            "Use API_KEY".to_owned(),
+            revoked_at.to_owned(),
+            Some(restored.updated_at.to_rfc3339()),
+        )]
+    );
+    let projection = fs::read_to_string(memory_root.join("user").join("MEMORY.md"))
+        .expect("read restored projection");
+    assert!(projection.contains("state: restored"));
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-8

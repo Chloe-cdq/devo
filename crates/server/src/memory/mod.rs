@@ -13,6 +13,7 @@ mod identity;
 mod migration;
 mod projection;
 mod queries;
+mod revocation_lifecycle;
 #[cfg(test)]
 mod runtime_test_support;
 mod schema;

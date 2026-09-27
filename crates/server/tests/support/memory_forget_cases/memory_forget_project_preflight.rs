@@ -122,7 +122,7 @@ async fn agent_forget_preparation_uses_command_executor() -> Result<()> {
         tool_result(
             provider
                 .requests()
-                .get(/*result_index*/ 1)
+                .get(/*index*/ 1)
                 .context("memory forget result request")?,
             "missing-forget",
         ),
@@ -213,7 +213,7 @@ async fn agent_project_forget_resolves_identity_before_lease() -> Result<()> {
         tool_result(
             provider
                 .requests()
-                .get(/*result_index*/ 1)
+                .get(/*index*/ 1)
                 .context("Project forget result request")?,
             "project-forget",
         ),
@@ -312,7 +312,7 @@ async fn agent_wrong_project_is_rejected_before_lease() -> Result<()> {
         tool_result(
             provider
                 .requests()
-                .get(/*result_index*/ 1)
+                .get(/*index*/ 1)
                 .context("wrong Project forget result request")?,
             "wrong-project-forget",
         ),

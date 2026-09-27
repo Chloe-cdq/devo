@@ -1,14 +1,16 @@
 //! Server runtime and protocol contracts.
-//!
-//! Trace: L2-DES-MEM-001 Rev 4 DD-13
-//! Verifies: memory command execution remains an internal implementation seam.
-//!
-//! ```compile_fail
-//! use devo_server::MemoryCommandExecutor;
-//! ```
 
 #[cfg(test)]
 extern crate self as devo_server;
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-13
+/// Verifies: memory command execution remains an internal implementation seam.
+///
+/// ```compile_fail
+/// use devo_server::MemoryCommandExecutor;
+/// ```
+#[allow(dead_code)]
+fn memory_command_executor_is_internal() {}
 
 mod approval;
 mod approval_reviewer;

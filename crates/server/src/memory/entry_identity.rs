@@ -2,6 +2,7 @@ use devo_protocol::native::rpc_memory::{MemoryOrigin, MemoryScope};
 use rusqlite::Transaction;
 
 use super::equivalence;
+use super::revocation_lifecycle::canonicalize_revocation_identity;
 use super::stored_values::parse_origin;
 use super::{MemoryError, scope_name};
 
@@ -13,8 +14,12 @@ pub(super) struct MemoryEntryIdentity {
 pub(super) struct ExistingMemoryEntry {
     pub(super) entry_id: String,
     pub(super) origin: MemoryOrigin,
-    /// Present only when an inferred legacy row with the exact body proved equivalence.
-    pub(super) proven_legacy_key: Option<String>,
+}
+
+pub(super) enum IdentityResolutionMode {
+    Explicit,
+    #[cfg(test)]
+    Inferred,
 }
 
 impl MemoryEntryIdentity {
@@ -38,6 +43,7 @@ impl MemoryEntryIdentity {
         scope: MemoryScope,
         scope_id: &str,
         body: &str,
+        mode: IdentityResolutionMode,
     ) -> Result<Option<ExistingMemoryEntry>, MemoryError> {
         let mut statement = transaction.prepare(
             "SELECT entry_id, origin, normalized_key
@@ -89,11 +95,21 @@ impl MemoryEntryIdentity {
                 .map(|(entry_id, _, _)| entry_id.as_str()),
         )?;
         apply_replacement_redirects(transaction, &redirects)?;
+        if matches!(mode, IdentityResolutionMode::Explicit)
+            && let Some(proven_legacy_key) = proven_legacy_key
+        {
+            canonicalize_revocation_identity(
+                transaction,
+                scope_name(scope),
+                scope_id,
+                &self.canonical_key,
+                &proven_legacy_key,
+            )?;
+        }
 
         Ok(Some(ExistingMemoryEntry {
             entry_id: keeper_id.clone(),
             origin: parse_origin(keeper_origin)?,
-            proven_legacy_key,
         }))
     }
 }

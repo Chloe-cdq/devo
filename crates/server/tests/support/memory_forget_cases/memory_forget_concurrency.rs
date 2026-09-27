@@ -106,7 +106,7 @@ async fn direct_first_blocks_confirmation() -> Result<()> {
         tool_result(
             provider
                 .requests()
-                .get(/*result_index*/ 4)
+                .get(/*index*/ 4)
                 .context("confirmation result request")?,
             "confirmed-forget",
         ),
@@ -327,7 +327,7 @@ async fn deletion_invalidates_search_snapshot_before_pending_publish() -> Result
     let requests = provider.requests();
     let tool_result = tool_result(
         requests
-            .get(/*result_index*/ 1)
+            .get(/*index*/ 1)
             .context("model request after memory_search")?,
         "memory-search",
     )
@@ -466,7 +466,7 @@ async fn native_first_blocks_agent() -> Result<()> {
         tool_result(
             provider
                 .requests()
-                .get(/*result_index*/ 1)
+                .get(/*index*/ 1)
                 .context("agent result request")?,
             "agent-forget",
         ),

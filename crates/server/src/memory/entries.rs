@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 #[cfg(test)]
 use super::MemoryInferredRememberRequest;
-use super::entry_identity::MemoryEntryIdentity;
+use super::entry_identity::{IdentityResolutionMode, MemoryEntryIdentity};
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
 use super::stored_values::{parse_kind, parse_origin, parse_scope, parse_state, parse_timestamp};
@@ -106,6 +106,11 @@ impl MemoryRuntime {
             .unwrap_or_else(|| classify_kind(&normalized_key));
         let scope_id = self.scope_id(request.scope, &request.source.workspace_root)?;
         let now = Utc::now().to_rfc3339();
+        let identity_resolution_mode = match &mode {
+            MemoryWriteMode::Explicit => IdentityResolutionMode::Explicit,
+            #[cfg(test)]
+            MemoryWriteMode::Inferred { .. } => IdentityResolutionMode::Inferred,
+        };
         let (origin, observed_at, source_watermark, source_observed_at, allow_restore) = match mode
         {
             MemoryWriteMode::Explicit => (
@@ -132,16 +137,18 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let existing =
-            identity.resolve_and_merge_existing(&transaction, request.scope, &scope_id, &body)?;
+        let existing = identity.resolve_and_merge_existing(
+            &transaction,
+            request.scope,
+            &scope_id,
+            &body,
+            identity_resolution_mode,
+        )?;
         let existing_origin = existing.as_ref().map(|entry| entry.origin);
-        let compatible_legacy_key = if source_observed_at.is_some() {
+        let secondary_revocation_key = if source_observed_at.is_some() {
             &identity.legacy_inferred_key
         } else {
-            existing
-                .as_ref()
-                .and_then(|entry| entry.proven_legacy_key.as_ref())
-                .unwrap_or(&identity.canonical_key)
+            &identity.canonical_key
         };
         let mut revocation_statement = transaction.prepare(
             "SELECT revoked_at, restored_at
@@ -155,7 +162,7 @@ impl MemoryRuntime {
                     scope_name(request.scope),
                     scope_id,
                     identity.canonical_key,
-                    compatible_legacy_key,
+                    secondary_revocation_key,
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )?
@@ -211,7 +218,7 @@ impl MemoryRuntime {
                     scope_name(request.scope),
                     scope_id,
                     identity.canonical_key,
-                    compatible_legacy_key,
+                    secondary_revocation_key,
                 ],
             )?;
         }

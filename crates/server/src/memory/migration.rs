@@ -5,6 +5,7 @@ use rusqlite::Transaction;
 use super::MemoryError;
 use super::entry_identity::{apply_replacement_redirects, merge_entry_records};
 use super::equivalence;
+use super::revocation_lifecycle::canonicalize_revocation_identity;
 
 struct StoredEntry {
     entry_id: String,
@@ -59,50 +60,8 @@ pub(super) fn migrate_explicit_equivalence(
          DROP INDEX IF EXISTS memory_revocations_scope_identity;",
     )?;
     for ((scope_type, scope_id, old_key), new_key) in explicit_key_migrations {
-        transaction.execute(
-            "UPDATE memory_revocations
-             SET normalized_key = ?1
-             WHERE scope_type = ?2 AND scope_id = ?3 AND normalized_key = ?4",
-            rusqlite::params![new_key, scope_type, scope_id, old_key],
-        )?;
+        canonicalize_revocation_identity(transaction, &scope_type, &scope_id, &new_key, &old_key)?;
     }
-    transaction.execute_batch(
-        "UPDATE memory_revocations AS kept
-         SET revoked_at = (
-                 SELECT MAX(all_rows.revoked_at)
-                 FROM memory_revocations AS all_rows
-                 WHERE all_rows.scope_type = kept.scope_type
-                   AND all_rows.scope_id = kept.scope_id
-                   AND all_rows.normalized_key = kept.normalized_key
-             ),
-             restored_at = (
-                 SELECT CASE
-                     WHEN MAX(all_rows.restored_at) >= MAX(all_rows.revoked_at)
-                     THEN MAX(all_rows.restored_at)
-                     ELSE NULL
-                 END
-                 FROM memory_revocations AS all_rows
-                 WHERE all_rows.scope_type = kept.scope_type
-                   AND all_rows.scope_id = kept.scope_id
-                   AND all_rows.normalized_key = kept.normalized_key
-             )
-         WHERE kept.revocation_id = (
-             SELECT MAX(candidate.revocation_id)
-             FROM memory_revocations AS candidate
-             WHERE candidate.scope_type = kept.scope_type
-               AND candidate.scope_id = kept.scope_id
-               AND candidate.normalized_key = kept.normalized_key
-         );
-
-         DELETE FROM memory_revocations
-         WHERE revocation_id != (
-             SELECT MAX(candidate.revocation_id)
-             FROM memory_revocations AS candidate
-             WHERE candidate.scope_type = memory_revocations.scope_type
-               AND candidate.scope_id = memory_revocations.scope_id
-               AND candidate.normalized_key = memory_revocations.normalized_key
-         );",
-    )?;
     let mut replacement_redirects = Vec::new();
     for ((_, _, normalized_key), entries) in groups {
         replacement_redirects.extend(merge_group(transaction, &normalized_key, &entries)?);
