@@ -33,7 +33,7 @@ impl BlockingMemorySearchExecutor {
     }
 
     pub(crate) fn block_next_search(&self) {
-        self.armed.store(true, Ordering::SeqCst);
+        self.armed.store(/*val*/ true, Ordering::SeqCst);
     }
 
     pub(crate) async fn wait_until_snapshot_ready(&self) -> Result<()> {
@@ -77,7 +77,7 @@ impl MemoryCommandExecutor for BlockingFirstMemoryCommandExecutor {
         command: MemoryCommand,
     ) -> Result<MemoryCommandResult, MemoryError> {
         if matches!(command, MemoryCommand::Forget(_))
-            && self.calls.fetch_add(1, Ordering::SeqCst) == 0
+            && self.calls.fetch_add(/*val*/ 1, Ordering::SeqCst) == 0
         {
             self.mutation_started.notify_one();
             self.release_mutation.notified().await;
@@ -95,7 +95,7 @@ impl MemoryCommandExecutor for BlockingMemorySearchExecutor {
     ) -> Result<MemoryCommandResult, MemoryError> {
         let is_search = matches!(command, MemoryCommand::Search(_));
         let result = memory.execute_command(command).await?;
-        if is_search && self.armed.swap(false, Ordering::SeqCst) {
+        if is_search && self.armed.swap(/*val*/ false, Ordering::SeqCst) {
             self.snapshot_ready.notify_one();
             self.release_snapshot.notified().await;
         }

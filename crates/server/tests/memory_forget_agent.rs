@@ -105,7 +105,7 @@ impl ModelProviderSDK for MemoryAgentProvider {
             .lock()
             .expect("requests lock")
             .push(request.clone());
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.calls.fetch_add(/*val*/ 1, Ordering::SeqCst);
         let action = self
             .actions
             .lock()

@@ -42,30 +42,7 @@ mod usage_ledger;
 mod workspace_changes;
 
 #[cfg(test)]
-#[path = "../tests/support/memory_forget_cases/memory_forget_agent_cancellation.rs"]
-mod memory_forget_agent_cancellation;
-#[cfg(test)]
-#[path = "../tests/support/memory_forget_cases/memory_forget_concurrency.rs"]
-mod memory_forget_concurrency;
-#[cfg(test)]
-#[path = "../tests/support/memory_forget_cases/memory_forget_durability.rs"]
-mod memory_forget_durability;
-#[cfg(test)]
-#[path = "../tests/support/memory_forget_cases/memory_forget_native.rs"]
-mod memory_forget_native;
-#[cfg(test)]
-#[path = "../tests/support/memory_forget_cases/memory_forget_project_preflight.rs"]
-mod memory_forget_project_preflight;
-#[cfg(test)]
-#[path = "../tests/support/memory_forget_runtime.rs"]
-mod memory_forget_runtime_support;
-#[cfg(test)]
-#[path = "runtime/memory_forget_test_support.rs"]
-mod memory_forget_support;
-#[cfg(test)]
-#[path = "../tests/support/subagent_lifecycle.rs"]
-#[allow(dead_code)]
-mod support;
+include!("memory_forget_tests.rs");
 
 pub use approval::*;
 pub use bootstrap::*;
