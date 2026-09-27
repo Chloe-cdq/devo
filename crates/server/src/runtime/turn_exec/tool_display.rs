@@ -271,20 +271,6 @@ pub(super) fn command_execution_item_id_for_progress(
         .and_then(|pending| pending.item_id)
 }
 
-const AGENT_COORDINATION_TOOL_NAMES: &[&str] = &[
-    "spawn_agent",
-    "send_message",
-    "await_task",
-    "list_tasks",
-    "cancel_task",
-    "wait_agent",
-    "list_agents",
-    "close_agent",
-    "memory_remember",
-    "memory_forget",
-    "memory_search",
-];
-
 pub(super) fn without_agent_coordination_tools(
     registry: &devo_core::tools::ToolRegistry,
 ) -> devo_core::tools::ToolRegistry {
@@ -292,11 +278,7 @@ pub(super) fn without_agent_coordination_tools(
         .tool_definitions()
         .into_iter()
         .map(|tool| tool.name)
-        .filter(|name| {
-            !AGENT_COORDINATION_TOOL_NAMES
-                .iter()
-                .any(|hidden_name| *hidden_name == name)
-        })
+        .filter(|name| !devo_core::tools::is_subagent_agent_coordination_tool(name))
         .collect::<Vec<_>>();
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
     registry.restricted_to_specs(&names)
@@ -304,11 +286,15 @@ pub(super) fn without_agent_coordination_tools(
 
 #[cfg(test)]
 mod tests {
+    use devo_core::tools::{JsonSchema, ToolRegistryBuilder, ToolSpec};
     use devo_core::{ToolCallItem, TurnItem};
     use devo_protocol::SessionHistoryMetadata;
     use pretty_assertions::assert_eq;
 
-    use super::{command_actions_from_tool_input, command_display_from_input};
+    use super::{
+        command_actions_from_tool_input, command_display_from_input,
+        without_agent_coordination_tools,
+    };
     use crate::projection::history_item_from_turn_item;
 
     #[test]
@@ -372,6 +358,30 @@ mod tests {
                 "live and replay actions differ for {tool_name}"
             );
         }
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4 Built-in Agent Tools
+    /// Verifies: subagent registry filtering follows the shared coordination-tool aliases.
+    #[test]
+    fn subagent_registry_filter_uses_shared_alias_classification() {
+        let mut builder = ToolRegistryBuilder::new();
+        for name in ["memory-forget", "read"] {
+            builder.push_spec(ToolSpec::new(
+                name,
+                "test tool",
+                JsonSchema::object(Default::default(), None, None),
+            ));
+        }
+        let registry = builder.build();
+
+        assert_eq!(
+            without_agent_coordination_tools(&registry)
+                .tool_definitions()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>(),
+            vec!["read"]
+        );
     }
 
     #[test]

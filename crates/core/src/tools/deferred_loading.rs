@@ -70,8 +70,21 @@ pub struct ToolSearchResult {
     pub not_found: Vec<String>,
 }
 
-const SUBAGENT_PROHIBITED_AGENT_COORDINATION_TOOLS: &[&str] = &[
+const SUBAGENT_AGENT_COORDINATION_TOOLS: &[&str] = &[
     "spawn_agent",
+    "send_message",
+    "await_task",
+    "list_tasks",
+    "cancel_task",
+    "wait_agent",
+    "list_agents",
+    "close_agent",
+    "memory_remember",
+    "memory_forget",
+    "memory_search",
+];
+
+const SUBAGENT_AGENT_COORDINATION_TOOL_ALIASES: &[&str] = &[
     "spawn-agent",
     "spawnagent",
     "spawn_subagent",
@@ -79,36 +92,26 @@ const SUBAGENT_PROHIBITED_AGENT_COORDINATION_TOOLS: &[&str] = &[
     "subagent",
     "sub_agent",
     "delegate",
-    "send_message",
     "send-message",
     "sendmessage",
-    "await_task",
     "await-task",
     "awaittask",
-    "list_tasks",
     "list-tasks",
     "listtasks",
-    "cancel_task",
     "cancel-task",
     "canceltask",
-    "wait_agent",
     "wait-agent",
     "waitagent",
     "subagent_result",
     "subagent-result",
-    "list_agents",
     "list-agents",
     "listagents",
     "subagent_status",
     "subagent-status",
-    "close_agent",
     "close-agent",
     "closeagent",
-    "memory_remember",
     "memory-remember",
-    "memory_forget",
     "memory-forget",
-    "memory_search",
     "memory-search",
 ];
 
@@ -161,26 +164,15 @@ impl ToolSearchResult {
 }
 
 pub fn hide_subagent_agent_coordination_tools(config: &mut DeferredLoadingConfig) {
-    for name in [
-        "spawn_agent",
-        "send_message",
-        "await_task",
-        "list_tasks",
-        "cancel_task",
-        "wait_agent",
-        "list_agents",
-        "close_agent",
-        "memory_remember",
-        "memory_forget",
-        "memory_search",
-    ] {
+    for name in SUBAGENT_AGENT_COORDINATION_TOOLS {
         config.hidden.insert(name.to_string());
     }
 }
 
 pub fn is_subagent_agent_coordination_tool(name: &str) -> bool {
-    SUBAGENT_PROHIBITED_AGENT_COORDINATION_TOOLS
+    SUBAGENT_AGENT_COORDINATION_TOOLS
         .iter()
+        .chain(SUBAGENT_AGENT_COORDINATION_TOOL_ALIASES)
         .any(|tool| name.eq_ignore_ascii_case(tool))
 }
 
