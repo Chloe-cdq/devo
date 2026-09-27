@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::Path;
 
+use devo_server::memory::MemorySourceContext;
+#[path = "../src/memory/test_support.rs"]
+mod memory_test_support;
+
 use devo_core::MemoryConfig;
-use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::rpc_memory::{MemoryEntry, MemoryKind, MemoryProvenance, MemoryScope};
 use devo_server::memory::{
     ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryRememberRequest, MemoryRuntime,
@@ -18,7 +21,11 @@ async fn remember(runtime: &MemoryRuntime, request: MemoryRememberRequest) -> Me
         .expect("remember explicit memory")
     {
         MemoryCommandResult::Remember(entry) => entry,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::List(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }
     }
@@ -41,7 +48,11 @@ async fn list(
         .expect("list explicit memory")
     {
         MemoryCommandResult::List(page) => page.data,
-        MemoryCommandResult::Status(_) | MemoryCommandResult::Remember(_) => {
+        MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Remember(_)
+        | MemoryCommandResult::PreparedForget(_)
+        | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }
     }
@@ -61,27 +72,33 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
     )
     .expect("open enabled memory runtime");
 
+    let first_source = memory_test_support::test_source(
+        Some("item-1"),
+        "session-1",
+        Some("turn-1"),
+        data_root.path().to_path_buf(),
+    );
     let first = remember(
         &runtime,
         MemoryRememberRequest {
             text: "I prefer dark mode".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("item-1".to_string()),
-            source_session_id: "session-1".to_string(),
-            source_turn_id: Some("turn-1".to_string()),
-            workspace_root: data_root.path().to_path_buf(),
+            source: first_source.clone(),
         },
     )
     .await;
+    let equivalent_source = memory_test_support::test_source(
+        Some("item-2"),
+        "session-2",
+        Some("turn-2"),
+        data_root.path().to_path_buf(),
+    );
     let equivalent_request = MemoryRememberRequest {
         text: "  i prefer dark mode!  ".to_string(),
         scope: MemoryScope::User,
         kind: None,
-        source_user_item_id: Some("item-2".to_string()),
-        source_session_id: "session-2".to_string(),
-        source_turn_id: Some("turn-2".to_string()),
-        workspace_root: data_root.path().to_path_buf(),
+        source: equivalent_source.clone(),
     };
     let updated = remember(&runtime, equivalent_request.clone()).await;
     let replayed = remember(&runtime, equivalent_request).await;
@@ -96,14 +113,14 @@ async fn equivalent_wording_updates_one_canonical_entry_and_deduplicates_evidenc
         replayed.provenance,
         vec![
             MemoryProvenance {
-                source_session_id: Some("session-1".to_string()),
-                source_turn_id: Some("turn-1".to_string()),
-                source_user_item_id: Some(ItemId::from_string("item-1".to_string())),
+                source_session_id: Some(first_source.session_id.to_string()),
+                source_turn_id: first_source.turn_id.map(|turn_id| turn_id.to_string()),
+                source_user_item_id: first_source.user_item_id,
             },
             MemoryProvenance {
-                source_session_id: Some("session-2".to_string()),
-                source_turn_id: Some("turn-2".to_string()),
-                source_user_item_id: Some(ItemId::from_string("item-2".to_string())),
+                source_session_id: Some(equivalent_source.session_id.to_string()),
+                source_turn_id: equivalent_source.turn_id.map(|turn_id| turn_id.to_string()),
+                source_user_item_id: equivalent_source.user_item_id,
             },
         ]
     );
@@ -138,10 +155,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "The project uses rust".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("user-rust".to_string()),
-            source_session_id: "session-user".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("user-rust"),
+                "session-user",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -151,10 +170,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "The project uses rust".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-rust-1".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-rust-1"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -164,10 +185,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "  the project uses rust.  ".to_string(),
             scope: MemoryScope::Project,
             kind: None,
-            source_user_item_id: Some("project-rust-2".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-rust-2"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -177,10 +200,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "The project uses Python".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-python".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-python"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -190,10 +215,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "The project does not use Rust".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-not-rust".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-not-rust"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -203,10 +230,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "Use .env for configuration".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-dot-env".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-dot-env"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -216,10 +245,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "Use env for configuration".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-env".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-env"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -229,10 +260,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "Use ../config".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-parent-config".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-parent-config"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -242,10 +275,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "Use /config".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-root-config".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-root-config"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -255,10 +290,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "Use FOO".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-upper-identifier".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-upper-identifier"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -268,10 +305,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "Use foo".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-lower-identifier".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-lower-identifier"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -281,10 +320,12 @@ async fn equivalence_is_scope_local_and_does_not_merge_different_claims() {
             text: "Use Foo".to_string(),
             scope: MemoryScope::Project,
             kind: Some(MemoryKind::Fact),
-            source_user_item_id: Some("project-title-identifier".to_string()),
-            source_session_id: "session-project".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("project-title-identifier"),
+                "session-project",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -355,10 +396,12 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
             text: "I prefer compact responses.".to_string(),
             scope: MemoryScope::User,
             kind: None,
-            source_user_item_id: Some("compact-1".to_string()),
-            source_session_id: "session-1".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("compact-1"),
+                "session-1",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;
@@ -368,10 +411,12 @@ async fn deduplication_stays_consistent_across_storage_search_projection_and_res
             text: "i prefer compact responses!".to_string(),
             scope: MemoryScope::User,
             kind: Some(MemoryKind::Preference),
-            source_user_item_id: Some("compact-2".to_string()),
-            source_session_id: "session-2".to_string(),
-            source_turn_id: None,
-            workspace_root: data_root.path().to_path_buf(),
+            source: memory_test_support::test_source(
+                Some("compact-2"),
+                "session-2",
+                /*turn_id*/ None,
+                data_root.path().to_path_buf(),
+            ),
         },
     )
     .await;

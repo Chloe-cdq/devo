@@ -126,6 +126,16 @@ pub struct SessionMetadata {
     pub permission_preset: Option<PermissionPreset>,
 }
 
+impl SessionMetadata {
+    /// Returns whether this session is a spawned subagent rather than a root or user fork.
+    ///
+    /// Forks also carry `parent_session_id`; `agent_path` is the authoritative
+    /// discriminator for the more restricted subagent role.
+    pub fn is_subagent(&self) -> bool {
+        self.agent_path.is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct SessionStartParams {
     pub cwd: PathBuf,
@@ -316,15 +326,15 @@ mod tests {
     use super::*;
     use crate::SessionTitleState;
 
-    #[test]
-    fn session_metadata_roundtrips_with_model_and_reasoning_effort_selection() {
-        let metadata = SessionMetadata {
+    fn test_session_metadata() -> SessionMetadata {
+        let now = Utc::now();
+        SessionMetadata {
             session_id: SessionId::new(),
             cwd: "/tmp".into(),
             additional_directories: Vec::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_activity_at: Utc::now(),
+            created_at: now,
+            updated_at: now,
+            last_activity_at: now,
             title: Some("Test".to_string()),
             title_state: SessionTitleState::Unset,
             parent_session_id: None,
@@ -356,11 +366,40 @@ mod tests {
             collaboration_mode: CollaborationMode::Plan,
             effective_context_window: None,
             permission_preset: None,
-        };
+        }
+    }
+
+    #[test]
+    fn session_metadata_roundtrips_with_model_and_reasoning_effort_selection() {
+        let metadata = test_session_metadata();
 
         let json = serde_json::to_string(&metadata).expect("serialize");
         let restored: SessionMetadata = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, metadata);
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4 DD-6, DD-12
+    /// Verifies: only spawned agent lineage is classified as a subagent; a user fork remains root.
+    #[test]
+    fn session_metadata_distinguishes_forks_from_subagents() {
+        let mut metadata = test_session_metadata();
+        let root_is_subagent = metadata.is_subagent();
+        metadata.parent_session_id = Some(SessionId::new());
+        let fork_is_subagent = metadata.is_subagent();
+        metadata.agent_path = Some("root/worker".to_string());
+        let spawned_agent_is_subagent = metadata.is_subagent();
+        metadata.parent_session_id = None;
+        let malformed_agent_is_subagent = metadata.is_subagent();
+
+        assert_eq!(
+            [
+                root_is_subagent,
+                fork_is_subagent,
+                spawned_agent_is_subagent,
+                malformed_agent_is_subagent,
+            ],
+            [false, false, true, true]
+        );
     }
 
     #[test]

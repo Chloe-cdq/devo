@@ -6,6 +6,7 @@ use super::*;
 mod coordinator;
 pub(in crate::runtime) mod handlers;
 mod lifecycle;
+mod memory_coordinator;
 
 const AGENT_NAME_ADJECTIVES: &[&str] = &[
     "brave", "clever", "silent", "happy", "gentle", "swift", "bright", "lazy", "wild", "calm",

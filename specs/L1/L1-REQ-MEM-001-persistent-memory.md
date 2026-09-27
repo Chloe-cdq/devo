@@ -107,7 +107,7 @@ None for the first-release design.
 
 | Relationship | Target ID | Target Revision | Target Path | Rationale |
 |---|---|---:|---|---|
-| refined-by | L2-DES-MEM-001 | 3 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture-rev-3.md | Defines storage, extraction, retrieval, protocol, settings, lifecycle, and module boundaries. |
+| refined-by | L2-DES-MEM-001 | 4 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture-rev-4.md | Defines storage, extraction, retrieval, protocol, settings, lifecycle, and module boundaries. |
 | related-to | L1-REQ-APP-012 | 1 | specs/L1/L1-REQ-APP-012-privacy-data-ownership.md | General Persistent Memory is locally stored user data with export and deletion controls. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | Session records supply provenance and source-eligibility facts without becoming the memory store. |
 | related-to | L2-DES-CONV-002 | 2 | specs/L2/conv/L2-DES-CONV-002-two-plane-session-settings-rev-2.md | Recall and contribution controls use the canonical session-settings path. |

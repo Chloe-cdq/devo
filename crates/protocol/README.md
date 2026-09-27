@@ -114,6 +114,8 @@ progress through server notifications.
   canonical entry projection. Active-turn requests must identify the current
   user-message item; direct session-bound requests may omit that optional
   provenance field.
+- `memory/forget`: retire an exact entry by stable ID, or return candidate
+  matches for an ambiguous text request without mutating memory.
 - `memory/list`: inspect canonical User- or Project-scope entries with safe
   filters and bounded pagination. Project requests resolve the current
   session's workspace identity, so linked worktrees share entries while
