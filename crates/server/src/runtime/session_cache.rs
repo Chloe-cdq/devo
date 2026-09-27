@@ -115,6 +115,11 @@ impl ServerRuntime {
             return Ok(handle);
         }
 
+        // Keep actor hydration from racing a durable metadata write. The
+        // metadata handler intentionally does not hydrate the actor, but a
+        // subsequent resume must observe any field lines written before it
+        // starts rebuilding the runtime session.
+        let _metadata_write_permit = self.session_metadata_write_gate.acquire(session_id).await;
         let _load_permit = self.parent_session_load_gate.acquire(session_id).await;
         if let Some(handle) = self.session(session_id).await {
             self.touch_parent_session_lru(session_id).await;
@@ -177,6 +182,7 @@ impl ServerRuntime {
             .await;
         self.touch_parent_session_lru(session_id).await;
         self.evict_parent_sessions_if_needed(Some(session_id)).await;
+        self.resume_pending_queue_if_idle(session_id).await;
         Ok(handle)
     }
 

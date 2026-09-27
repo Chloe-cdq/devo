@@ -38,12 +38,37 @@ impl ServerRuntime {
             );
         };
 
-        // Turns that run inline on the session actor finalize themselves when the
-        // cancel token fires (`finalize_executed_turn` records terminal status).
-        // Research (and similar) turns run on a spawned task outside the actor:
-        // aborting that task does not record a terminal status, so we must claim
-        // `active_turn` via the mailbox and finalize here.
+        // Turns that run on a spawned task finalize themselves when the cancel
+        // token fires (`finalize_executed_turn` + `MergeTurn`). Interrupt waits
+        // for that terminal status; claiming `active_turn` is only an orphan
+        // fallback after the wait times out.
         if self.runtime_active_turn_id(params.session_id).await != Some(params.turn_id) {
+            let matches_saved = session_handle
+                .turn_reservation_snapshot()
+                .await
+                .and_then(|snapshot| snapshot.latest_turn)
+                .is_some_and(|turn| turn.turn_id == params.turn_id);
+            match if matches_saved {
+                self.cancel_saved_turn(params.session_id).await
+            } else {
+                Ok(false)
+            } {
+                Ok(true) => {
+                    return self.turn_interrupt_success(
+                        request_id,
+                        params.turn_id,
+                        TurnStatus::Interrupted,
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InternalError,
+                        error.to_string(),
+                    );
+                }
+            }
             if let Some(snapshot) = self.recent_terminal_turn_status(params.turn_id).await {
                 return self.turn_interrupt_success(request_id, params.turn_id, snapshot.status);
             }
@@ -60,11 +85,28 @@ impl ServerRuntime {
                 .await;
             return self.turn_interrupt_success(request_id, params.turn_id, snapshot.status);
         }
-        // Cancel before any session-actor mailbox round-trip: the actor may be blocked
-        // waiting for a permission response and cannot process commands until cancelled.
+        // Cancel before mailbox work. All turns run on a spawned task; the
+        // cancel token unblocks query, and abort covers stuck tasks. Do not
+        // claim `active_turn` until terminal wait times out — claiming while
+        // the turn task is still finalizing races with `MergeTurn`.
         // Cancel via a clone rather than `remove`: see the comment in
         // `interrupt_child_runtime_work` for why removing here races with
         // `run_turn_model_query` fetching the same token.
+        if let Err(error) = self
+            .persist_recovery_disposition(
+                params.session_id,
+                params.turn_id,
+                devo_core::durable_execution::RecoveryDisposition::Canceled,
+                "Stopped by user.",
+            )
+            .await
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                error.to_string(),
+            );
+        }
         self.signal_active_turn_interrupt(params.session_id).await;
 
         let removed = self
@@ -98,32 +140,37 @@ impl ServerRuntime {
             .interrupt_all_child_agents(params.session_id)
             .await;
 
-        // Out-of-actor turns (research): actor is free, so we can claim active_turn.
-        // In-actor turns: finalize already cleared it; fall through to terminal wait.
-        if let Some(interrupted_turn) = session_handle.interrupt_active_turn().await.flatten() {
-            if interrupted_turn.turn_id != params.turn_id {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::TurnNotFound,
-                    "turn does not exist",
-                );
-            }
-            return self
-                .finalize_claimed_interrupted_turn(
-                    request_id,
-                    &session_handle,
-                    params.session_id,
-                    interrupted_turn,
-                )
-                .await;
-        }
-
-        let snapshot =
-            match tokio::time::timeout(TURN_INTERRUPT_TERMINAL_TIMEOUT, terminal_rx).await {
-                Ok(Ok(snapshot)) => snapshot,
-                Ok(Err(_)) | Err(_) => {
+        let snapshot = match tokio::time::timeout(TURN_INTERRUPT_TERMINAL_TIMEOUT, terminal_rx)
+            .await
+        {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(_)) | Err(_) => {
+                if let Some(snapshot) = self.recent_terminal_turn_status(params.turn_id).await {
+                    snapshot
+                } else {
+                    // Cooperative cancel timed out: hard-abort, then claim
+                    // or recover any leftover active_turn without MergeTurn.
+                    self.active_turns.abort_task(params.session_id).await;
                     if let Some(snapshot) = self.recent_terminal_turn_status(params.turn_id).await {
                         snapshot
+                    } else if let Some(interrupted_turn) =
+                        session_handle.interrupt_active_turn().await.flatten()
+                    {
+                        if interrupted_turn.turn_id != params.turn_id {
+                            return self.error_response(
+                                request_id,
+                                ProtocolErrorCode::TurnNotFound,
+                                "turn does not exist",
+                            );
+                        }
+                        return self
+                            .finalize_claimed_interrupted_turn(
+                                request_id,
+                                &session_handle,
+                                params.session_id,
+                                interrupted_turn,
+                            )
+                            .await;
                     } else if let Some(orphaned) = self
                         .recover_orphaned_manual_compaction_interrupt(
                             &session_handle,
@@ -145,7 +192,8 @@ impl ServerRuntime {
                         );
                     }
                 }
-            };
+            }
+        };
 
         tracing::info!(
             session_id = %params.session_id,

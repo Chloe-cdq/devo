@@ -28,7 +28,6 @@ fn memory_settings_notification_does_not_depend_on_mailbox_capacity() {
         tx,
         max_turns: None,
         state_change_gate: Arc::new(tokio::sync::Mutex::new(())),
-        metadata_update_gate: Arc::new(tokio::sync::Mutex::new(())),
         memory_settings_tx,
     };
 

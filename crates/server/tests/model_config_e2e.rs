@@ -34,6 +34,8 @@ base_instructions = "Test model instructions"
 
 [model.alt-model]
 display_name = "Alt Model"
+reasoning_capability = { levels = ["high", "max"] }
+default_reasoning_effort = "high"
 base_instructions = "Alt model instructions"
 
 [model.catalog-only-model]
@@ -73,12 +75,56 @@ base_instructions = "Catalog-only model instructions"
     assert!(
         preferences["availableModels"]
             .as_array()
-            .is_some_and(|models| { models.iter().any(|model| model["value"] == "test-openai") })
+            .is_some_and(|models| {
+                models
+                    .iter()
+                    .any(|model| model["value"] == "openai/test-model")
+            })
     );
     assert!(
         preferences["availableEfforts"]
             .as_array()
             .is_some_and(|efforts| { efforts.iter().any(|effort| effort["value"] == "medium") })
+    );
+
+    let available_models = preferences["availableModels"]
+        .as_array()
+        .expect("availableModels array");
+    let test_model = available_models
+        .iter()
+        .find(|model| model["value"] == "openai/test-model")
+        .expect("openai/test-model option");
+    let alt_model = available_models
+        .iter()
+        .find(|model| model["value"] == "openai/alt-model")
+        .expect("openai/alt-model option");
+    let test_efforts: Vec<&str> = test_model["availableEfforts"]
+        .as_array()
+        .expect("openai/test-model availableEfforts")
+        .iter()
+        .map(|effort| effort["value"].as_str().expect("effort value"))
+        .collect();
+    let alt_efforts: Vec<&str> = alt_model["availableEfforts"]
+        .as_array()
+        .expect("openai/alt-model availableEfforts")
+        .iter()
+        .map(|effort| effort["value"].as_str().expect("effort value"))
+        .collect();
+    assert_eq!(test_efforts, vec!["low", "medium", "high"]);
+    assert_eq!(alt_efforts, vec!["high", "max"]);
+    assert_ne!(
+        test_efforts, alt_efforts,
+        "each available model must advertise its own effort options"
+    );
+    let top_level_efforts: Vec<&str> = preferences["availableEfforts"]
+        .as_array()
+        .expect("top-level availableEfforts")
+        .iter()
+        .map(|effort| effort["value"].as_str().expect("effort value"))
+        .collect();
+    assert_eq!(
+        top_level_efforts, test_efforts,
+        "top-level availableEfforts must match the current default model"
     );
 
     write_stdio_json(

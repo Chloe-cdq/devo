@@ -194,6 +194,7 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<FileChange>(&cfg, &mut output);
 
     push_decl::<ReasoningEffort>(&cfg, &mut output);
+    push_decl::<crate::ReasoningLevelChoice>(&cfg, &mut output);
     push_decl::<ReasoningCapability>(&cfg, &mut output);
     push_decl::<ReasoningImplementation>(&cfg, &mut output);
     push_decl::<ReasoningVariantConfig>(&cfg, &mut output);
@@ -211,8 +212,24 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<SessionHistoryMetadata>(&cfg, &mut output);
     push_decl::<SessionHistoryToolIo>(&cfg, &mut output);
     push_decl::<SessionHistoryItem>(&cfg, &mut output);
-    push_decl::<SessionForkParams>(&cfg, &mut output);
-    push_decl::<SessionForkResult>(&cfg, &mut output);
+    push_decl::<native::rpc_session::SessionForkCut>(&cfg, &mut output);
+    push_decl::<native::model::ModelBinding>(&cfg, &mut output);
+    push_decl::<native::model::PermissionProfile>(&cfg, &mut output);
+    push_decl::<native::session::SessionParent>(&cfg, &mut output);
+    push_decl::<native::session::SessionStatus>(&cfg, &mut output);
+    push_decl::<native::session::SessionFlag>(&cfg, &mut output);
+    push_decl::<native::session::SessionSettings>(&cfg, &mut output);
+    push_decl::<native::session::GitInfo>(&cfg, &mut output);
+    push_decl::<native::usage::UsagePurpose>(&cfg, &mut output);
+    push_decl::<native::usage::UsageCallOutcome>(&cfg, &mut output);
+    push_decl::<native::usage::TokenUsage>(&cfg, &mut output);
+    push_decl::<native::usage::Money>(&cfg, &mut output);
+    push_decl::<native::usage::UsageTotals>(&cfg, &mut output);
+    push_decl::<native::usage::PurposeUsage>(&cfg, &mut output);
+    push_decl::<native::usage::SessionUsage>(&cfg, &mut output);
+    push_decl::<native::session::Session>(&cfg, &mut output);
+    push_decl::<native::rpc_session::SessionForkParams>(&cfg, &mut output);
+    push_decl::<native::rpc_session::SessionForkResult>(&cfg, &mut output);
     // Keep the Native subscription event graph opaque in this compatibility
     // declaration file; the generated JSON Schema bundle remains precise.
     output.push_str(
@@ -235,7 +252,20 @@ export type SubscriptionUnsubscribeParams = { subscriptionId: SubscriptionId, };
     push_decl::<CollaborationMode>(&cfg, &mut output);
     push_decl::<TurnExecutionMode>(&cfg, &mut output);
     push_decl::<TurnStartParams>(&cfg, &mut output);
-    push_decl::<TurnStartResult>(&cfg, &mut output);
+    push_decl::<native::turn::Turn>(&cfg, &mut output);
+    push_decl::<native::turn::TurnKind>(&cfg, &mut output);
+    push_decl::<native::turn::TurnStatus>(&cfg, &mut output);
+    push_decl::<native::usage::TurnUsage>(&cfg, &mut output);
+    push_decl::<native::usage::UsageTotals>(&cfg, &mut output);
+    push_decl::<native::usage::Money>(&cfg, &mut output);
+    push_decl::<native::error::AgentError>(&cfg, &mut output);
+    push_decl::<native::error::FieldViolation>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnRecovery>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnRecoveryReadParams>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnRecoveryReadResult>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnResumeParams>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnResumeResult>(&cfg, &mut output);
+
     push_decl::<TurnInputDisposition>(&cfg, &mut output);
     push_decl::<native::rpc_session::SessionInterruptScope>(&cfg, &mut output);
     push_decl::<native::rpc_session::SessionInterruptParams>(&cfg, &mut output);
@@ -291,15 +321,22 @@ export type SubscriptionUnsubscribeParams = { subscriptionId: SubscriptionId, };
 
     push_decl::<ProviderWireApi>(&cfg, &mut output);
     push_decl::<InputModality>(&cfg, &mut output);
+    push_decl::<ProviderModelVariant>(&cfg, &mut output);
+    push_decl::<ProviderModelInfo>(&cfg, &mut output);
+    push_decl::<ProviderInfo>(&cfg, &mut output);
     push_decl::<ModelCatalogEntry>(&cfg, &mut output);
-    push_decl::<ProviderVendor>(&cfg, &mut output);
-    push_decl::<ProviderModelBinding>(&cfg, &mut output);
-    push_decl::<ProviderVendorListParams>(&cfg, &mut output);
-    push_decl::<ProviderVendorListResult>(&cfg, &mut output);
-    push_decl::<ProviderVendorUpsertParams>(&cfg, &mut output);
-    push_decl::<ProviderVendorUpsertResult>(&cfg, &mut output);
-    push_decl::<ProviderValidateParams>(&cfg, &mut output);
-    push_decl::<ProviderValidateResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderListParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderListResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderUpsertParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderUpsertResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDisconnectParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDisconnectResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderModelRemoveParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderModelRemoveResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderValidateParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderValidateResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDiscoverParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDiscoverResult>(&cfg, &mut output);
 
     push_decl::<CommandExecTerminalSize>(&cfg, &mut output);
     push_decl::<CommandExecProgram>(&cfg, &mut output);
@@ -435,6 +472,11 @@ fn protocol_schema_bundle() -> ProtocolSchemaBundle {
     // shapes into the first-party runtime validator.
     register_native_method_registry(&mut schemas, &mut methods);
     register_native_notification_registry(&mut schemas, &mut methods);
+    // Replay-carrying result schemas embed the raw schemars ServerNotification
+    // definition; align its field names with the wire casing.
+    for schema in schemas.values_mut() {
+        camel_case_embedded_server_notification(schema);
+    }
 
     ProtocolSchemaBundle { schemas, methods }
 }
@@ -469,16 +511,7 @@ fn register_native_notification_registry(
             continue;
         };
         let mut params = params.clone().into_object();
-        if let Some(object) = params.object.as_mut() {
-            object.properties = std::mem::take(&mut object.properties)
-                .into_iter()
-                .map(|(name, schema)| (snake_to_lower_camel(&name), schema))
-                .collect();
-            object.required = std::mem::take(&mut object.required)
-                .into_iter()
-                .map(|name| snake_to_lower_camel(&name))
-                .collect();
-        }
+        camel_case_params_fields(&mut params);
         let schema_name = format!(
             "{}NotificationParams",
             method_name
@@ -507,6 +540,58 @@ fn register_native_notification_registry(
             .entry(method_name)
             .or_default()
             .incoming_notification = Some(Box::leak(schema_name.into_boxed_str()));
+    }
+}
+
+/// schemars 0.8 does not honor serde's `rename_all_fields`, so generated
+/// schema objects keep Rust field names (`restore_plan_id`) while the wire
+/// serializes camelCase (`restorePlanId`). Rewrite a notification params
+/// schema's field names so validation accepts what the server actually sends.
+fn camel_case_params_fields(params: &mut schemars::schema::SchemaObject) {
+    if let Some(object) = params.object.as_mut() {
+        object.properties = std::mem::take(&mut object.properties)
+            .into_iter()
+            .map(|(name, schema)| (snake_to_lower_camel(&name), schema))
+            .collect();
+        object.required = std::mem::take(&mut object.required)
+            .into_iter()
+            .map(|name| snake_to_lower_camel(&name))
+            .collect();
+    }
+}
+
+/// Apply the same rewrite to the `ServerNotification` definition embedded in
+/// replay-carrying result schemas (`SubscriptionCreateResult`). The registry
+/// path above already rewrites its standalone copies; without this pass the
+/// embedded definition keeps snake_case field names and replay envelope
+/// validation rejects every notification whose variant fields are multi-word.
+fn camel_case_embedded_server_notification(schema: &mut RootSchema) {
+    let Some(definition) = schema.definitions.get_mut("ServerNotification") else {
+        return;
+    };
+    let schemars::schema::Schema::Object(object) = definition else {
+        return;
+    };
+    let Some(subschemas) = object.subschemas.as_mut() else {
+        return;
+    };
+    let Some(branches) = subschemas.one_of.as_mut() else {
+        return;
+    };
+    for branch in branches {
+        let schemars::schema::Schema::Object(branch_object) = branch else {
+            continue;
+        };
+        let Some(validation) = branch_object.object.as_mut() else {
+            continue;
+        };
+        let Some(params) = validation.properties.get_mut("params") else {
+            continue;
+        };
+        let schemars::schema::Schema::Object(params_object) = params else {
+            continue;
+        };
+        camel_case_params_fields(params_object);
     }
 }
 
@@ -794,8 +879,9 @@ fn register_devo_protocol_schemas(
     schema::<SessionEffectiveContextWindowUpdatedPayload>(schemas);
     schema::<SessionResumeParams>(schemas);
     schema::<SessionResumeResult>(schemas);
-    schema::<SessionForkParams>(schemas);
-    schema::<SessionForkResult>(schemas);
+    schema::<native::rpc_session::SessionForkCut>(schemas);
+    schema::<native::rpc_session::SessionForkParams>(schemas);
+    schema::<native::rpc_session::SessionForkResult>(schemas);
     schema::<native::rpc_admin::SkillListParams>(schemas);
     schema::<native::rpc_admin::SkillListResult>(schemas);
     schema::<native::rpc_admin::SkillInfo>(schemas);
@@ -820,6 +906,12 @@ fn register_devo_protocol_schemas(
     schema::<CommandExecTerminateParams>(schemas);
     schema::<CommandExecTerminateResult>(schemas);
     schema::<TurnStartParams>(schemas);
+    schema::<crate::native::rpc_turn::TurnRecovery>(schemas);
+    schema::<crate::native::rpc_turn::TurnRecoveryReadParams>(schemas);
+    schema::<crate::native::rpc_turn::TurnRecoveryReadResult>(schemas);
+    schema::<crate::native::rpc_turn::TurnResumeParams>(schemas);
+    schema::<crate::native::rpc_turn::TurnResumeResult>(schemas);
+
     schema::<TurnStartResult>(schemas);
     schema::<native::rpc_session::SessionInterruptScope>(schemas);
     schema::<native::rpc_session::SessionInterruptParams>(schemas);
@@ -862,20 +954,19 @@ fn register_devo_protocol_schemas(
     schema::<CancelTaskResult>(schemas);
     schema::<CloseAgentParams>(schemas);
     schema::<CloseAgentResult>(schemas);
-    schema::<ProviderVendorListParams>(schemas);
-    schema::<ProviderVendorListResult>(schemas);
-    schema::<ProviderValidateParams>(schemas);
-    schema::<ProviderValidateResult>(schemas);
-    schema::<ProviderVendorUpsertParams>(schemas);
-    schema::<ProviderVendorUpsertResult>(schemas);
-    schema::<native::rpc_admin::ProviderVendorInfo>(schemas);
-    schema::<native::rpc_admin::ProviderModelBindingInfo>(schemas);
+
     schema::<native::rpc_admin::ProviderListParams>(schemas);
     schema::<native::rpc_admin::ProviderListResult>(schemas);
     schema::<native::rpc_admin::ProviderUpsertParams>(schemas);
     schema::<native::rpc_admin::ProviderUpsertResult>(schemas);
+    schema::<native::rpc_admin::ProviderDisconnectParams>(schemas);
+    schema::<native::rpc_admin::ProviderDisconnectResult>(schemas);
+    schema::<native::rpc_admin::ProviderModelRemoveParams>(schemas);
+    schema::<native::rpc_admin::ProviderModelRemoveResult>(schemas);
     schema::<native::rpc_admin::ProviderValidateParams>(schemas);
     schema::<native::rpc_admin::ProviderValidateResult>(schemas);
+    schema::<native::rpc_admin::ProviderDiscoverParams>(schemas);
+    schema::<native::rpc_admin::ProviderDiscoverResult>(schemas);
 
     method(
         methods,
@@ -895,7 +986,10 @@ fn register_devo_protocol_schemas(
         },
     );
     native_method::<SessionResumeParams, SessionResumeResult>(methods, "session/resume");
-    native_method::<SessionForkParams, SessionForkResult>(methods, "session/fork");
+    native_method::<native::rpc_session::SessionForkParams, native::rpc_session::SessionForkResult>(
+        methods,
+        "session/fork",
+    );
     native_method::<native::rpc_admin::SkillListParams, native::rpc_admin::SkillListResult>(
         methods,
         "skill/list",
@@ -910,6 +1004,14 @@ fn register_devo_protocol_schemas(
     native_method::<ContextUsageReadParams, ContextUsageReadResult>(methods, "context/usage/read");
     native_method::<CommandExecParams, CommandExecResult>(methods, "command/exec");
     native_method::<TurnStartParams, TurnStartResult>(methods, "turn/start");
+    native_method::<
+        crate::native::rpc_turn::TurnResumeParams,
+        crate::native::rpc_turn::TurnResumeResult,
+    >(methods, "turn/resume");
+    native_method::<
+        crate::native::rpc_turn::TurnRecoveryReadParams,
+        crate::native::rpc_turn::TurnRecoveryReadResult,
+    >(methods, "turn/recovery/read");
     native_method::<
         native::rpc_session::SessionInterruptParams,
         native::rpc_session::SessionInterruptResult,
@@ -950,6 +1052,14 @@ fn register_devo_protocol_schemas(
         methods,
         "provider/upsert",
     );
+    native_method::<
+        native::rpc_admin::ProviderDisconnectParams,
+        native::rpc_admin::ProviderDisconnectResult,
+    >(methods, "provider/disconnect");
+    native_method::<
+        native::rpc_admin::ProviderModelRemoveParams,
+        native::rpc_admin::ProviderModelRemoveResult,
+    >(methods, "provider/model/remove");
 }
 
 fn method(

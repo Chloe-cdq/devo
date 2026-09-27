@@ -15,7 +15,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::ModelRequest;
@@ -76,7 +75,6 @@ fn build_runtime(data_root: &Path) -> Result<Arc<ServerRuntime>> {
             devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -148,20 +146,18 @@ async fn start_session(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model"
+                    "idempotencyKey": "sandbox-profile-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: SuccessResponse<devo_server::SessionStartResult> =
+        .context("session/new response")?;
+    let response: SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult> =
         serde_json::from_value(response)?;
-    Ok(response.result.session.session_id)
+    Ok(SessionId::try_from(response.result.session.id.as_str())?)
 }
 
 async fn new_acp_session(

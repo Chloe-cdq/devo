@@ -41,11 +41,14 @@ function agentEqual(prev: Agent | null, next: Agent | null): boolean {
 		// so status changes from descendant sub-agents propagate to the sidebar.
 		prev.currentActivity === next.currentActivity &&
 		prev.parentId === next.parentId &&
+		prev.forkFromId === next.forkFromId &&
+		prev.atTurnId === next.atTurnId &&
 		prev.worktreePath === next.worktreePath &&
 		prev.worktreeBranch === next.worktreeBranch &&
 		prev.createdAt === next.createdAt &&
 		prev.lastActiveAt === next.lastActiveAt &&
 		prev.hasUnreadCompletion === next.hasUnreadCompletion &&
+		prev.titleGenerating === next.titleGenerating &&
 		prev.permissions.length === next.permissions.length &&
 		prev.questions.length === next.questions.length &&
 		prev.permissions[0] === next.permissions[0] &&
@@ -382,7 +385,8 @@ export const agentFamily = atomFamily((sessionId: string) => {
 		const next: Agent = {
 			id: session.id,
 			sessionId: session.id,
-			name: session.title || "Untitled",
+			name: session.title || "New Chat",
+			titleGenerating: false,
 			status: agentStatus,
 			environment: "local" as const,
 			project: projectName,
@@ -402,6 +406,8 @@ export const agentFamily = atomFamily((sessionId: string) => {
 			permissions,
 			questions,
 			parentId: session.parentID,
+			forkFromId: session.forkFromId,
+			atTurnId: session.atTurnId,
 			worktreePath: entry.worktreePath,
 			worktreeBranch: entry.worktreeBranch,
 			createdAt: created,
@@ -426,7 +432,7 @@ export const sessionNameFamily = atomFamily((sessionId: string) =>
 	atom((get) => {
 		const entry = get(sessionFamily(sessionId))
 		if (!entry) return undefined
-		return entry.session.title || "Untitled"
+		return entry.session.title || "New Chat"
 	}),
 )
 

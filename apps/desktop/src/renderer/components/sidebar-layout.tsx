@@ -23,7 +23,8 @@ import {
 } from "../atoms/desktop-folders"
 import { openNewTerminalAtom, terminalPanelOpenAtom } from "../atoms/terminal"
 import { customizeOpenAtom, settingsBackgroundSessionAtom, settingsOverlayOpenAtom } from "../atoms/ui"
-import { lastProjectDirectoryAtom } from "../atoms/preferences"
+import { lastProjectDirectoryAtom, sidebarWidthAtom } from "../atoms/preferences"
+import { clampSidebarWidth } from "../lib/sidebar-width"
 import { useAppRoutePersistence } from "../hooks/use-app-route-persistence"
 import { useAgents, useProjectList, useSetCommandPaletteOpen } from "../hooks/use-agents"
 import { useAgentActions } from "../hooks/use-server"
@@ -40,6 +41,7 @@ import { isSettingsRoute } from "../lib/app-navigation"
 import type { Agent, SidebarProject } from "../lib/types"
 import { createDesktopFolder, pickDirectory, statDesktopFolders } from "../services/backend"
 import {
+	deleteProjectSessions,
 	loadProjectSessions,
 	refillProjectSessionsAfterDelete,
 } from "../services/connection-manager"
@@ -49,13 +51,14 @@ import { DesktopProjectActionsProvider } from "./desktop-project-actions-context
 import { DesktopTerminalPanel } from "./desktop-terminal-panel"
 import { LeftPanelIcon } from "./panel-icons"
 import { AppSidebarContent } from "./sidebar"
+import { SidebarResizeHandle } from "./sidebar/sidebar-resize-handle"
 import {
 	SessionDeleteDialog,
 	deleteSessionNavigationTarget,
 } from "./sidebar/sidebar-session-delete"
 import { CreateFolderDialog } from "./sidebar/sidebar-folder-dialogs"
 import { useSidebarSlot } from "./sidebar-slot-context"
-import { SessionView } from "./session-view"
+import { SessionShell } from "./session-shell"
 import { UpdateBanner } from "./update-banner"
 
 // ============================================================
@@ -147,7 +150,7 @@ function AppMenuBar() {
 				<button
 					key={item.id}
 					type="button"
-					className="h-7 rounded-md px-2 text-sm font-normal text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+					className="h-7 rounded-md px-2 text-[13px] font-normal text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
 					onClick={(event) => handleMenuClick(event, item.id)}
 					style={{
 						// @ts-expect-error -- vendor-prefixed CSS property
@@ -236,6 +239,10 @@ export function SidebarLayout() {
 	const projects = useProjectList()
 	const lastProjectDirectory = useAtomValue(lastProjectDirectoryAtom)
 	const setLastProjectDirectory = useSetAtom(lastProjectDirectoryAtom)
+	const [sidebarWidth, setSidebarWidth] = useAtom(sidebarWidthAtom)
+	const [sidebarResizing, setSidebarResizing] = useState(false)
+	const [dragSidebarWidth, setDragSidebarWidth] = useState<number | null>(null)
+	const sidebarResizingRef = useRef(false)
 	const setCommandPaletteOpen = useSetCommandPaletteOpen()
 	const desktopFolders = useAtomValue(desktopFoldersAtom)
 	const folderStatuses = useAtomValue(desktopFolderStatusByDirectoryAtom)
@@ -251,6 +258,7 @@ export function SidebarLayout() {
 	const [createFolderPending, setCreateFolderPending] = useState(false)
 	const [createFolderError, setCreateFolderError] = useState<string | null>(null)
 	const loadedProjectDirectoriesRef = useRef<Set<string>>(new Set())
+	const evictKeepAliveSessionRef = useRef<(sessionId: string) => void>(() => {})
 	useEffect(() => {
 		if (!projectSlug) return
 		const project = projects.find((item) => item.slug === projectSlug)
@@ -297,6 +305,7 @@ export function SidebarLayout() {
 		setDeleteError(null)
 		try {
 			await deleteSession(deleteTarget.directory, deleteTarget.sessionId)
+			evictKeepAliveSessionRef.current(deleteTarget.sessionId)
 			await refillProjectSessionsAfterDelete(
 				deleteTarget.projectDirectory,
 				deleteTarget.sessionId,
@@ -520,6 +529,7 @@ export function SidebarLayout() {
 
 	const handleRemoveFolder = useCallback(
 		async (project: SidebarProject) => {
+			await deleteProjectSessions(project.directory)
 			const nextFolders = removeDesktopFolder(desktopFolders, project.directory)
 			await persistDesktopFolders(nextFolders)
 			setFolderStatuses((previous) => {
@@ -535,6 +545,38 @@ export function SidebarLayout() {
 		[desktopFolders, navigate, persistDesktopFolders, projectSlug, setFolderStatuses],
 	)
 
+	const handleSidebarWidthChange = useCallback(
+		(nextWidth: number) => {
+			const clamped = clampSidebarWidth(nextWidth, { windowWidth: window.innerWidth })
+			// Live drag uses local state so we don't hit atomWithStorage/localStorage every frame.
+			if (sidebarResizingRef.current) {
+				setDragSidebarWidth(clamped)
+				return
+			}
+			setSidebarWidth(clamped)
+			setDragSidebarWidth(null)
+		},
+		[setSidebarWidth],
+	)
+
+	const handleSidebarResizingChange = useCallback(
+		(resizing: boolean) => {
+			sidebarResizingRef.current = resizing
+			setSidebarResizing(resizing)
+			if (!resizing) {
+				setDragSidebarWidth((current) => {
+					if (current != null) setSidebarWidth(current)
+					return null
+				})
+			}
+		},
+		[setSidebarWidth],
+	)
+
+	const resolvedSidebarWidth = clampSidebarWidth(dragSidebarWidth ?? sidebarWidth, {
+		windowWidth: typeof window !== "undefined" ? window.innerWidth : undefined,
+	})
+
 	return (
 		<div
 			className="relative flex h-screen text-foreground"
@@ -549,7 +591,17 @@ export function SidebarLayout() {
 				startFromScratch={handleOpenCreateFolder}
 				useExistingFolder={handleAddProject}
 			>
-				<SidebarProvider embedded defaultOpen={true}>
+				<SidebarProvider
+					embedded
+					defaultOpen={true}
+					data-resizing={sidebarResizing ? "true" : undefined}
+					className="relative"
+					style={
+						{
+							"--sidebar-width": `${resolvedSidebarWidth}px`,
+						} as React.CSSProperties
+					}
+				>
 					<NarrowWindowCollapser />
 					<Sidebar collapsible="offcanvas" variant="sidebar">
 						{/* Sidebar header -- reserves space to match the app bar height so
@@ -590,7 +642,6 @@ export function SidebarLayout() {
 									onSubmit={handleConfirmCreateFolder}
 								/>
 								<SessionDeleteDialog
-									agent={deleteTarget}
 									open={!!deleteTarget}
 									pending={deletePending}
 									error={deleteError}
@@ -603,6 +654,11 @@ export function SidebarLayout() {
 						 * When default sidebar is active, AppSidebarContent renders its own footer. */}
 						{slotFooter !== false && slotFooter}
 					</Sidebar>
+					<SidebarResizeHandle
+						width={resolvedSidebarWidth}
+						onWidthChange={handleSidebarWidthChange}
+						onResizingChange={handleSidebarResizingChange}
+					/>
 					<SidebarInset data-transcript-titlebar-fill={transcriptTitlebarFillAttr}>
 						<UpdateBanner />
 						{!transcriptFillsTitlebar && <AppBar />}
@@ -623,7 +679,10 @@ export function SidebarLayout() {
 								aria-hidden={isSettingsOpen || customizeOpen}
 							>
 								{sessionToKeepAlive ? (
-									<SessionView sessionId={sessionToKeepAlive} />
+									<SessionShell
+										activeSessionId={sessionToKeepAlive}
+										evictRef={evictKeepAliveSessionRef}
+									/>
 								) : (
 									!isSettingsOpen && !customizeOpen && <Outlet />
 								)}

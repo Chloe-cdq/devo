@@ -29,10 +29,32 @@ export type JsonRpcId = number | string
 type PendingRequest = {
 	resolve: (value: unknown) => void
 	reject: (error: Error) => void
-	timer: ReturnType<typeof setTimeout>
+	timer?: ReturnType<typeof setTimeout>
 }
 
 const REQUEST_TIMEOUT_MS = 10_000
+/** Cold-starting the managed `devo server` process can exceed the default RPC budget. */
+export const INITIALIZE_REQUEST_TIMEOUT_MS = 60_000
+/** MCP admin RPCs may start a lazy server before listing tools. */
+export const MCP_ADMIN_REQUEST_TIMEOUT_MS = 60_000
+/** Git-backed workspace diffs can exceed the default 10s budget on large trees. */
+export const WORKSPACE_CHANGES_REQUEST_TIMEOUT_MS = 60_000
+
+export function requestTimeoutMsForMethod(method: string, fallbackMs: number): number | undefined {
+	if (method === "initialize") {
+		return Math.max(fallbackMs, INITIALIZE_REQUEST_TIMEOUT_MS)
+	}
+	if (method === "provider/validate") {
+		return undefined
+	}
+	if (method === "mcp/tools" || method === "mcp/set_enabled") {
+		return Math.max(fallbackMs, MCP_ADMIN_REQUEST_TIMEOUT_MS)
+	}
+	if (method === "workspace/changes/read") {
+		return Math.max(fallbackMs, WORKSPACE_CHANGES_REQUEST_TIMEOUT_MS)
+	}
+	return fallbackMs
+}
 
 export type NativeIncomingMessage =
 	| { type: "response"; id: JsonRpcId; message: Record<string, unknown> }
@@ -286,13 +308,27 @@ export class StdioNativeClient implements NativeTransport {
 		const scopedParams = scopeRequestParams(method, params, directory)
 		const payload = { jsonrpc: "2.0", id, method, params: scopedParams }
 		const response = new Promise<unknown>((resolve, reject) => {
-			const timer = setTimeout(() => {
-				if (!this.pending.delete(id)) return
-				this.pendingMethods.delete(id)
-				reject(new Error(`${method} request ${id} timed out`))
-			}, this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS)
-			this.pending.set(id, { resolve, reject, timer })
+			const timeoutMs = requestTimeoutMsForMethod(
+				method,
+				this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+			)
+			const timer = timeoutMs === undefined
+				? undefined
+				: setTimeout(() => {
+						if (!this.pending.delete(id)) return
+						this.pendingMethods.delete(id)
+						reject(new Error(`${method} request ${id} timed out`))
+					}, timeoutMs)
+			this.pending.set(id, {
+				resolve,
+				reject,
+				timer,
+			})
 		})
+		// Server may reply (and reject) before the caller awaits — attach a
+		// no-op handler so Node does not log UnhandledPromiseRejectionWarning.
+		// Real callers still observe the rejection via await / .catch.
+		void response.catch(() => {})
 		this.pendingMethods.set(id, method)
 		try {
 			await this.writeJson(child, payload)
@@ -306,7 +342,7 @@ export class StdioNativeClient implements NativeTransport {
 		} catch (error) {
 			const reason = toError(error)
 			const pending = this.pending.get(id)
-			if (pending) clearTimeout(pending.timer)
+			if (pending?.timer !== undefined) clearTimeout(pending.timer)
 			this.pending.delete(id)
 			this.pendingMethods.delete(id)
 			this.close(reason)
@@ -390,10 +426,14 @@ export class StdioNativeClient implements NativeTransport {
 				const pending = this.pending.get(routed.id)
 				if (!pending) return
 				this.pending.delete(routed.id)
-				clearTimeout(pending.timer)
-				const error = routed.message.error as { message?: string } | undefined
+				if (pending.timer !== undefined) clearTimeout(pending.timer)
+				const error = routed.message.error as { message?: string; code?: string } | undefined
 				if (error) {
-					pending.reject(new Error(error.message ?? "Devo Native request failed"))
+					const rejected = new Error(error.message ?? "Devo Native request failed") as Error & {
+						code?: string
+					}
+					if (typeof error.code === "string") rejected.code = error.code
+					pending.reject(rejected)
 				} else {
 					pending.resolve(routed.message.result)
 				}
@@ -476,7 +516,7 @@ export class StdioNativeClient implements NativeTransport {
 			payload: { error: error.message },
 		})
 		for (const pending of this.pending.values()) {
-			clearTimeout(pending.timer)
+			if (pending.timer !== undefined) clearTimeout(pending.timer)
 			pending.reject(error)
 		}
 		this.pending.clear()

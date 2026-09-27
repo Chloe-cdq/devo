@@ -953,10 +953,10 @@ impl ServerRuntime {
         session_handle.set_active_goal(goal).await;
     }
 
-    /// Title generation needs session-actor mailbox replies. When a turn is
-    /// already running inline on that actor, awaiting those replies deadlocks
-    /// the goal handler. Defer title work to a task and rely on the post-turn
-    /// hook as a fallback while a turn is active.
+    /// Title work must not block the session actor. When a turn is already
+    /// active, defer heuristic prepare to a task (post-turn notify polishes).
+    /// When idle, await the fast heuristic apply so continuation sees a title,
+    /// then wake polish asynchronously.
     async fn schedule_goal_followup_work(
         self: &Arc<Self>,
         session_id: SessionId,
@@ -969,12 +969,18 @@ impl ServerRuntime {
                 let runtime = Arc::clone(self);
                 tokio::spawn(async move {
                     runtime
-                        .maybe_start_title_generation_from_user_input(session_id, &title_input)
+                        .prepare_title_from_user_input(session_id, &title_input)
                         .await;
                 });
             } else {
-                self.maybe_start_title_generation_from_user_input(session_id, &title_input)
+                // Heuristic apply is local/fast; await it so continuation sees a title.
+                // LLM polish stays async via notify.
+                self.prepare_title_from_user_input(session_id, &title_input)
                     .await;
+                let runtime = Arc::clone(self);
+                tokio::spawn(async move {
+                    runtime.notify_title_polish(session_id).await;
+                });
             }
         }
         if !should_continue {

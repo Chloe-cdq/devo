@@ -131,8 +131,10 @@ async fn context_limit_error_compacts_and_retries_query() {
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
             | QueryEvent::ReasoningCompleted
+            | QueryEvent::ContextEstimate { .. }
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
+            | QueryEvent::ToolUseInputDelta { .. }
             | QueryEvent::ToolExecutionStart { .. }
             | QueryEvent::ToolProgress { .. }
             | QueryEvent::ToolResult { .. }

@@ -104,7 +104,8 @@ impl ServerRuntime {
                 snapshot.session_totals.cache_creation_input_tokens;
             session_total_cache_read_tokens = snapshot.session_totals.cache_read_input_tokens;
         }
-        self.clear_active_turn_interrupt_handles(session_id).await;
+        // Leave ActiveTurnRegistry turn metadata until after MergeTurn so
+        // admission cannot race a free registry against an unmerged working set.
         match &result {
             Ok(()) => {
                 self.run_session_hook_for_actor_state(
@@ -156,6 +157,19 @@ impl ServerRuntime {
                 session_prompt_token_estimate,
             )
             .await;
+        if final_turn.status == TurnStatus::Failed
+            && final_turn.failure_reason.is_none()
+            && let Err(error) = self
+                .persist_recovery_disposition(
+                    session_id,
+                    final_turn.turn_id,
+                    devo_core::durable_execution::RecoveryDisposition::Available,
+                    "This turn ended with a program or provider error.",
+                )
+                .await
+        {
+            tracing::warn!(%session_id, %error, "failed to save recovery state");
+        }
         if matches!(final_turn.status, TurnStatus::Interrupted) {
             state.core.mark_last_turn_interrupted();
         } else {
@@ -484,29 +498,7 @@ fn effective_context_window_tokens(state: &SessionActorState, runtime: &ServerRu
                 .as_deref()
                 .and_then(|slug| runtime.deps.model_catalog.get(slug))
         });
-    let Some(model) = model else {
-        return state
-            .core
-            .config
-            .effective_context_window_override
-            .or(state.core.config.token_budget.auto_compact_token_limit)
-            .map(|limit| limit as u64)
-            .unwrap_or(0);
-    };
-    let global = runtime
-        .deps
-        .config_store
-        .lock()
-        .expect("app config store mutex should not be poisoned")
-        .effective_config()
-        .compaction_token_limit;
-    // Live session override (from a hot global apply) wins; otherwise resolve
-    // from the global preference / model default.
-    if let Some(limit) = state.core.config.effective_context_window_override {
-        let model_window = u64::from(model.context_window.max(1));
-        return (limit as u64).min(model_window).max(1);
-    }
-    crate::runtime::context_occupancy::resolved_compaction_limit(global, model)
+    super::super::context_occupancy::occupancy_window_tokens(model)
 }
 
 fn append_terminal_history_items(

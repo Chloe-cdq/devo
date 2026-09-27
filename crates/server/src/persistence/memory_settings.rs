@@ -12,19 +12,6 @@ use super::ReplayState;
 use super::RolloutStore;
 
 impl RolloutStore {
-    /// Appends one field-level session settings line without requiring the
-    /// actor-owned session record (L2-DES-CONV-002 Phase 2 persist-first
-    /// path: the handler must not wait on the actor mailbox to persist).
-    pub(crate) fn append_session_settings_at(
-        &self,
-        rollout_path: &Path,
-        session_id: SessionId,
-        field: SessionSettingsField,
-        value: serde_json::Value,
-    ) -> Result<()> {
-        self.append_session_settings_batch_at(rollout_path, session_id, &[(field, value)])
-    }
-
     /// Appends several field-level settings lines under one file lock and one
     /// fsync so concurrent patches cannot interleave. A crash may retain a
     /// complete prefix because rollout records remain independently replayable.

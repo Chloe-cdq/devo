@@ -1,15 +1,23 @@
+mod approval_resume;
 mod context_compaction;
 mod event_stream;
 mod failure;
 mod finalize;
 mod followup;
 mod item_stream;
+pub(crate) mod journal;
 mod query;
+mod recovery;
+mod recovery_notifications;
 mod tool_display;
 mod tool_results;
 mod trace;
 mod types;
 
+pub(crate) use context_compaction::{
+    manual_compaction_completed_event, manual_compaction_item_failed_event,
+    manual_compaction_started_event,
+};
 pub(crate) use event_stream::{QUERY_EVENT_CHANNEL_CAPACITY, spawn_turn_event_stream};
 pub(crate) use finalize::FinalizeTurnParams;
 pub(crate) use query::TurnModelQueryParams;
@@ -18,11 +26,61 @@ pub(crate) use types::ExecuteTurnRequest;
 use std::sync::Arc;
 
 use anyhow::Context;
+use devo_core::SessionId;
 
 use super::*;
 
+/// Schedules queue drain / goal continuation after a turn merges.
+///
+/// Must stay a sync function so callers' async opaque types do not recursively
+/// include this spawn's future (rustc Send-cycle with `execute_turn`).
+pub(crate) fn spawn_post_turn_scheduling(
+    runtime: Arc<ServerRuntime>,
+    session_id: SessionId,
+    should_auto_continue_goal: bool,
+) {
+    tokio::spawn(async move {
+        // Provider/program failures mark recovery Available (no typed
+        // failure_reason). Still pause the goal before bailing — otherwise
+        // recovery gating would leave Active goals looping eligibility checks.
+        if should_auto_continue_goal && let Some(session_handle) = runtime.session(session_id).await
+        {
+            let _ = runtime
+                .pause_goal_continuation_after_failed_turn(session_id, &session_handle)
+                .await;
+        }
+        if runtime
+            .turn_recovery(session_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
+        runtime.notify_title_polish(session_id).await;
+        if runtime.chain_queued_followup_turn(session_id).await {
+            return;
+        }
+        if runtime.spawn_next_turn_from_queue(session_id).await {
+            return;
+        }
+        if runtime.child_parent_and_path(session_id).await.is_some()
+            && runtime.child_can_accept_next_turn(session_id).await
+        {
+            let _ = runtime
+                .drain_child_mailbox_into_user_turns(session_id)
+                .await;
+            return;
+        }
+        if should_auto_continue_goal {
+            runtime.maybe_start_goal_continuation_turn(session_id).await;
+        }
+    });
+}
+
 impl ServerRuntime {
-    /// Execute one turn end-to-end via the session actor.
+    /// Execute one turn on a spawned working copy; the session actor stays free.
     pub(in crate::runtime) async fn execute_turn(self: Arc<Self>, request: ExecuteTurnRequest) {
         let Some(handle) = self.session(request.session_id).await else {
             return;

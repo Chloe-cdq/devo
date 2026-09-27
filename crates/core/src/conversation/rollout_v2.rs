@@ -198,6 +198,10 @@ pub enum RolloutLineV2 {
     rename_all_fields = "camelCase"
 )]
 pub enum InternalRecordV2 {
+    /// Acknowledged tool execution and prompt checkpoint, never a public item.
+    Execution {
+        record: crate::durable_execution::ExecutionRecord,
+    },
     /// A canonical internal replay entry. Kept as a nested payload rather than
     /// a flattened newtype variant: both enums use the `type` tag, so
     /// flattening would emit a duplicate `type` key and break round-trips.
@@ -234,6 +238,8 @@ pub enum InternalRecordV2 {
         /// projector at write time.
         epoch: u64,
     },
+    /// Turn blocked on interactive approval; used to resume after restart.
+    TurnApprovalCheckpoint(Box<crate::TurnApprovalCheckpointRecordedRecord>),
 }
 
 /// A rollout line parsed from disk in either supported format.
@@ -391,7 +397,7 @@ mod tests {
             timestamp: fixed_ts(),
             session_id: crate::conversation::SessionId::new(),
             title: "New Title".into(),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             previous_title: Some("Old Title".into()),
         });
         let line = serde_json::to_string(&legacy).expect("serialize");

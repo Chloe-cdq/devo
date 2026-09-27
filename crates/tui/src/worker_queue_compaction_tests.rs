@@ -35,7 +35,6 @@ fn widget_with_model() -> ChatWidget {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -125,7 +124,8 @@ fn context_compaction_worker_event_adds_history_item() {
 #[test]
 fn completed_context_compaction_item_emits_worker_event() {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    crate::worker::handle_completed_item(
+    crate::worker::dispatch_legacy_item_event_for_test(
+        "item/completed",
         ItemEventPayload {
             context: devo_server::EventContext {
                 session_id: SessionId::new(),

@@ -76,7 +76,7 @@ fn session_record(n: u128) -> SessionRecord {
         reasoning_effort_selection: Some("high".into()),
         cwd: "/tmp/legacy-project".into(),
         additional_directories: vec!["/tmp/legacy-extra".into()],
-        cli_version: "0.1.34".into(),
+        cli_version: "0.1.37".into(),
         title: Some("Legacy Session".into()),
         title_state: SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
         sandbox_policy: "workspace-write".into(),
@@ -89,6 +89,8 @@ fn session_record(n: u128) -> SessionRecord {
         git_branch: Some("main".into()),
         git_origin_url: Some("git@github.com:example/repo.git".into()),
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         session_context: None,
         latest_turn_context: None,
         collaboration_mode: None,
@@ -138,6 +140,7 @@ fn item_record(n: u128, session: u128, turn: u128, seq: u64) -> ItemRecord {
         turn_id: turn_id(turn),
         seq,
         timestamp: ts(10 + seq as u32),
+        started_at: None,
         attempt_placement: None,
         turn_status: Some(TurnStatus::Running),
         sibling_turn_ids: Vec::new(),
@@ -150,10 +153,10 @@ fn item_record(n: u128, session: u128, turn: u128, seq: u64) -> ItemRecord {
 }
 
 fn item_line(record: ItemRecord) -> RolloutLine {
-    RolloutLine::Item(ItemLine {
+    RolloutLine::Item(Box::new(ItemLine {
         timestamp: record.timestamp,
         item: record,
-    })
+    }))
 }
 
 fn sample_session_context() -> SessionContext {

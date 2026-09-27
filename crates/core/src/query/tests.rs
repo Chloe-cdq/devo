@@ -165,19 +165,6 @@ fn network_errors_are_retryable() {
             message: "provider request timed out".into(),
             provider_name: Some("test-provider".into()),
         }),
-        anyhow::Error::new(devo_provider::timeout::stream_idle_timeout_provider_error(
-            "openai",
-            "gpt-test",
-            devo_provider::timeout::StreamIdleTimeoutError {
-                idle_timeout: std::time::Duration::from_secs(60),
-            },
-        )),
-        anyhow::Error::new(devo_provider::timeout::StreamIdleTimeoutError {
-            idle_timeout: std::time::Duration::from_secs(60),
-        }),
-        anyhow::anyhow!(
-            "openai stream idle timeout for model gpt-test: provider stream idle timeout after 60s without receiving data"
-        ),
     ];
 
     for error in cases {
@@ -1288,8 +1275,10 @@ fn recorded_compaction_events(events: &[QueryEvent]) -> Vec<RecordedCompactionEv
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
             | QueryEvent::ReasoningCompleted
+            | QueryEvent::ContextEstimate { .. }
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
+            | QueryEvent::ToolUseInputDelta { .. }
             | QueryEvent::ToolExecutionStart { .. }
             | QueryEvent::ToolProgress { .. }
             | QueryEvent::ToolResult { .. }
@@ -1332,6 +1321,7 @@ async fn automatic_compaction_emits_started_then_completed_when_history_is_repla
         &mut session,
         &on_event,
         super::CompactionModelRequest {
+            journal: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -1377,6 +1367,7 @@ async fn automatic_compaction_emits_failed_when_compaction_is_skipped() {
         &mut session,
         &on_event,
         super::CompactionModelRequest {
+            journal: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -1416,6 +1407,7 @@ async fn proactive_compaction_emits_failed_when_compaction_errors() {
         &mut session,
         &on_event,
         super::CompactionModelRequest {
+            journal: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -1511,11 +1503,13 @@ async fn query_retries_transient_stream_event_errors_before_content() {
             QueryEvent::ContextCompactionStarted
             | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
+            | QueryEvent::ContextEstimate { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
             | QueryEvent::ReasoningCompleted
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
+            | QueryEvent::ToolUseInputDelta { .. }
             | QueryEvent::ToolExecutionStart { .. }
             | QueryEvent::ToolProgress { .. }
             | QueryEvent::ToolResult { .. }
@@ -1533,7 +1527,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
                 max_attempts: 5,
                 backoff_ms: 250,
                 phase: QueryProviderRetryPhase::Scheduled,
-                message: "Retrying provider request in 0.2s".to_string(),
+                message: "500 internal server error".to_string(),
             },
             ProviderRetryStatus {
                 provider: "transient-stream-event-provider".to_string(),
@@ -1542,7 +1536,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
                 max_attempts: 5,
                 backoff_ms: 0,
                 phase: QueryProviderRetryPhase::Resumed,
-                message: "Retrying provider request now".to_string(),
+                message: "500 internal server error".to_string(),
             },
         ]
     );
@@ -1603,11 +1597,13 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
             QueryEvent::ContextCompactionStarted
             | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
+            | QueryEvent::ContextEstimate { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
             | QueryEvent::ReasoningCompleted
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
+            | QueryEvent::ToolUseInputDelta { .. }
             | QueryEvent::ToolExecutionStart { .. }
             | QueryEvent::ToolProgress { .. }
             | QueryEvent::ToolResult { .. }
@@ -1625,7 +1621,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 60_000,
                 phase: QueryProviderRetryPhase::Scheduled,
-                message: "Retrying provider request in 60.0s".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
             ProviderRetryStatus {
                 provider: "rate-limited-stream-create-provider".to_string(),
@@ -1634,7 +1630,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 0,
                 phase: QueryProviderRetryPhase::Resumed,
-                message: "Retrying provider request now".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
             ProviderRetryStatus {
                 provider: "rate-limited-stream-create-provider".to_string(),
@@ -1643,7 +1639,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 60_000,
                 phase: QueryProviderRetryPhase::Scheduled,
-                message: "Retrying provider request in 60.0s".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
             ProviderRetryStatus {
                 provider: "rate-limited-stream-create-provider".to_string(),
@@ -1652,7 +1648,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 0,
                 phase: QueryProviderRetryPhase::Resumed,
-                message: "Retrying provider request now".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
         ]
     );
@@ -2546,12 +2542,13 @@ async fn query_resolves_reasoning_model_variant_before_building_request() {
         description: None,
         reasoning_capability: ReasoningCapability::Toggle,
         default_reasoning_effort: Some(ReasoningEffort::Medium),
+        default_reasoning_selection: None,
         reasoning_implementation: Some(ReasoningImplementation::ModelVariant(
             ReasoningVariantConfig {
                 variants: vec![
                     ReasoningVariant {
                         selection_value: "disabled".into(),
-                        model_slug: "kimi-k2.5".into(),
+                        model: "kimi-k2.5".into(),
                         reasoning_effort: None,
                         label: "Off".into(),
                         description: "Use the standard model".into(),
@@ -2559,7 +2556,7 @@ async fn query_resolves_reasoning_model_variant_before_building_request() {
                     },
                     ReasoningVariant {
                         selection_value: "enabled".into(),
-                        model_slug: "kimi-k2.5-thinking".into(),
+                        model: "kimi-k2.5-thinking".into(),
                         reasoning_effort: Some(ReasoningEffort::Medium),
                         label: "On".into(),
                         description: "Use the reasoning model".into(),
@@ -2568,6 +2565,7 @@ async fn query_resolves_reasoning_model_variant_before_building_request() {
                 ],
             },
         )),
+        catalog_variants: Default::default(),
         base_instructions: String::new(),
         context_window: 200_000,
         effective_context_window_percent: None,
@@ -4371,7 +4369,9 @@ async fn query_tool_start_event_includes_final_tool_input() {
     let callback: EventCallback = Arc::new(move |event: QueryEvent| {
         let seen_clone = Arc::clone(&seen_clone);
         Box::pin(async move {
-            if let QueryEvent::ToolUseStart { id, input, .. } = event {
+            if let QueryEvent::ToolUseStart { id, input, .. } = event
+                && !input.as_object().is_some_and(|object| object.is_empty())
+            {
                 seen_clone.lock().unwrap().push((id, input));
             }
         })
@@ -4632,3 +4632,6 @@ async fn query_emits_parallel_tool_results_as_each_tool_finishes() {
         .collect::<Vec<_>>();
     assert_eq!(tool_result_ids, vec!["slow", "fast"]);
 }
+
+#[path = "durability_tests.rs"]
+mod durability;

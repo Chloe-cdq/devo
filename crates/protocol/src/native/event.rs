@@ -186,6 +186,13 @@ pub enum ServerNotification {
     WorkspaceChangesUpdated(WorkspaceChangesUpdatedNotification),
 
     // ── Turn / Item ──
+    #[serde(rename = "turn/recoveryUpdated")]
+    TurnRecoveryUpdated {
+        session_id: SessionId,
+        recovery: Option<super::rpc_turn::TurnRecovery>,
+    },
+    #[serde(rename = "turn/resumed")]
+    TurnResumed { turn: Box<Turn>, attempt: u32 },
     #[serde(rename = "turn/started")]
     TurnStarted { turn: Box<Turn> },
     #[serde(rename = "turn/statusChanged")]
@@ -205,6 +212,10 @@ pub enum ServerNotification {
     ItemReasoningDelta(ItemDelta),
     #[serde(rename = "item/commandExecution/outputDelta")]
     ItemCommandExecutionOutputDelta(ItemDelta),
+    #[serde(rename = "item/toolCall/inputDelta")]
+    ItemToolCallInputDelta(ItemDelta),
+    #[serde(rename = "item/plan/delta")]
+    ItemPlanDelta(ItemDelta),
     /// All terminal states (Completed/Failed/Interrupted/Lost) go through
     /// this one notification with the terminal full snapshot; no separate
     /// `item/failed` exists.
@@ -308,6 +319,11 @@ pub enum ServerNotification {
         session_id: SessionId,
         turn_id: TurnId,
         item_id: ItemId,
+    },
+    #[serde(rename = "context/compactionFailed")]
+    ContextCompactionFailed {
+        session_id: SessionId,
+        message: String,
     },
     #[serde(rename = "session/usage/updated")]
     SessionUsageUpdated {

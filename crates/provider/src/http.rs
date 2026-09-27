@@ -9,11 +9,13 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::warn;
 
 use crate::error::context_limit_error;
+use crate::timeout::connect_timeout;
 
 #[derive(Clone, Copy)]
 enum HttpClientKind {
@@ -100,23 +102,20 @@ impl ProviderHttpOptions {
         self.network_proxy.proxy_url.as_deref()
     }
 
-    /// HTTP client for non-streaming requests with total request timeout.
+    /// HTTP client for non-streaming requests with a connection timeout.
     pub(crate) fn build_request_client(&self) -> Result<Client> {
         cached_http_client(HttpClientKind::Request, &self.network_proxy, || {
-            let builder = Client::builder()
-                .connect_timeout(crate::timeout::connect_timeout())
-                .timeout(crate::timeout::request_timeout());
+            let builder = Client::builder().connect_timeout(connect_timeout());
             devo_network_proxy::apply_proxy_config(builder, &self.network_proxy)?
                 .build()
                 .context("failed to build provider HTTP client")
         })
     }
 
-    /// HTTP client for SSE streaming. Duration is bounded by per-chunk idle
-    /// timeout in the stream layer, not a single wall-clock request timeout.
+    /// HTTP client for SSE streaming with a connection timeout.
     pub(crate) fn build_streaming_client(&self) -> Result<Client> {
         cached_http_client(HttpClientKind::Streaming, &self.network_proxy, || {
-            let builder = Client::builder().connect_timeout(crate::timeout::connect_timeout());
+            let builder = Client::builder().connect_timeout(connect_timeout());
             devo_network_proxy::apply_proxy_config(builder, &self.network_proxy)?
                 .build()
                 .context("failed to build provider streaming HTTP client")
@@ -128,6 +127,31 @@ impl ProviderHttpOptions {
             builder
         } else {
             builder.headers(self.custom_headers.clone())
+        }
+    }
+
+    /// Applies model/variant headers after provider defaults.
+    pub(crate) fn apply_request_headers(
+        &self,
+        builder: RequestBuilder,
+        headers: &BTreeMap<String, String>,
+    ) -> RequestBuilder {
+        let mut request_headers = HeaderMap::new();
+        for (name, value) in headers {
+            let Ok(name) = HeaderName::try_from(name) else {
+                warn!(header = %name, "ignoring invalid model request header name");
+                continue;
+            };
+            let Ok(value) = HeaderValue::try_from(value) else {
+                warn!(header = %name, "ignoring invalid model request header value");
+                continue;
+            };
+            request_headers.insert(name, value);
+        }
+        if request_headers.is_empty() {
+            builder
+        } else {
+            builder.headers(request_headers)
         }
     }
 }

@@ -61,17 +61,21 @@ describe("SessionRow", () => {
 			hasSelectedBackground: markup.includes("bg-black/[0.07]"),
 			hasLightHoverBackground: markup.includes("hover:bg-black/[0.04]"),
 			hasDarkHoverBackground: markup.includes("dark:hover:bg-white/[0.06]"),
-			hidesStatusOnHover: markup.includes("group-hover/sidebar-row:opacity-0"),
-			hidesStatusWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-0"),
-			showsActionsOnHover: markup.includes("group-hover/sidebar-row:opacity-100"),
-			showsActionsWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-100"),
+			hidesStatusOnRowHover: markup.includes("group-hover/sidebar-row:opacity-0"),
+			hidesStatusWhenMenuOpen: markup.includes(
+				"group-has-[[data-popup-open]]/sidebar-row:opacity-0",
+			),
+			showsActionsOnRowHover: markup.includes("group-hover/sidebar-row:opacity-100"),
+			showsActionsWhenMenuOpen: markup.includes(
+				"group-has-[[data-popup-open]]/sidebar-row:opacity-100",
+			),
 		}).toEqual({
 			hasSelectedBackground: true,
 			hasLightHoverBackground: false,
 			hasDarkHoverBackground: false,
-			hidesStatusOnHover: true,
+			hidesStatusOnRowHover: true,
 			hidesStatusWhenMenuOpen: true,
-			showsActionsOnHover: true,
+			showsActionsOnRowHover: true,
 			showsActionsWhenMenuOpen: true,
 		})
 	})
@@ -90,17 +94,23 @@ describe("SessionRow", () => {
 		expect({
 			hasLightHoverBackground: markup.includes("hover:bg-black/[0.04]"),
 			hasDarkHoverBackground: markup.includes("dark:hover:bg-white/[0.06]"),
-			hidesStatusOnHover: markup.includes("group-hover/sidebar-row:opacity-0"),
-			hidesStatusWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-0"),
-			showsActionsOnHover: markup.includes("group-hover/sidebar-row:opacity-100"),
-			fadesStatusAndMenu: markup.includes("transition-[background-color,color,opacity] duration-150"),
+			hidesStatusOnRowHover: markup.includes("group-hover/sidebar-row:opacity-0"),
+			hidesStatusWhenMenuOpen: markup.includes(
+				"group-has-[[data-popup-open]]/sidebar-row:opacity-0",
+			),
+			showsActionsOnRowHover: markup.includes("group-hover/sidebar-row:opacity-100"),
+			hasActionTransition: markup.includes("transition-[color,opacity]"),
+			hasIndependentActionHoverBackground: markup.includes("hover:bg-black/[0.06]"),
+			hasIndependentDarkActionHoverBackground: markup.includes("dark:hover:bg-white/[0.08]"),
 		}).toEqual({
 			hasLightHoverBackground: true,
 			hasDarkHoverBackground: true,
-			hidesStatusOnHover: true,
+			hidesStatusOnRowHover: true,
 			hidesStatusWhenMenuOpen: true,
-			showsActionsOnHover: true,
-			fadesStatusAndMenu: false,
+			showsActionsOnRowHover: true,
+			hasActionTransition: true,
+			hasIndependentActionHoverBackground: false,
+			hasIndependentDarkActionHoverBackground: false,
 		})
 	})
 
@@ -150,11 +160,13 @@ describe("SessionRow", () => {
 		expect({
 			hasSpinner: markup.includes("animate-spin"),
 			hasLoaderIcon: markup.includes("lucide-loader-circle"),
+			spinnerOnLeft: markup.includes("absolute left-1.5 top-1/2"),
 			hasCustomRing: markup.includes("border-[1.5px]"),
 			hasBlueDot: markup.includes("size-2 rounded-full bg-[#3396f4]"),
 		}).toEqual({
 			hasSpinner: true,
 			hasLoaderIcon: true,
+			spinnerOnLeft: true,
 			hasCustomRing: false,
 			hasBlueDot: false,
 		})
@@ -243,18 +255,24 @@ describe("SessionRow", () => {
 				/>,
 			)
 
+			const rightStatus = runningMarkup.slice(runningMarkup.indexOf("absolute right-2"))
+
 			expect({
 				idleShowsLastActive: idleMarkup.includes(">2h<"),
 				idleSpins: idleMarkup.includes("animate-spin"),
 				runningUsesLoader: runningMarkup.includes("lucide-loader-circle"),
 				runningSpins: runningMarkup.includes("animate-spin"),
 				runningShowsLastActive: runningMarkup.includes(">2h<"),
+				runningSpinnerOnLeft: runningMarkup.includes("absolute left-1.5 top-1/2"),
+				runningSpinnerNotOnRight: !rightStatus.includes("animate-spin"),
 			}).toEqual({
 				idleShowsLastActive: true,
 				idleSpins: false,
 				runningUsesLoader: true,
 				runningSpins: true,
-				runningShowsLastActive: false,
+				runningShowsLastActive: true,
+				runningSpinnerOnLeft: true,
+				runningSpinnerNotOnRight: true,
 			})
 		} finally {
 			Date.now = originalNow

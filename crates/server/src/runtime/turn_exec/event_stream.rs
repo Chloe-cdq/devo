@@ -80,6 +80,8 @@ pub(crate) fn spawn_turn_event_stream(
         let mut reasoning_delta_seq = 0_u64;
         let mut command_output_delta_seqs: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
+        let mut tool_input_delta_seqs: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         let mut tool_names_by_id = std::collections::HashMap::new();
         let mut pending_tool_calls: std::collections::HashMap<String, PendingToolCall> =
             std::collections::HashMap::new();
@@ -92,6 +94,7 @@ pub(crate) fn spawn_turn_event_stream(
         let mut latest_query_usage = None;
         let mut stop_reason = None;
         let mut context_compaction = ContextCompactionLifecycle::default();
+        let mut last_context_breakdown: Option<devo_core::RawContextBreakdown> = None;
         while let Some(event) = event_rx.recv().await {
             log_dequeued_query_event(&event);
             match event {
@@ -138,6 +141,15 @@ pub(crate) fn spawn_turn_event_stream(
                     context_compaction
                         .fail(&runtime, session_id, turn_for_events.turn_id, message)
                         .await;
+                }
+                devo_core::QueryEvent::ContextEstimate { breakdown } => {
+                    // Keep the latest category mix for provider-anchored
+                    // occupancy on Usage / UsageDelta. Do not broadcast here:
+                    // raw heuristic totals are not on the same scale as
+                    // provider display totals, and publishing them makes the
+                    // context bar drop then snap back (TUI prefers live
+                    // TurnUsageUpdated for the fill amount for the same reason).
+                    last_context_breakdown = Some(breakdown);
                 }
                 devo_core::QueryEvent::TextDelta(text) => {
                     if let Some(parser) = proposed_plan_parser.as_mut() {
@@ -217,6 +229,18 @@ pub(crate) fn spawn_turn_event_stream(
                     )
                     .await;
                 }
+                devo_core::QueryEvent::ToolUseInputDelta { id, partial_json } => {
+                    handle_tool_input_delta(
+                        &runtime,
+                        session_id,
+                        turn_for_events.turn_id,
+                        id,
+                        partial_json,
+                        &pending_tool_calls,
+                        &mut tool_input_delta_seqs,
+                    )
+                    .await;
+                }
                 devo_core::QueryEvent::ToolExecutionStart { id } => {
                     runtime
                         .broadcast_event(ServerEvent::ToolCallStatusUpdated(
@@ -285,18 +309,30 @@ pub(crate) fn spawn_turn_event_stream(
                                 kind,
                             )
                             .await;
-                    } else if let Some(snapshot) = runtime
-                        .publish_parent_turn_usage(
-                            session_id,
-                            turn_for_events.turn_id,
-                            usage,
-                            usage_context_window,
-                            kind,
-                        )
-                        .await
-                    {
-                        turn_usage = Some(snapshot.turn_usage.to_turn_usage());
-                        latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                    } else {
+                        if let Some(snapshot) = runtime
+                            .publish_parent_turn_usage(
+                                session_id,
+                                turn_for_events.turn_id,
+                                usage.clone(),
+                                usage_context_window,
+                                kind,
+                            )
+                            .await
+                        {
+                            turn_usage = Some(snapshot.turn_usage.to_turn_usage());
+                            latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                        }
+                        if let Some(raw) = last_context_breakdown {
+                            runtime
+                                .publish_live_context_occupancy(
+                                    session_id,
+                                    usage_context_window,
+                                    raw,
+                                    usage.display_total_tokens() as u64,
+                                )
+                                .await;
+                        }
                     }
                 }
                 devo_core::QueryEvent::Usage { usage } => {
@@ -313,18 +349,30 @@ pub(crate) fn spawn_turn_event_stream(
                                 kind,
                             )
                             .await;
-                    } else if let Some(snapshot) = runtime
-                        .publish_parent_turn_usage(
-                            session_id,
-                            turn_for_events.turn_id,
-                            usage,
-                            usage_context_window,
-                            kind,
-                        )
-                        .await
-                    {
-                        turn_usage = Some(snapshot.turn_usage.to_turn_usage());
-                        latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                    } else {
+                        if let Some(snapshot) = runtime
+                            .publish_parent_turn_usage(
+                                session_id,
+                                turn_for_events.turn_id,
+                                usage.clone(),
+                                usage_context_window,
+                                kind,
+                            )
+                            .await
+                        {
+                            turn_usage = Some(snapshot.turn_usage.to_turn_usage());
+                            latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                        }
+                        if let Some(raw) = last_context_breakdown {
+                            runtime
+                                .publish_live_context_occupancy(
+                                    session_id,
+                                    usage_context_window,
+                                    raw,
+                                    usage.display_total_tokens() as u64,
+                                )
+                                .await;
+                        }
                     }
                 }
                 devo_core::QueryEvent::TurnComplete {
@@ -511,6 +559,45 @@ async fn handle_tool_use_start(
     event_tool_registry: &Arc<devo_core::tools::ToolRegistry>,
 ) {
     tool_names_by_id.insert(id.clone(), name.clone());
+    if let Some(mut pending) = pending_tool_calls.remove(&id) {
+        let input_is_empty = |value: &serde_json::Value| {
+            value.is_null() || matches!(value, serde_json::Value::Object(map) if map.is_empty())
+        };
+        let previously_empty_input = input_is_empty(&pending.input);
+        pending.input = input.clone();
+        pending.command = command_display_from_input(&name, &input);
+        // The first `item/started` for a streamed tool call carries empty
+        // parameters (the provider streams arguments afterwards). When the
+        // assembled turn delivers the complete input, re-broadcast the same
+        // item so live clients can render the running row's parameters —
+        // the input-delta channel alone is best-effort and only parses once
+        // the full JSON accumulates.
+        if previously_empty_input
+            && !input_is_empty(&pending.input)
+            && let (Some(item_id), Some(item_seq)) = (pending.item_id, pending.item_seq)
+        {
+            let start_item = tool_start_item_from_input(
+                &id,
+                &name,
+                &pending.command,
+                &pending.input,
+                pending.display_kind,
+                event_tool_registry.preparation_feedback(&name),
+            );
+            runtime
+                .emit_item_started(
+                    session_id,
+                    turn_id,
+                    item_id,
+                    Some(item_seq),
+                    start_item.item_kind,
+                    start_item.payload,
+                )
+                .await;
+        }
+        pending_tool_calls.insert(id, pending);
+        return;
+    }
     if let (Some(item_id), Some(item_seq)) = (reasoning_item_id.take(), reasoning_item_seq.take()) {
         complete_reasoning_item(
             runtime,
@@ -714,6 +801,50 @@ async fn complete_pending_tool_calls_as_interrupted(
             .await;
         }
     }
+}
+
+async fn handle_tool_input_delta(
+    runtime: &Arc<ServerRuntime>,
+    session_id: SessionId,
+    turn_id: TurnId,
+    tool_use_id: String,
+    partial_json: String,
+    pending_tool_calls: &std::collections::HashMap<String, PendingToolCall>,
+    tool_input_delta_seqs: &mut std::collections::HashMap<String, u64>,
+) {
+    let Some(pending) = pending_tool_calls.get(&tool_use_id) else {
+        return;
+    };
+    let Some(item_id) = pending.item_id else {
+        return;
+    };
+    let chunk_index = tool_input_delta_seqs
+        .get(&tool_use_id)
+        .copied()
+        .unwrap_or(0);
+    tool_input_delta_seqs.insert(tool_use_id.clone(), chunk_index + 1);
+    let _ = runtime
+        .broadcast_event(ServerEvent::ItemDelta {
+            delta_kind: ItemDeltaKind::ToolCallInputDelta,
+            payload: ItemDeltaPayload {
+                context: crate::EventContext {
+                    session_id,
+                    turn_id: Some(turn_id),
+                    item_id: Some(item_id),
+                    seq: 0,
+                    item_seq: None,
+                },
+                delta: serde_json::json!({
+                    "tool_use_id": tool_use_id,
+                    "partial_json": partial_json,
+                })
+                .to_string(),
+                stream_index: None,
+                channel: None,
+                chunk_index: Some(chunk_index),
+            },
+        })
+        .await;
 }
 
 async fn handle_tool_progress(

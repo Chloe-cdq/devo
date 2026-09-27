@@ -225,6 +225,12 @@ impl ToolHandler for ExecCommandHandler {
             args.login,
             args.tty,
             crate::unified_exec::process::SandboxExecutionOptions {
+                output_capture: ctx.output_store.as_ref().map(|store| {
+                    store
+                        .capture(&ctx.tool_call_id.0)
+                        .map(|capture| Arc::new(std::sync::Mutex::new(capture)))
+                        .map_err(|error| error.to_string())
+                }),
                 sandbox_profile: ctx.sandbox_profile.clone(),
                 sandbox_overlay: crate::tools::sandbox_overlay_for_spawn(
                     ctx.sandbox_permission_overlay.as_ref(),
@@ -285,14 +291,20 @@ impl ToolHandler for ExecCommandHandler {
             ));
         }
 
+        let mut cancellation_guard = crate::unified_exec::cancellation::CancelProcessOnDrop::new(
+            Arc::clone(&proc),
+            Arc::clone(&self.store),
+            process_id,
+        );
         let cancel_token = ctx.cancel_token.clone();
         let store_for_cancel = Arc::clone(&self.store);
         let proc_for_cancel = Arc::clone(&proc);
-        let cancel_task = tokio::spawn(async move {
-            cancel_token.cancelled().await;
-            proc_for_cancel.terminate();
-            store_for_cancel.remove(process_id).await;
-        });
+        tokio::spawn(crate::unified_exec::cancellation::watch_turn(
+            cancel_token,
+            proc_for_cancel,
+            store_for_cancel,
+            process_id,
+        ));
 
         let mut rx = proc.subscribe();
         let output = tokio::select! {
@@ -305,11 +317,11 @@ impl ToolHandler for ExecCommandHandler {
             _ = ctx.cancel_token.cancelled() => {
                 proc.terminate();
                 self.store.remove(process_id).await;
-                cancel_task.abort();
+
                 return Err(ToolCallError::Cancelled);
             }
         };
-        cancel_task.abort();
+        cancellation_guard.disarm();
         let warning = if output.exit_code.is_some() {
             self.store.remove(process_id).await;
             None
@@ -319,10 +331,9 @@ impl ToolHandler for ExecCommandHandler {
         };
 
         let response = format_exec_response(&output, Some(process_id), warning.as_deref());
-        Ok(ToolResult::success(
-            ToolResultContent::Text(response),
-            "Command executed",
-        ))
+        let mut result = ToolResult::success(ToolResultContent::Text(response), "Command executed");
+        result.output_artifacts = output.output_artifact.into_iter().collect();
+        Ok(result)
     }
 }
 
@@ -404,8 +415,15 @@ impl ToolHandler for WriteStdinHandler {
             ToolCallError::ExecutionFailed(format!("Unknown process id {}", args.process_id))
         })?;
 
+        let mut cancellation_guard = crate::unified_exec::cancellation::CancelProcessOnDrop::new(
+            Arc::clone(&proc),
+            Arc::clone(&self.store),
+            args.process_id,
+        );
+
         if !args.chars.is_empty() {
             if !proc.tty() {
+                cancellation_guard.disarm();
                 return Err(ToolCallError::ExecutionFailed(
                     "stdin is closed for this session".to_string(),
                 ));
@@ -414,6 +432,7 @@ impl ToolHandler for WriteStdinHandler {
                 && proc.is_running()
                 && proc.exit_code().is_none()
             {
+                cancellation_guard.disarm();
                 return Err(ToolCallError::ExecutionFailed(format!(
                     "write_stdin failed: {error}"
                 )));
@@ -435,11 +454,11 @@ impl ToolHandler for WriteStdinHandler {
             self.store.remove(args.process_id).await;
         }
 
+        cancellation_guard.disarm();
         let response = format_exec_response(&output, Some(args.process_id), /*warning*/ None);
-        Ok(ToolResult::success(
-            ToolResultContent::Text(response),
-            "Input written",
-        ))
+        let mut result = ToolResult::success(ToolResultContent::Text(response), "Input written");
+        result.output_artifacts = output.output_artifact.into_iter().collect();
+        Ok(result)
     }
 }
 
@@ -465,6 +484,16 @@ fn format_exec_response(
         parts.push(output.output.clone());
     }
 
+    if let Some(artifact) = &output.output_artifact
+        && (output.exit_code.is_none()
+            || output.truncated
+            || artifact.bytes > output.output.len() as u64)
+    {
+        parts.push(artifact.notice());
+    }
+    if let Some(error) = &output.capture_error {
+        parts.push(format!("Full output could not be saved: {error}"));
+    }
     parts.join("\n")
 }
 
@@ -576,6 +605,7 @@ fn apply_patch_command(
 
 #[cfg(test)]
 mod tests {
+    include!("exec_cancellation_tests.rs");
     use super::*;
     use devo_tools::contracts::ToolBudgets;
     use pretty_assertions::assert_eq;
@@ -601,6 +631,7 @@ mod tests {
 
     fn test_ctx(cwd: std::path::PathBuf) -> crate::contracts::ToolContext {
         crate::contracts::ToolContext {
+            output_store: None,
             tool_call_id: crate::invocation::ToolCallId("test".into()),
             session_id: "test-session".into(),
             turn_id: Some("test-turn".into()),
@@ -633,6 +664,8 @@ mod tests {
     #[test]
     fn format_exec_response_exited() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "hello world".into(),
             exit_code: Some(0),
             wall_time_secs: 1.5,
@@ -646,6 +679,8 @@ mod tests {
     #[test]
     fn format_exec_response_running() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "building...".into(),
             exit_code: None,
             wall_time_secs: 10.0,
@@ -659,6 +694,8 @@ mod tests {
     #[test]
     fn format_exec_response_truncated() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "long output...".into(),
             exit_code: None,
             wall_time_secs: 5.0,
@@ -672,6 +709,8 @@ mod tests {
     #[test]
     fn format_exec_response_with_both_exit_and_process_id() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "done".into(),
             exit_code: Some(0),
             wall_time_secs: 3.0,
@@ -685,6 +724,8 @@ mod tests {
     #[test]
     fn format_exec_response_includes_open_process_warning() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "building...".into(),
             exit_code: None,
             wall_time_secs: 10.0,

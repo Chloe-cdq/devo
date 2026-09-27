@@ -2,6 +2,7 @@ import { Button } from "@devo/ui/components/button"
 import { DownloadIcon, Loader2Icon } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useUpdater } from "../../hooks/use-updater"
+import { SettingsHeader } from "./settings-header"
 import { SettingsRow } from "./settings-row"
 import { SettingsSection } from "./settings-section"
 
@@ -23,9 +24,7 @@ export function AboutSettings() {
 
 	return (
 		<div className="space-y-8">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">About</h2>
-			</div>
+			<SettingsHeader title="About" />
 
 			<SettingsSection>
 				<SettingsRow label="Version" description={isDev ? "Development build" : undefined}>

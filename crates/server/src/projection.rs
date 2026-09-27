@@ -331,10 +331,14 @@ fn parse_plan_history_metadata(text: &str) -> Option<SessionHistoryMetadata> {
         .and_then(serde_json::Value::as_array)?
         .iter()
         .filter_map(|item| {
-            let text = item.get("step")?.as_str()?.to_string();
+            let text = item
+                .get("step")
+                .or_else(|| item.get("content"))
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
             let status = match item.get("status").and_then(serde_json::Value::as_str)? {
                 "pending" => SessionPlanStepStatus::Pending,
-                "in_progress" => SessionPlanStepStatus::InProgress,
+                "in_progress" | "inProgress" => SessionPlanStepStatus::InProgress,
                 "completed" => SessionPlanStepStatus::Completed,
                 "cancelled" => SessionPlanStepStatus::Cancelled,
                 _ => return None,
@@ -441,6 +445,8 @@ impl SessionProjector for DefaultProjection {
             title: session.title.clone(),
             title_state: session.title_state.clone(),
             parent_session_id: session.parent_session_id,
+            fork_from_id: session.fork_from_id,
+            fork_at_turn_id: session.fork_at_turn_id,
             agent_path: session.agent_path.clone(),
             agent_nickname: session.agent_nickname.clone(),
             agent_role: session.agent_role.clone(),

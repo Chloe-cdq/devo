@@ -8,6 +8,7 @@ use devo_protocol::{
     StreamEvent, Usage,
 };
 use futures::Stream;
+use futures::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,7 +26,6 @@ use crate::error::ProviderError;
 use crate::http::invalid_status_error;
 use crate::openai::error_payload::provider_error_from_payload;
 use crate::text_normalization::{TaggedTextFragment, TaggedTextParser};
-use crate::timeout;
 
 /// <https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events>
 /// Represents a streamed chunk of a chat completion response returned by the model, based on the provided input.
@@ -82,23 +82,19 @@ pub(super) async fn completion_stream(
         "sending openai streaming request"
     );
 
-    let event_source = EventSource::new(provider.streaming_request_builder(&body))
-        .context("failed to create openai event source")?;
+    let event_source = EventSource::new(
+        provider
+            .streaming_request_builder(&body, &crate::request_headers(request.extra_body.as_ref())),
+    )
+    .context("failed to create openai event source")?;
     let stream = async_stream::try_stream! {
         let mut state = ChatCompletionStreamState::for_request(&request);
 
         futures::pin_mut!(event_source);
         loop {
-            let event = match timeout::next_eventsource_event(&mut event_source).await {
-                Ok(Some(event)) => event,
-                Ok(None) => break,
-                Err(idle) => {
-                    Err(timeout::stream_idle_timeout_provider_error(
-                        "openai",
-                        &request.model,
-                        idle,
-                    ))?
-                }
+            let event = match event_source.next().await {
+                Some(event) => event,
+                None => break,
             };
             let event = match event {
                 Ok(event) => event,
@@ -837,7 +833,9 @@ struct ChatCompletionStreamDelta {
     role: Option<String>,
     #[serde(default)]
     content: Option<String>,
-    #[serde(default)]
+    /// DeepSeek / vLLM use `reasoning_content`; Ollama's OpenAI-compat layer
+    /// currently emits the same payload under `reasoning`.
+    #[serde(default, alias = "reasoning")]
     reasoning_content: Option<String>,
     #[serde(default)]
     refusal: Option<String>,
@@ -1313,6 +1311,51 @@ mod tests {
                 },
                 StreamEvent::ReasoningDone { index: 1 },
             ]
+        );
+    }
+
+    #[test]
+    fn ollama_reasoning_field_alias_emits_reasoning_events() {
+        let mut state = ChatCompletionStreamState::default();
+
+        let events = state.apply_chunk(parse_chunk(json!({
+            "id": "chatcmpl-ollama",
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning": "plan via ollama",
+                        "content": "answer"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        })));
+
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::ReasoningStart { index: 1 },
+                StreamEvent::ReasoningDelta {
+                    index: 1,
+                    text: "plan via ollama".to_string(),
+                },
+                StreamEvent::TextStart { index: 0 },
+                StreamEvent::TextDelta {
+                    index: 0,
+                    text: "answer".to_string(),
+                },
+                StreamEvent::ReasoningDone { index: 1 },
+            ]
+        );
+
+        let response = state.into_response();
+        assert!(response.metadata.extras.iter().any(|extra| matches!(
+            extra,
+            ResponseExtra::ReasoningText { text } if text == "plan via ollama"
+        )));
+        assert_eq!(
+            response.content,
+            vec![ResponseContent::Text("answer".to_string())]
         );
     }
 

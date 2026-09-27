@@ -44,3 +44,17 @@ impl ServerRuntime {
             .ok_or(CurrentUserItemError::ItemMismatch)
     }
 }
+
+impl super::session_actor::SessionActorState {
+    /// Restores the user-message identity for a continuation of the same turn.
+    pub(in crate::runtime) fn current_user_item_id(
+        &self,
+        turn_id: TurnId,
+    ) -> Option<devo_core::ItemId> {
+        self.persisted_turn_items.iter().rev().find_map(|item| {
+            (item.turn_id == turn_id
+                && matches!(item.turn_item, devo_core::TurnItem::UserMessage(_)))
+            .then_some(item.item_id)
+        })
+    }
+}

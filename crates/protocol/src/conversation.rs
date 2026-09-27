@@ -104,10 +104,15 @@ define_id!(TurnId);
 define_id!(ItemId);
 define_id!(PendingInputId);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
 pub enum SessionTitleState {
+    #[default]
+    #[serde(alias = "Unset")]
     Unset,
-    Provisional,
+    #[serde(alias = "Provisional", alias = "Generating")]
+    Generating,
+    #[serde(alias = "Final")]
     Final(SessionTitleFinalSource),
 }
 
@@ -116,6 +121,8 @@ pub enum SessionTitleFinalSource {
     ModelGenerated,
     UserRename,
     ExplicitCreate,
+    /// Truncated first user message applied before optional LLM polish.
+    Heuristic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

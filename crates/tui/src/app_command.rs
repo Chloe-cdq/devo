@@ -41,10 +41,29 @@ pub(crate) enum GoalObjectiveMode {
 /// Thin wrapper around protocol-wide operations. Claw's
 /// protocol is RPC-shaped instead, so the TUI owns a small command enum and the
 /// host/worker adapter converts the relevant variants into protocol params.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) enum AppCommand {
     RunUserShellCommand {
         command: String,
+    },
+    /// Validate a provider Connection and model through the canonical Native RPC.
+    ProviderValidate {
+        params: devo_protocol::native::rpc_admin::ProviderValidateParams,
+    },
+    /// Load provider Connections and directory templates through the canonical Native RPC.
+    ProviderList,
+    /// Persist a provider Connection and its model directory through the canonical Native RPC.
+    ProviderUpsert {
+        params: devo_protocol::native::rpc_admin::ProviderUpsertParams,
+    },
+    /// Disconnect a configured provider Connection.
+    DisconnectProvider {
+        provider_id: String,
+    },
+    /// Remove one model from a configured provider Connection.
+    RemoveProviderModel {
+        provider_id: String,
+        model_id: String,
     },
     SubmitShellInput {
         command: String,
@@ -155,6 +174,8 @@ pub(crate) enum AppCommand {
     },
     ForkAtUserTurn {
         user_turn_index: u32,
+        /// `Through` continues from the selected turn; `Before` drops it (edit-earlier).
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
     },
     /// Request MCP server runtime statuses (`mcp/list`).
     ListMcpServers,
@@ -270,6 +291,7 @@ pub(crate) enum AppCommandView<'a> {
     },
     ForkAtUserTurn {
         user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
     },
 }
 
@@ -459,14 +481,25 @@ impl AppCommand {
         Self::RollbackToUserTurn { user_turn_index }
     }
 
-    pub(crate) fn fork_at_user_turn(user_turn_index: u32) -> Self {
-        Self::ForkAtUserTurn { user_turn_index }
+    pub(crate) fn fork_at_user_turn(
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    ) -> Self {
+        Self::ForkAtUserTurn {
+            user_turn_index,
+            cut,
+        }
     }
 
     #[allow(dead_code)]
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
+            Self::ProviderValidate { .. } => "provider_validate",
+            Self::ProviderList => "provider_list",
+            Self::ProviderUpsert { .. } => "provider_upsert",
+            Self::DisconnectProvider { .. } => "disconnect_provider",
+            Self::RemoveProviderModel { .. } => "remove_provider_model",
             Self::SubmitShellInput { .. } => "submit_shell_input",
             Self::ExecuteShellCommand { .. } => "execute_shell_command",
             Self::Compact => "compact",
@@ -510,6 +543,11 @@ impl AppCommand {
             Self::RunUserShellCommand { command } => {
                 AppCommandView::RunUserShellCommand { command }
             }
+            Self::ProviderValidate { .. } | Self::ProviderList | Self::ProviderUpsert { .. } => {
+                AppCommandView::ReloadUserConfig
+            }
+            Self::DisconnectProvider { .. } => AppCommandView::ReloadUserConfig,
+            Self::RemoveProviderModel { .. } => AppCommandView::ReloadUserConfig,
             Self::SubmitShellInput { command } => AppCommandView::SubmitShellInput { command },
             Self::ExecuteShellCommand { command } => {
                 AppCommandView::ExecuteShellCommand { command }
@@ -609,7 +647,9 @@ impl AppCommand {
             Self::RollbackToUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,
             },
-            Self::ForkAtUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
+            Self::ForkAtUserTurn {
+                user_turn_index, ..
+            } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,
             },
             Self::ListMcpServers

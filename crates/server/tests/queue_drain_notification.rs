@@ -13,7 +13,6 @@ use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
 use devo_core::AppConfigStore;
-use devo_core::ProviderVendorCatalog;
 use futures::stream;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -187,7 +186,6 @@ fn build_runtime(
             devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 enabled: false,
                 user_roots: Vec::new(),
@@ -385,8 +383,9 @@ async fn queued_input_drains_into_followup_turn_and_broadcasts_empty_queue() -> 
                 "id": 4,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "Start with the tool." }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "thinking": null,
                     "sandbox": null,
@@ -415,6 +414,7 @@ async fn queued_input_drains_into_followup_turn_and_broadcasts_empty_queue() -> 
                 "params": {
                     "sessionId": session_id,
                     "input": [{ "type": "text", "text": QUEUED_TEXT }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "idempotencyKey": "queue-drain-audit"
                 }
             }),

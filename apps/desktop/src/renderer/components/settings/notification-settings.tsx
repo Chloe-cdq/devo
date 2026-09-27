@@ -8,6 +8,7 @@ import {
 import { Switch } from "@devo/ui/components/switch"
 import { useCallback } from "react"
 import { useSettings } from "../../hooks/use-settings"
+import { SettingsHeader } from "./settings-header"
 import { SettingsRow } from "./settings-row"
 import { SettingsSection } from "./settings-section"
 
@@ -27,9 +28,7 @@ export function NotificationSettings() {
 
 	return (
 		<div className="space-y-8">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Notifications</h2>
-			</div>
+			<SettingsHeader title="Notifications" />
 
 			<SettingsSection>
 				<SettingsRow

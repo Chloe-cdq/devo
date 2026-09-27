@@ -39,7 +39,7 @@ Devo は、単一のホスト型モデルエコシステムに縛られず、モ
 Desktop 体験、terminal workflow、ランタイムの動作、ワークスペースでの
 実行境界を自分たちで制御したいチームのための coding agent です。
 
-- **任意のモデルを接続** - provider/model binding により、OpenAI 互換 Chat
+- **任意のモデルを接続** - provider/model Connection により、OpenAI 互換 Chat
   Completions、OpenAI 互換 Responses、Anthropic Messages、DeepSeek、
   Qwen、Kimi、またはプライベートモデルゲートウェイを接続できます。
 - **プライベート環境やイントラネット環境に対応** - 単一のローカル Rust
@@ -54,7 +54,7 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
 
 ## 機能
 
-- **Model-neutral provider runtime** - provider/model binding により、OpenAI 互換、
+- **Model-neutral provider runtime** - provider/model Connection により、OpenAI 互換、
   Anthropic 互換、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter、またはローカルエンドポイントを利用できます。
 - **MCP サポート** - [Model Context Protocol](https://modelcontextprotocol.io/)
@@ -75,10 +75,11 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
   コンテキストウィンドウ使用量を表示します。
 - **軽量な Rust ランタイム** - Rust で構築され、メモリ使用量が小さく、コンパクトなローカルランタイムを備えます。
 - **組み込みセマンティックコード検索（MCP）** - 同梱のオプション MCP サーバー
-  （`code_search` / `devo-code-search-mcp`）。**既定では無効**です。ローカル CPU の
-  コード埋め込みモデルを実行し、dense retrieval と BM25 を組み合わせて、grep/find
-  のみのエージェントよりコード検索コンテキストを削減します。
-  `devo mcp enable code_search` または TUI `/mcps` で有効化します。
+  （`code_search` / `devo-code-search-mcp`）。**既定ではインストールも有効化もされません**。
+  ローカル CPU のコード埋め込みモデルを実行し、dense retrieval と BM25 を組み合わせて、
+  grep/find のみのエージェントよりコード検索コンテキストを削減します。
+  `--with-code-search` でインストールし、`devo mcp enable code_search` または TUI `/mcps`
+  で有効化します。
 
 ## 検証済みモデル
 
@@ -91,7 +92,7 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
 </p>
 
 Devo の組み込みモデルカタログには、Qwen、Kimi、MiniMax、GLM、DeepSeek の検証済みモデル定義が含まれています。
-プロバイダーのエンドポイントは provider/model binding で引き続き設定できます。
+プロバイダーのエンドポイントは provider/model Connection で引き続き設定できます。
 
 ## 検証済みプラットフォーム
 
@@ -157,23 +158,23 @@ irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 オンラインインストーラーは `devo` を Devo home ディレクトリに配置し、高速なリポジトリ検索に使う
-`rg` sidecar をインストールします。また、`code_search` が使うローカルモデルの任意設定にも対応しています。
+`rg` sidecar をインストールします。既定では `code_search` MCP とローカルモデルをインストールしません。
 
 <details>
-<summary>任意: ローカルの <code>code_search</code> モデルを事前インストール</summary>
+<summary>任意: <code>code_search</code> MCP とローカルモデルをインストール</summary>
 
-インストール時に Hugging Face モデルをダウンロードしたい場合だけ使用してください。
+インストール時に code-search MCP と Hugging Face モデルをインストールしたい場合だけ使用してください。
 
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 Windows:
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 </details>
@@ -208,17 +209,17 @@ devo resume <session-id>
 
 ## 設定
 
-`devo onboard` が推奨されるセットアップ方法です。provider/model binding を
-`config.toml` に書き、API key をユーザースコープの `auth.json` に保存します。
+`devo onboard` が推奨されるセットアップ方法です。provider Connection と model
+directory を `providers.json` に書き、API key をユーザースコープの `auth.json` に保存します。
 
 自分の API key とカスタムモデルを手動で設定する場合:
 
-1. `config.toml` で `[model.<slug>]` パラメータ、`[providers.<id>]`、
-   `[model_bindings.<id>]` を定義します。
+1. `providers.json` で `provider.<id>.models.<model-id>` を定義し、既定 model を
+   `provider/model` に設定します。
 2. シークレットを `DEVO_HOME/auth.json` に置き、`[providers.<id>].credential`
-   からその credential id を参照します — API key 自体を `config.toml` に
+   からその credential id を参照します — API key 自体を `providers.json` に
    書かないでください。
-3. エンドポイントのプロトコルに合わせて `invocation_method` を
+3. エンドポイントのプロトコルに合わせて `wire_api` を
    `openai_chat_completions`、`openai_responses`、`anthropic_messages` の
    いずれかに設定します。
 
@@ -241,12 +242,12 @@ Devo は pre-1.0 で、活発に開発されています。ローカル評価、
 
 組み込みモデルメタデータは現在、Qwen、Kimi、MiniMax、GLM、DeepSeek ファミリーをカバーしています。
 OpenAI 互換 Chat Completions、OpenAI 互換 Responses、または Anthropic Messages API をサポートするモデルエンドポイントであれば、
-provider/model binding を通じて接続できます。
+provider/model Connection を通じて接続できます。
 
 ### 自分の API key を使うには?
 
 `devo onboard` を使うか、ユーザースコープの `auth.json` を編集し、
-`config.toml` の `[providers.<id>].credential` からその credential id を参照します。
+`providers.json` の `provider.<id>.credential` からその credential id を参照します。
 詳細は [設定](./docs/configuration.ja.md#自分の-api-key-を使う) を参照してください。
 
 ### Desktop app と TUI/CLI のどちらを使うべきですか?

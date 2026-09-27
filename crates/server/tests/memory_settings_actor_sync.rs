@@ -9,7 +9,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
@@ -71,23 +70,25 @@ async fn durable_memory_settings_are_inherited_by_the_next_fork() -> Result<()> 
             connection_id,
             serde_json::json!({
                 "id": 1,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Memory actor sync",
-                    "model": "test-model"
+                    "idempotencyKey": uuid::Uuid::new_v4().to_string()
                 }
             }),
         )
         .await
-        .context("session/start response")?;
+        .context("session/new response")?;
+    anyhow::ensure!(
+        started.get("result").is_some(),
+        "session/new failed: {started}"
+    );
     let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
     >(started)?
     .result
     .session
-    .session_id;
+    .id;
 
     let updated = runtime
         .handle_incoming(
@@ -107,6 +108,10 @@ async fn durable_memory_settings_are_inherited_by_the_next_fork() -> Result<()> 
         )
         .await
         .context("session/metadata/update response")?;
+    anyhow::ensure!(
+        updated.get("result").is_some(),
+        "metadata update failed: {updated}"
+    );
     let _: devo_server::SuccessResponse<
         devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
     > = serde_json::from_value(updated)?;
@@ -142,6 +147,114 @@ async fn durable_memory_settings_are_inherited_by_the_next_fork() -> Result<()> 
     Ok(())
 }
 
+/// Trace: L2-DES-APP-008 Rev 5 DD-5, L2-DES-CONV-002 Rev 2 DD-3/DD-4, L2-DES-MEM-001 Rev 3 Session Controls
+/// Verifies: a mixed settings patch on a cold session persists memory and reasoning settings and a resumed fork inherits them.
+#[tokio::test]
+async fn cold_mixed_settings_are_inherited_by_a_resumed_fork() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let connection_id = initialize_connection(&runtime).await?;
+    let started = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": data_root.path(),
+                    "idempotencyKey": uuid::Uuid::new_v4().to_string()
+                }
+            }),
+        )
+        .await
+        .context("session/new response")?;
+    anyhow::ensure!(
+        started.get("result").is_some(),
+        "session/new failed: {started}"
+    );
+    let session_id = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+    >(started)?
+    .result
+    .session
+    .id;
+
+    runtime.shutdown().await;
+    drop(runtime);
+    let runtime = build_runtime(data_root.path())?;
+    let connection_id = initialize_connection(&runtime).await?;
+
+    let updated = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 2,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "settings": {
+                        "memoryRecall": "off",
+                        "memoryContribution": "on",
+                        "reasoningEffort": "high"
+                    }
+                }
+            }),
+        )
+        .await
+        .context("session/metadata/update response")?;
+    anyhow::ensure!(
+        updated.get("result").is_some(),
+        "metadata update failed: {updated}"
+    );
+    let _: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+    > = serde_json::from_value(updated)?;
+
+    let resumed = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 4,
+                "method": "session/resume",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/resume response")?;
+    anyhow::ensure!(resumed.get("result").is_some(), "resume failed: {resumed}");
+
+    let forked = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "session/fork",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/fork response")?;
+    let forked = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionForkResult>,
+    >(forked)?
+    .result;
+
+    assert_eq!(
+        forked.session.settings,
+        SessionSettings {
+            permission_profile: PermissionProfile::Default,
+            reasoning_effort: Some("high".to_string()),
+            mode: None,
+            sandbox_profile: Some("workspace-write".to_string()),
+            effective_context_window: None,
+            memory_recall: MemorySetting::Off,
+            memory_contribution: MemorySetting::On,
+        }
+    );
+    Ok(())
+}
+
 fn build_runtime(data_root: &std::path::Path) -> Result<Arc<ServerRuntime>> {
     let provider: Arc<dyn ModelProviderSDK> = Arc::new(NoopProvider);
     let db = Arc::new(devo_server::db::Database::open(
@@ -160,7 +273,6 @@ fn build_runtime(data_root: &std::path::Path) -> Result<Arc<ServerRuntime>> {
                 display_name: "test-model".to_string(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()

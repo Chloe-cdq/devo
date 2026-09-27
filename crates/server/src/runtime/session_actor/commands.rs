@@ -17,16 +17,29 @@ use super::state::{ApprovalCacheSnapshot, DeferredItems, SessionActorState, Spaw
 use crate::execution::PendingApproval;
 use crate::execution::PersistedTurnItem;
 use crate::runtime::subagent_usage::ParentUsageSnapshot;
-use crate::runtime::turn_exec::ExecuteTurnRequest;
 use crate::session::SessionHistoryItem;
 use crate::session::SessionMetadata;
 use crate::turn::TurnMetadata;
 use devo_core::TurnConfig;
 
+use super::turn_working::TurnWorkingSet;
+
+#[derive(Clone)]
+pub(crate) struct ApprovalCheckpointSnapshot {
+    pub(crate) messages: Vec<devo_protocol::Message>,
+    pub(crate) turn_config: TurnConfig,
+    pub(crate) collaboration_mode: devo_protocol::CollaborationMode,
+}
+
 pub(crate) enum SessionCommand {
-    ExecuteTurn {
-        runtime: Arc<crate::runtime::ServerRuntime>,
-        request: ExecuteTurnRequest,
+    /// Short: clone turn-owned state and install `TurnInlineState` on the shared stream.
+    CheckoutTurnWorkingSet {
+        turn: TurnMetadata,
+        reply: oneshot::Sender<TurnWorkingSet>,
+    },
+    /// Short: install turn-owned fields after the spawned turn task finishes.
+    MergeTurn {
+        working: Box<TurnWorkingSet>,
         reply: oneshot::Sender<()>,
     },
     GetSummary {
@@ -72,6 +85,13 @@ pub(crate) enum SessionCommand {
     },
     GetActiveTurnId {
         reply: oneshot::Sender<Option<TurnId>>,
+    },
+    GetApprovalCheckpointSnapshot {
+        reply: oneshot::Sender<Option<ApprovalCheckpointSnapshot>>,
+    },
+    MarkActiveTurnWaitingApproval {
+        turn_id: TurnId,
+        reply: oneshot::Sender<Option<TurnMetadata>>,
     },
     GetRecord {
         reply: oneshot::Sender<Option<devo_core::SessionRecord>>,

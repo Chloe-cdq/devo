@@ -78,51 +78,49 @@ export function useAgentActions() {
 			}
 			log.debug("sendPrompt: got client", { directory })
 
-			// Optimistic user message — include variant so it's available when
-			// re-initializing the session's toolbar state (the v1 UserMessage type
-			// doesn't have variant but the server stores it on user messages).
+			// Optimistic user message is added only when a turn starts immediately.
+			// Queued follow-ups stay in the composer queue strip, not the transcript.
 			const optimisticId = `optimistic-${Date.now()}`
-			const optimisticMessage: UserMessage & { variant?: string } = {
-				id: optimisticId,
-				sessionID: sessionId,
-				role: "user",
-				time: { created: Date.now() },
-				agent: options?.agent ?? "build",
-				model: options?.model ?? { providerID: "", modelID: "" },
-				variant: options?.variant,
-			}
-			appStore.set(upsertMessageAtom, optimisticMessage as UserMessage)
-			log.debug("sendPrompt: optimistic message set", { optimisticId })
+			const buildOptimistic = () => {
+				const optimisticMessage: UserMessage & { variant?: string } = {
+					id: optimisticId,
+					sessionID: sessionId,
+					role: "user",
+					time: { created: Date.now() },
+					agent: options?.agent ?? "build",
+					model: options?.model ?? { providerID: "", modelID: "" },
+					variant: options?.variant,
+				}
+				appStore.set(upsertMessageAtom, optimisticMessage as UserMessage)
 
-			// Optimistic text part
-			const optimisticTextPart: TextPart = {
-				id: `${optimisticId}-text`,
-				sessionID: sessionId,
-				messageID: optimisticId,
-				type: "text",
-				text,
-			}
-			appStore.set(upsertPartAtom, optimisticTextPart)
-
-			// Optimistic file parts
-			const files = options?.files ?? []
-			for (let i = 0; i < files.length; i++) {
-				const file = files[i]
-				const optimisticFilePart: FilePart = {
-					id: `${optimisticId}-file-${i}`,
+				const optimisticTextPart: TextPart = {
+					id: `${optimisticId}-text`,
 					sessionID: sessionId,
 					messageID: optimisticId,
-					type: "file",
-					mime: file.mediaType ?? "application/octet-stream",
-					filename: file.filename,
-					url: file.url,
+					type: "text",
+					text,
 				}
-				appStore.set(upsertPartAtom, optimisticFilePart)
+				appStore.set(upsertPartAtom, optimisticTextPart)
+
+				const files = options?.files ?? []
+				for (let i = 0; i < files.length; i++) {
+					const file = files[i]
+					const optimisticFilePart: FilePart = {
+						id: `${optimisticId}-file-${i}`,
+						sessionID: sessionId,
+						messageID: optimisticId,
+						type: "file",
+						mime: file.mediaType ?? "application/octet-stream",
+						filename: file.filename,
+						url: file.url,
+					}
+					appStore.set(upsertPartAtom, optimisticFilePart)
+				}
 			}
 
 			// Build parts array for the API call
 			const parts: Array<{ type: "text"; text: string } | FilePartInput> = [{ type: "text", text }]
-			for (const file of files) {
+			for (const file of options?.files ?? []) {
 				parts.push({
 					type: "file",
 					mime: file.mediaType ?? "application/octet-stream",
@@ -148,8 +146,12 @@ export function useAgentActions() {
 					variant: options?.variant,
 					collaborationMode: options?.collaborationMode,
 				})
+				if (result.data?.outcome !== "queued") {
+					buildOptimistic()
+				}
 				log.debug("sendPrompt: promptAsync returned", {
 					sessionId,
+					outcome: result.data?.outcome,
 					result: JSON.stringify(result ?? null).slice(0, 200),
 				})
 			} catch (err) {
@@ -339,14 +341,19 @@ export function useAgentActions() {
 	)
 
 	const forkSession = useCallback(
-		async (directory: string, sessionId: string, messageId?: string): Promise<Session> => {
+		async (
+			directory: string,
+			sessionId: string,
+			options?: { atTurnId?: string; cut?: "through" | "before" },
+		): Promise<Session> => {
 			const client = getProjectClient(directory)
 			if (!client) throw new Error("Not connected to Devo server")
-			log.debug("forkSession", { sessionId, messageId })
+			log.debug("forkSession", { sessionId, options })
 			try {
 				const result = await client.session.fork({
 					sessionID: sessionId,
-					messageID: messageId,
+					atTurnId: options?.atTurnId,
+					cut: options?.cut,
 				})
 				const session = result.data as Session
 				if (session) {
@@ -355,7 +362,27 @@ export function useAgentActions() {
 				log.debug("forkSession succeeded", { forkedSessionId: session?.id })
 				return session
 			} catch (err) {
-				log.error("forkSession failed", { sessionId, messageId }, err)
+				log.error("forkSession failed", { sessionId, options }, err)
+				throw err
+			}
+		},
+		[],
+	)
+
+	const editMessage = useCallback(
+		async (directory: string, sessionId: string, messageId: string, text: string) => {
+			const client = getProjectClient(directory)
+			if (!client) throw new Error("Not connected to Devo server")
+			log.debug("editMessage", { sessionId, messageId, textLength: text.length })
+			try {
+				await client.session.editMessage({
+					sessionID: sessionId,
+					itemID: messageId,
+					text,
+				})
+				log.debug("editMessage succeeded", { sessionId, messageId })
+			} catch (err) {
+				log.error("editMessage failed", { sessionId, messageId }, err)
 				throw err
 			}
 		},
@@ -377,5 +404,6 @@ export function useAgentActions() {
 		executeCommand,
 		summarize,
 		forkSession,
+		editMessage,
 	}
 }

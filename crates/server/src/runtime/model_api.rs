@@ -1,10 +1,13 @@
+use devo_core::ModelCatalog;
 use devo_core::ModelCatalogEntry;
+use devo_core::PresetModelCatalog;
 use devo_protocol::native::rpc_admin::ModelPreferences;
 use devo_protocol::native::rpc_admin::PreferencesOption;
 
 use crate::runtime::handlers::acp_config_options::{
     ACP_MODEL_CONFIG_ID, ACP_REASONING_EFFORT_CONFIG_ID,
 };
+use crate::session_context::SessionRuntimeContext;
 use crate::{ProtocolErrorCode, SuccessResponse};
 
 use super::ServerRuntime;
@@ -12,9 +15,11 @@ use super::ServerRuntime;
 /// Projects the ACP config-option selects into canonical model preferences
 /// (ratified #12): the model select becomes `model` + `available_models`,
 /// the reasoning-effort select becomes `reasoning_effort` +
-/// `available_efforts`.
+/// `available_efforts`. Each `available_models` entry also carries that
+/// model's own `available_efforts` from the catalog.
 fn model_preferences_from_config_options(
     options: &[devo_core::AcpSessionConfigOption],
+    runtime_context: &SessionRuntimeContext,
 ) -> ModelPreferences {
     let mut preferences = ModelPreferences {
         model: None,
@@ -45,6 +50,7 @@ fn model_preferences_from_config_options(
             value: entry.value.to_string(),
             label: entry.name,
             description: entry.description,
+            available_efforts: Vec::new(),
         })
         .collect();
         match id.as_str() {
@@ -59,7 +65,30 @@ fn model_preferences_from_config_options(
             _ => {}
         }
     }
+    enrich_available_models_with_efforts(&mut preferences, runtime_context);
     preferences
+}
+
+fn enrich_available_models_with_efforts(
+    preferences: &mut ModelPreferences,
+    runtime_context: &SessionRuntimeContext,
+) {
+    for model_option in &mut preferences.available_models {
+        let turn_config =
+            runtime_context.resolve_turn_config(Some(model_option.value.as_str()), None);
+        model_option.available_efforts = turn_config
+            .model
+            .effective_reasoning_capability()
+            .options()
+            .into_iter()
+            .map(|option| PreferencesOption {
+                value: option.value,
+                label: option.label,
+                description: Some(option.description),
+                available_efforts: Vec::new(),
+            })
+            .collect();
+    }
 }
 
 impl ServerRuntime {
@@ -119,7 +148,7 @@ impl ServerRuntime {
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: devo_protocol::native::rpc_admin::ModelPreferencesReadResult {
-                preferences: model_preferences_from_config_options(&options),
+                preferences: model_preferences_from_config_options(&options, &runtime_context),
             },
         })
         .expect("serialize canonical model/preferences/read response")
@@ -153,6 +182,7 @@ impl ServerRuntime {
         };
         let preferences = model_preferences_from_config_options(
             &self.acp_model_config_options_for_context(&runtime_context),
+            &runtime_context,
         );
         for (config_id, value) in [
             (ACP_MODEL_CONFIG_ID, params.patch.model.as_ref()),
@@ -189,7 +219,7 @@ impl ServerRuntime {
                     .expect("app config store mutex should not be poisoned");
                 store
                     .user_config_dir()
-                    .join("config.toml")
+                    .join(devo_core::PROVIDER_CONFIG_FILE_NAME)
                     .display()
                     .to_string()
             };
@@ -223,7 +253,7 @@ impl ServerRuntime {
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: devo_protocol::native::rpc_admin::ModelPreferencesWriteResult {
-                preferences: model_preferences_from_config_options(&options),
+                preferences: model_preferences_from_config_options(&options, &runtime_context),
             },
         })
         .expect("serialize canonical model/preferences/write response")
@@ -246,19 +276,55 @@ impl ServerRuntime {
                 format!("invalid canonical model/list params: {error}"),
             );
         }
-        let models = self
-            .deps
-            .model_catalog
-            .list_visible()
-            .into_iter()
-            .map(|model| {
-                devo_protocol::native::rpc_admin::ModelInfo::from(ModelCatalogEntry::from(model))
-            })
-            .collect();
+        let configured = {
+            let store = self
+                .deps
+                .config_store
+                .lock()
+                .expect("app config store mutex should not be poisoned");
+            let config = store.effective_config();
+            (
+                config.provider_catalog.clone(),
+                config.provider.model_overrides.clone(),
+            )
+        };
+        let models = if let Ok(catalog) =
+            PresetModelCatalog::load_from_provider_config_with_overrides(
+                &configured.0,
+                &configured.1,
+            ) {
+            catalog
+                .list_visible()
+                .into_iter()
+                .map(|model| model_info_from_catalog_model(model, &catalog))
+                .collect()
+        } else {
+            self.deps
+                .model_catalog
+                .list_visible()
+                .into_iter()
+                .map(|model| model_info_from_catalog_model(model, self.deps.model_catalog.as_ref()))
+                .collect()
+        };
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: devo_protocol::native::rpc_admin::ModelListResult { models },
         })
         .expect("serialize canonical model/list response")
     }
+}
+
+fn model_info_from_catalog_model(
+    model: &devo_protocol::Model,
+    catalog: &dyn ModelCatalog,
+) -> devo_protocol::native::rpc_admin::ModelInfo {
+    let info = devo_protocol::native::rpc_admin::ModelInfo::from(ModelCatalogEntry::from(model));
+    let Some((provider_id, model_id)) = model.slug.split_once('/') else {
+        return info;
+    };
+    let mut provider_models = catalog.list_provider_models(provider_id);
+    let Some(metadata) = provider_models.remove(model_id) else {
+        return info;
+    };
+    info.with_provider_metadata(provider_id.to_string(), model_id.to_string(), metadata)
 }

@@ -4,8 +4,9 @@
 //! snapshots consumed by the Ctrl+T overlay, scrollback drain, and live view.
 
 use ratatui::text::Line;
-use ratatui::text::Span;
 
+use crate::agent_tool_cell::AgentToolCell;
+use crate::agent_tool_cell::is_agent_task_tool_name;
 use crate::events::TextItemKind;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
@@ -13,6 +14,9 @@ use crate::history_cell::ScrollbackLine;
 use crate::render::line_utils::is_horizontal_rule_line;
 use crate::tool_io_cell::ToolIoCell;
 use crate::tool_io_cell::ToolIoCellOptions;
+use crate::transcript::model::ToolPhase;
+use crate::transcript::presentation::tool_title_line;
+use crate::transcript::presentation::tool_title_parts;
 
 use super::ChatWidget;
 use super::UserMessage;
@@ -41,6 +45,7 @@ enum LiveViewportLineMode {
 
 #[allow(clippy::large_enum_variant)]
 enum LiveItem {
+    ActiveCell,
     Text(usize),
     Tool(String),
 }
@@ -176,18 +181,24 @@ impl ChatWidget {
             LiveViewportLineMode::Display => cell.display_lines(width),
             LiveViewportLineMode::Transcript => cell.transcript_lines(width),
         };
-        if let Some(cell) = &self.active_cell {
-            Self::extend_lines_with_separator(&mut lines, cell_lines(cell.as_ref()));
-        }
-
         let mut items: Vec<(u64, LiveItem)> = Vec::new();
+        if self.active_cell.is_some() {
+            let seq = self
+                .active_tool_calls
+                .values()
+                .filter(|tool| tool.owned_by_active_cell)
+                .map(|tool| tool.seq)
+                .min()
+                .unwrap_or(0);
+            items.push((seq, LiveItem::ActiveCell));
+        }
         for (idx, item) in self.active_text_items.iter().enumerate() {
             if item.cell.is_some() {
                 items.push((item.seq, LiveItem::Text(idx)));
             }
         }
         for tool_call in self.active_tool_calls.values() {
-            if tool_call.exec_like {
+            if tool_call.owned_by_active_cell {
                 continue;
             }
             items.push((tool_call.seq, LiveItem::Tool(tool_call.tool_use_id.clone())));
@@ -204,19 +215,41 @@ impl ChatWidget {
 
         for (_, item) in items {
             match item {
+                LiveItem::ActiveCell => {
+                    if let Some(cell) = &self.active_cell {
+                        Self::extend_lines_with_separator(&mut lines, cell_lines(cell.as_ref()));
+                    }
+                }
                 LiveItem::Text(idx) => {
                     if let Some(cell) = &self.active_text_items[idx].cell {
                         Self::extend_lines_with_separator(&mut lines, cell_lines(cell.as_ref()));
                     }
                 }
                 LiveItem::Tool(tool_use_id) => {
-                    if let Some(tool_call) = self.active_tool_calls.get(&tool_use_id) {
+                    if let Some(tool) = self.transcript_projector.live_tool(&tool_use_id) {
+                        let dot_prefix = if tool.is_error {
+                            Self::failed_dot_prefix()
+                        } else {
+                            Self::tool_dot_prefix()
+                        };
                         let tool_lines = match mode {
                             LiveViewportLineMode::Display => {
-                                Self::live_tool_display_lines(width, tool_call)
+                                crate::transcript::render::live_tool_display_lines(
+                                    tool,
+                                    width,
+                                    &self.session.cwd,
+                                    dot_prefix,
+                                    Self::tool_text_style(),
+                                )
                             }
                             LiveViewportLineMode::Transcript => {
-                                Self::live_tool_transcript_lines(width, tool_call)
+                                crate::transcript::render::live_tool_transcript_lines(
+                                    tool,
+                                    width,
+                                    &self.session.cwd,
+                                    dot_prefix,
+                                    Self::tool_text_style(),
+                                )
                             }
                         };
                         Self::extend_lines_with_separator(&mut lines, tool_lines);
@@ -225,60 +258,41 @@ impl ChatWidget {
             }
         }
         for pending in &self.pending_tool_calls {
-            if let (Some(tool_name), Some(input)) = (&pending.tool_name, &pending.input) {
-                let tool_lines = ToolIoCell::from_text_output(
-                    ToolIoCellOptions {
-                        title_line: Some(Self::running_tool_line(&pending.title)),
-                        dot_prefix: Self::pending_dot_prefix(),
-                        subsequent_prefix: "  ".into(),
-                        output_style: Self::tool_text_style(),
-                        show_empty_ellipsis: false,
-                    },
-                    tool_name.clone(),
-                    input.clone(),
-                    pending.output.clone(),
-                );
-                let tool_lines = match mode {
-                    LiveViewportLineMode::Display => tool_lines.display_lines(width),
-                    LiveViewportLineMode::Transcript => tool_lines.transcript_lines(width),
-                };
-                Self::extend_lines_with_separator(&mut lines, tool_lines);
-            } else {
-                let pending_lines = if let Some(start_time) = pending.start_time {
-                    let mut pending_lines = vec![Line::from(vec![
-                        crate::exec_cell::spinner(Some(start_time), true),
-                        " ".into(),
-                        Span::styled(pending.title.clone(), Self::tool_text_style()),
-                    ])];
-                    pending_lines.extend(pending.lines.clone());
-                    pending_lines
-                } else {
-                    pending.lines.clone()
-                };
-                Self::extend_lines_with_separator(
-                    &mut lines,
-                    match mode {
-                        LiveViewportLineMode::Display => {
-                            history_cell::AgentMessageCell::new_with_prefix(
-                                pending_lines,
-                                Self::pending_dot_prefix(),
-                                "  ",
-                                false,
-                            )
-                            .display_lines(width)
-                        }
-                        LiveViewportLineMode::Transcript => {
-                            history_cell::AgentMessageCell::new_with_prefix(
-                                pending_lines,
-                                Self::pending_dot_prefix(),
-                                "  ",
-                                false,
-                            )
-                            .transcript_lines(width)
-                        }
-                    },
-                );
-            }
+            let title_line = tool_title_line(
+                ToolPhase::Preparing,
+                &tool_title_parts(
+                    ToolPhase::Preparing,
+                    pending.tool_name.as_deref(),
+                    pending.input.as_ref(),
+                    &pending.parsed_commands,
+                    false,
+                    &pending.title,
+                ),
+            );
+            let pending_lines = vec![title_line];
+            Self::extend_lines_with_separator(
+                &mut lines,
+                match mode {
+                    LiveViewportLineMode::Display => {
+                        history_cell::AgentMessageCell::new_with_prefix(
+                            pending_lines,
+                            Self::tool_dot_prefix(),
+                            "  ",
+                            false,
+                        )
+                        .display_lines(width)
+                    }
+                    LiveViewportLineMode::Transcript => {
+                        history_cell::AgentMessageCell::new_with_prefix(
+                            pending_lines,
+                            Self::tool_dot_prefix(),
+                            "  ",
+                            false,
+                        )
+                        .transcript_lines(width)
+                    }
+                },
+            );
         }
         Self::trim_trailing_blank_lines(&mut lines);
         lines
@@ -289,25 +303,60 @@ impl ChatWidget {
         tool_call: &super::ActiveToolCall,
     ) -> Vec<Line<'static>> {
         match (&tool_call.tool_name, &tool_call.input) {
-            (Some(tool_name), Some(input)) => ToolIoCell::from_text_output(
-                ToolIoCellOptions {
-                    title_line: Some(Self::running_tool_line(&tool_call.title)),
-                    dot_prefix: Self::pending_dot_prefix(),
-                    subsequent_prefix: "  ".into(),
-                    output_style: Self::tool_text_style(),
-                    show_empty_ellipsis: false,
-                },
-                tool_name.clone(),
-                input.clone(),
-                tool_call.output.clone(),
-            )
-            .display_lines(width),
+            (Some(tool_name), Some(input)) if is_agent_task_tool_name(tool_name) => {
+                AgentToolCell::new(
+                    tool_name.clone(),
+                    tool_call.phase,
+                    Some(input.clone()),
+                    None,
+                    tool_call.output.clone(),
+                    Self::tool_dot_prefix(),
+                )
+                .display_lines(width)
+            }
+            (Some(tool_name), Some(input)) => {
+                let title_line = tool_title_line(
+                    tool_call.phase,
+                    &tool_title_parts(
+                        tool_call.phase,
+                        Some(tool_name.as_str()),
+                        Some(input),
+                        &tool_call.parsed_commands,
+                        false,
+                        &tool_call.title,
+                    ),
+                );
+                ToolIoCell::from_text_output(
+                    ToolIoCellOptions {
+                        title_line: Some(title_line),
+                        dot_prefix: Self::tool_dot_prefix(),
+                        subsequent_prefix: "  ".into(),
+                        output_style: Self::tool_text_style(),
+                        show_empty_ellipsis: false,
+                    },
+                    tool_name.clone(),
+                    input.clone(),
+                    tool_call.output.clone(),
+                )
+                .display_lines(width)
+            }
             _ => {
-                let mut lines = vec![Self::running_tool_line(&tool_call.title)];
+                let title_line = tool_title_line(
+                    tool_call.phase,
+                    &tool_title_parts(
+                        tool_call.phase,
+                        tool_call.tool_name.as_deref(),
+                        tool_call.input.as_ref(),
+                        &tool_call.parsed_commands,
+                        false,
+                        &tool_call.title,
+                    ),
+                );
+                let mut lines = vec![title_line];
                 lines.extend(tool_call.lines.clone());
                 history_cell::AgentMessageCell::new_with_prefix(
                     lines,
-                    Self::pending_dot_prefix(),
+                    Self::tool_dot_prefix(),
                     "  ",
                     false,
                 )
@@ -321,25 +370,60 @@ impl ChatWidget {
         tool_call: &super::ActiveToolCall,
     ) -> Vec<Line<'static>> {
         match (&tool_call.tool_name, &tool_call.input) {
-            (Some(tool_name), Some(input)) => ToolIoCell::from_text_output(
-                ToolIoCellOptions {
-                    title_line: Some(Self::running_tool_line(&tool_call.title)),
-                    dot_prefix: Self::pending_dot_prefix(),
-                    subsequent_prefix: "  ".into(),
-                    output_style: Self::tool_text_style(),
-                    show_empty_ellipsis: false,
-                },
-                tool_name.clone(),
-                input.clone(),
-                tool_call.output.clone(),
-            )
-            .transcript_lines(width),
+            (Some(tool_name), Some(input)) if is_agent_task_tool_name(tool_name) => {
+                AgentToolCell::new(
+                    tool_name.clone(),
+                    tool_call.phase,
+                    Some(input.clone()),
+                    None,
+                    tool_call.output.clone(),
+                    Self::tool_dot_prefix(),
+                )
+                .transcript_lines(width)
+            }
+            (Some(tool_name), Some(input)) => {
+                let title_line = tool_title_line(
+                    tool_call.phase,
+                    &tool_title_parts(
+                        tool_call.phase,
+                        Some(tool_name.as_str()),
+                        Some(input),
+                        &tool_call.parsed_commands,
+                        false,
+                        &tool_call.title,
+                    ),
+                );
+                ToolIoCell::from_text_output(
+                    ToolIoCellOptions {
+                        title_line: Some(title_line),
+                        dot_prefix: Self::tool_dot_prefix(),
+                        subsequent_prefix: "  ".into(),
+                        output_style: Self::tool_text_style(),
+                        show_empty_ellipsis: false,
+                    },
+                    tool_name.clone(),
+                    input.clone(),
+                    tool_call.output.clone(),
+                )
+                .transcript_lines(width)
+            }
             _ => {
-                let mut lines = vec![Self::running_tool_line(&tool_call.title)];
+                let title_line = tool_title_line(
+                    tool_call.phase,
+                    &tool_title_parts(
+                        tool_call.phase,
+                        tool_call.tool_name.as_deref(),
+                        tool_call.input.as_ref(),
+                        &tool_call.parsed_commands,
+                        false,
+                        &tool_call.title,
+                    ),
+                );
+                let mut lines = vec![title_line];
                 lines.extend(tool_call.lines.clone());
                 history_cell::AgentMessageCell::new_with_prefix(
                     lines,
-                    Self::pending_dot_prefix(),
+                    Self::tool_dot_prefix(),
                     "  ",
                     false,
                 )
@@ -367,7 +451,7 @@ impl ChatWidget {
 
         let text_kind = |item: &LiveItem| match item {
             LiveItem::Text(idx) => active_text_items.get(*idx).map(|item| item.kind),
-            LiveItem::Tool(_) => None,
+            LiveItem::ActiveCell | LiveItem::Tool(_) => None,
         };
         if let (Some(kind_a), Some(kind_b)) = (text_kind(item_a), text_kind(item_b)) {
             if Self::text_item_precedes_assistant(kind_a) && kind_b == TextItemKind::Assistant {

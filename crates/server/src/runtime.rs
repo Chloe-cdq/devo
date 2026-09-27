@@ -38,8 +38,7 @@ use devo_core::tools::ToolCallError;
 use devo_core::tools::ToolPermissionRequest;
 use devo_protocol::{
     SessionDeletedPayload, WorkspaceChangeAttribution, WorkspaceChangeScope, WorkspaceChangeView,
-    WorkspaceChangesReadParams, WorkspaceChangesReadResult, WorkspaceChangesUpdatedPayload,
-    WorkspaceDiffDetail,
+    WorkspaceChangesReadParams, WorkspaceChangesUpdatedPayload, WorkspaceDiffDetail,
 };
 use devo_safety::PermissionMode;
 
@@ -65,9 +64,7 @@ use crate::ServerEvent;
 use crate::ServerProtocol;
 use crate::ServerRequestResolvedPayload;
 use crate::SessionCompactionFailedPayload;
-use crate::SessionEffectiveContextWindowUpdatedPayload;
 use crate::SessionEventPayload;
-use crate::SessionForkParams;
 use crate::SessionForkResult;
 use crate::SessionMetadata;
 use crate::SessionResumeParams;
@@ -113,6 +110,7 @@ mod acp_fs;
 mod active_turn;
 mod agents;
 mod approval;
+mod approval_checkpoint;
 mod command_exec;
 mod compaction_persist;
 pub(crate) use compaction_persist::CompactionSummaryPersist;
@@ -143,11 +141,13 @@ mod model_api;
 mod outbound;
 mod permission_decision;
 mod proposed_plan;
-mod provider_vendor_api;
+mod provider_api;
+mod provider_discovery;
 mod reference_search;
 mod session_actor;
 mod session_cache;
 mod session_interactive;
+mod session_title;
 mod skills;
 mod subagent_usage;
 mod turn_exec;
@@ -225,6 +225,9 @@ pub struct ServerRuntime {
     /// In-process idempotency for canonical `turn/start`
     /// (`(session, idempotencyKey) -> turn`). Retry-safe within the process;
     /// cross-restart dedup is a documented follow-up (L2-DES-APP-008 Phase B).
+    recovery_idempotency:
+        Mutex<HashMap<(SessionId, String), devo_protocol::native::rpc_turn::TurnResumeResult>>,
+    recovery_gates: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     turn_start_idempotency: Mutex<HashMap<(SessionId, String), devo_protocol::native::turn::Turn>>,
     /// In-process idempotency for canonical `session/new`
     /// (`idempotencyKey -> session`). Same process-scope caveat as
@@ -243,12 +246,17 @@ pub struct ServerRuntime {
     restore_plans: Mutex<handlers::rollback_plan::RestorePlanStore>,
     /// Sessions with an in-flight model title-generation task.
     title_generation_in_flight: Mutex<HashSet<SessionId>>,
+    /// Sessions waiting for optional LLM title polish after a heuristic title.
+    title_polish_pending: Mutex<HashMap<SessionId, TitlePolishPending>>,
     /// Weak back-reference used when session actors need the owning runtime `Arc`.
     self_weak: std::sync::Weak<ServerRuntime>,
     /// LRU order for loaded root session actors.
     session_lru: Mutex<session_cache::ParentSessionLru>,
     /// Per-session gate that serializes lazy parent session hydration.
     parent_session_load_gate: Arc<session_cache::SessionLoadGate>,
+    /// Per-session gate that serializes durable metadata reads and writes
+    /// without waiting for a session actor or an active turn.
+    session_metadata_write_gate: Arc<session_cache::SessionLoadGate>,
     /// User exec-policy rules loaded from `$DEVO_HOME/rules/*.rules`.
     user_exec_policy: std::sync::Mutex<Option<devo_execpolicy::Policy>>,
     /// Localhost HTTP CONNECT proxy for restricted sandbox profiles.
@@ -260,7 +268,18 @@ pub struct ServerRuntime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TurnInputMode {
     VisibleUserMessage,
-    HiddenGoalContinuation { goal: devo_protocol::ThreadGoal },
+    HiddenGoalContinuation {
+        goal: devo_protocol::ThreadGoal,
+    },
+    /// Resume a turn after interactive approval without emitting a user message.
+    ApprovalResume,
+    /// Continue an unexpectedly stopped turn without synthetic input.
+    Recovery,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TitlePolishPending {
+    pub(crate) attempts: usize,
 }
 
 const TERMINAL_TURN_STATUS_LIMIT: usize = 1024;
@@ -284,8 +303,11 @@ impl TerminalTurnSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TurnStartQueuePolicy {
-    Queue,
     RejectActive,
+    /// Accept a busy session by materializing the input into its Native
+    /// session queue. This is used only by `session/queue/push` after the
+    /// request has been decoded on the canonical protocol surface.
+    Queue,
 }
 
 impl TurnInputMode {
@@ -298,6 +320,7 @@ fn session_model_selection(session: &SessionMetadata) -> Option<&str> {
     session
         .model_binding_id
         .as_deref()
+        .or_else(|| session.model.as_deref().filter(|model| model.contains('/')))
         .or(session.model.as_deref())
 }
 
@@ -423,6 +446,8 @@ impl ServerRuntime {
             reference_searches: Mutex::new(HashMap::new()),
             command_exec_manager: command_exec::CommandExecManager::new(),
             active_workspace_baselines: Mutex::new(HashMap::new()),
+            recovery_idempotency: Mutex::new(HashMap::new()),
+            recovery_gates: Mutex::new(HashMap::new()),
             turn_start_idempotency: Mutex::new(HashMap::new()),
             session_new_idempotency: Mutex::new(HashMap::new()),
             goal_set_idempotency: Mutex::new(HashMap::new()),
@@ -430,11 +455,13 @@ impl ServerRuntime {
             task_start_idempotency: Mutex::new(HashMap::new()),
             restore_plans: Mutex::new(HashMap::new()),
             title_generation_in_flight: Mutex::new(HashSet::new()),
+            title_polish_pending: Mutex::new(HashMap::new()),
             self_weak: self_weak.clone(),
             session_lru: Mutex::new(session_cache::ParentSessionLru::new(
                 session_cache::PARENT_SESSION_LRU_CAPACITY,
             )),
             parent_session_load_gate: Arc::new(session_cache::SessionLoadGate::default()),
+            session_metadata_write_gate: Arc::new(session_cache::SessionLoadGate::default()),
             user_exec_policy: std::sync::Mutex::new(
                 crate::exec_policy_store::load_user_exec_policy(),
             ),

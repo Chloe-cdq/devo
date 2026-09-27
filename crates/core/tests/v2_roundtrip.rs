@@ -200,7 +200,7 @@ impl Normalizer {
 }
 
 fn item_line(id: ItemId, original: &ItemRecord, seq: u64, payload: TurnItem) -> RolloutLine {
-    RolloutLine::Item(ItemLine {
+    RolloutLine::Item(Box::new(ItemLine {
         timestamp: original.timestamp,
         item: ItemRecord {
             id,
@@ -208,6 +208,7 @@ fn item_line(id: ItemId, original: &ItemRecord, seq: u64, payload: TurnItem) -> 
             turn_id: original.turn_id,
             seq,
             timestamp: original.timestamp,
+            started_at: original.started_at,
             attempt_placement: None,
             turn_status: None,
             sibling_turn_ids: Vec::new(),
@@ -217,7 +218,7 @@ fn item_line(id: ItemId, original: &ItemRecord, seq: u64, payload: TurnItem) -> 
             error: None,
             schema_version: 1,
         },
-    })
+    }))
 }
 
 fn normalize_payload(payload: &TurnItem) -> TurnItem {
@@ -295,7 +296,12 @@ fn normalize_session(session: &SessionRecord) -> SessionRecord {
 }
 
 /// TurnRecord fields the canonical model does not carry.
+///
+/// Aggregate `usage` is replaced by `latest_query_usage` when that field is
+/// present: the forward projector prefers the latest query for canonical
+/// `Turn.usage`, so the inverse cannot recover a distinct aggregate.
 fn normalize_turn(turn: &TurnRecord) -> TurnRecord {
+    let usage_source = turn.latest_query_usage.as_ref().or(turn.usage.as_ref());
     TurnRecord {
         status: match turn.status.clone() {
             TurnStatus::Pending | TurnStatus::Running | TurnStatus::WaitingApproval => {
@@ -312,7 +318,7 @@ fn normalize_turn(turn: &TurnRecord) -> TurnRecord {
         } else {
             turn.request_model.clone()
         },
-        usage: turn.usage.as_ref().map(|usage| devo_core::TurnUsage {
+        usage: usage_source.map(|usage| devo_core::TurnUsage {
             cache_creation_input_tokens: usage.cache_creation_input_tokens.filter(|v| *v > 0),
             cache_read_input_tokens: usage.cache_read_input_tokens.filter(|v| *v > 0),
             reasoning_output_tokens: usage.reasoning_output_tokens.filter(|v| *v > 0),
@@ -386,7 +392,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
     let session_id = devo_core::SessionId::new();
     let turn_id = devo_core::TurnId::new();
     let item = |seq: u64, payload: TurnItem| {
-        RolloutLine::Item(ItemLine {
+        RolloutLine::Item(Box::new(ItemLine {
             timestamp: ts(10 + seq as u32),
             item: ItemRecord {
                 id: ItemId::new(),
@@ -394,6 +400,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 turn_id,
                 seq,
                 timestamp: ts(10 + seq as u32),
+                started_at: None,
                 attempt_placement: None,
                 turn_status: Some(TurnStatus::Running),
                 sibling_turn_ids: Vec::new(),
@@ -403,7 +410,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 error: None,
                 schema_version: 1,
             },
-        })
+        }))
     };
     vec![
         RolloutLine::SessionMeta(Box::new(devo_core::SessionMetaLine {
@@ -424,7 +431,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 reasoning_effort_selection: Some("medium".into()),
                 cwd: "/tmp/live".into(),
                 additional_directories: vec!["/tmp/live-extra".into()],
-                cli_version: "0.1.34".into(),
+                cli_version: "0.1.37".into(),
                 title: None,
                 title_state: SessionTitleState::Unset,
                 sandbox_policy: "workspace-write".into(),
@@ -437,6 +444,8 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 git_branch: None,
                 git_origin_url: None,
                 parent_session_id: None,
+                fork_from_id: None,
+                fork_at_turn_id: None,
                 session_context: None,
                 latest_turn_context: None,
                 collaboration_mode: None,
@@ -564,6 +573,8 @@ fn inverse_rejects_prefixed_canonical_ids() {
             cwd: PathBuf::from("/tmp"),
             additional_directories: Vec::new(),
             parent: None,
+            fork_from_id: None,
+            at_turn_id: None,
             ephemeral: false,
             created_at: ts(0),
             status: devo_protocol::native::session::SessionStatus::Idle,
@@ -572,9 +583,11 @@ fn inverse_rejects_prefixed_canonical_ids() {
             active_turn_id: None,
             queued_count: 0,
             title: None,
+            title_state: SessionTitleState::Unset,
             model: devo_protocol::native::model::ModelBinding {
                 provider: "openai".into(),
                 model: "gpt-5.2".into(),
+                variant: None,
                 reasoning_effort: None,
             },
             settings: devo_protocol::native::session::SessionSettings {
@@ -621,4 +634,36 @@ fn inverse_rejects_turn_scoped_internal_line_without_turn_id() {
     let inverse = V2InverseProjector::new();
     let error = inverse.project_line(&line).expect_err("missing turn id");
     assert_eq!(error, V2InverseError::MissingTurnId);
+}
+
+/// A toggle-keyword effort selection ("enabled") must survive the v1→v2→v1
+/// round trip: the forward projection carries the raw selection into the
+/// canonical settings snapshot, and the inverse prefers that snapshot over
+/// the enum-typed `ModelBinding` slot, which cannot represent the keyword.
+/// Both directions used to parse through the `ReasoningEffort` enum and
+/// silently dropped it.
+#[test]
+fn toggle_effort_selection_round_trips_through_v2() {
+    let with_toggle: Vec<RolloutLine> = live_write_lines()
+        .into_iter()
+        .map(|line| match line {
+            RolloutLine::SessionMeta(mut meta) => {
+                meta.session.reasoning_effort_selection = Some("enabled".into());
+                RolloutLine::SessionMeta(meta)
+            }
+            other => other,
+        })
+        .collect();
+    let expected = Normalizer::new().normalize(&with_toggle);
+    assert_lines_equivalent(&round_trip(&with_toggle), &expected);
+
+    for line in round_trip(&with_toggle) {
+        if let RolloutLine::SessionMeta(meta) = line {
+            assert_eq!(
+                meta.session.reasoning_effort_selection.as_deref(),
+                Some("enabled"),
+                "session selection survives the round trip"
+            );
+        }
+    }
 }

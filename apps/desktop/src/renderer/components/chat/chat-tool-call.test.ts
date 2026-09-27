@@ -1,9 +1,13 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, test } from "bun:test"
-import { buildBashTerminalOutput, getToolSubtitle, stripShellEnvelope } from "./chat-tool-call"
+import { buildBashTerminalOutput, getToolInfo, getToolSubtitle, parseReadOutput, stripShellEnvelope } from "./chat-tool-call"
 
 const elapsedHookSource = readFileSync(new URL("../../hooks/use-elapsed-time.ts", import.meta.url), "utf8")
 const chatToolCallSource = readFileSync(new URL("./chat-tool-call.tsx", import.meta.url), "utf8")
+const pierreDiffMountSource = readFileSync(
+	new URL("../../../../packages/ui/src/components/ai-elements/pierre-diff-mount.tsx", import.meta.url),
+	"utf8",
+)
 const rendererCssSource = readFileSync(new URL("../../index.css", import.meta.url), "utf8")
 
 describe("buildBashTerminalOutput", () => {
@@ -139,11 +143,13 @@ describe("read tool output density source", () => {
 			preRule: rendererCssSource.includes(".devo-read-output pre"),
 			codeRule: rendererCssSource.includes(".devo-read-output code"),
 			lineHeight: rendererCssSource.includes("line-height: 1.35"),
+			preservesWhitespace: rendererCssSource.includes("white-space: pre"),
 		}).toEqual({
 			readClass: true,
 			preRule: true,
 			codeRule: true,
 			lineHeight: true,
+			preservesWhitespace: true,
 		})
 	})
 })
@@ -161,6 +167,189 @@ describe("useToolElapsedTime source", () => {
 })
 
 
+describe("parseReadOutput", () => {
+	test("unwraps stringified Mixed metadata and restores real newlines", () => {
+		const body = "<path>hello.py</path>\n<content>\n1: def main():\n2:    print(1)\n</content>"
+		const stringified = JSON.stringify({
+			output: body,
+			preview: "def main",
+			truncated: false,
+		})
+		const parsed = parseReadOutput(stringified)
+		expect({
+			hasRealNewline: parsed.includes("\n"),
+			noLiteralEscape: !parsed.includes("\\n"),
+			line1: parsed.includes("1: def main():"),
+			line2: parsed.includes("2:    print(1)"),
+		}).toEqual({
+			hasRealNewline: true,
+			noLiteralEscape: true,
+			line1: true,
+			line2: true,
+		})
+	})
+
+	test("unescapes literal \\n when they dominate the string", () => {
+		const parsed = parseReadOutput(
+			'\\n1: def main():\\n2:    name = input(\\"What is your name? \\")',
+		)
+		expect(parsed.split("\n")).toEqual([
+			"",
+			"1: def main():",
+			'2:    name = input("What is your name? ")',
+		])
+	})
+})
+
+describe("getToolInfo", () => {
+	test("labels shell tools as Running while active and Ran when finished", () => {
+		expect({
+			running: getToolInfo("bash", { running: true }).title,
+			ran: getToolInfo("bash", { running: false }).title,
+			shellCommand: getToolInfo("shell_command", { running: true }).title,
+			execCommand: getToolInfo("exec_command").title,
+		}).toEqual({
+			running: "Running",
+			ran: "Ran",
+			shellCommand: "Running",
+			execCommand: "Ran",
+		})
+	})
+
+	test("labels explore tools with progressive verbs", () => {
+		expect({
+			reading: getToolInfo("read", { running: true }).title,
+			read: getToolInfo("read", { running: false }).title,
+			grepping: getToolInfo("grep", { running: true }).title,
+			grepped: getToolInfo("grep", { running: false }).title,
+			finding: getToolInfo("glob", { running: true }).title,
+			found: getToolInfo("glob", { running: false }).title,
+			loading: getToolInfo("skill", { running: true }).title,
+			loaded: getToolInfo("skill", { running: false }).title,
+		}).toEqual({
+			reading: "Reading",
+			read: "Read",
+			grepping: "Grepping",
+			grepped: "Grepped",
+			finding: "Finding",
+			found: "Found",
+			loading: "Loading",
+			loaded: "Loaded",
+		})
+	})
+
+	test("labels write and edit with Writing/Added and Editing/Edited", () => {
+		expect({
+			writing: getToolInfo("write", { running: true }).title,
+			added: getToolInfo("write", { running: false }).title,
+			editing: getToolInfo("edit", { running: true }).title,
+			edited: getToolInfo("edit", { running: false }).title,
+			patchEditing: getToolInfo("apply_patch", { running: true }).title,
+			patchEdited: getToolInfo("apply_patch", { running: false }).title,
+		}).toEqual({
+			writing: "Writing",
+			added: "Added",
+			editing: "Editing",
+			edited: "Edited",
+			patchEditing: "Editing",
+			patchEdited: "Edited",
+		})
+	})
+
+	test("does not use legacy Write/Edit/Patch titles for file-change tools", () => {
+		const titles = [
+			getToolInfo("write").title,
+			getToolInfo("edit").title,
+			getToolInfo("apply_patch").title,
+		]
+		expect(titles).toEqual(["Added", "Edited", "Edited"])
+		expect(titles).not.toContain("Write")
+		expect(titles).not.toContain("Edit")
+		expect(titles).not.toContain("Patch")
+	})
+
+	test("shows the shell command after Running instead of a generic title", () => {
+		const running = {
+			callID: "call-1",
+			id: "tool-1",
+			tool: "bash",
+			type: "tool",
+			state: {
+				input: { command: "git status", description: "Check git status" },
+				status: "running",
+				time: { start: 0 },
+				title: "Command",
+			},
+		} as any
+		expect({
+			title: getToolInfo("bash", { running: true }).title,
+			subtitle: getToolSubtitle(running),
+			arrayCommand: getToolSubtitle({
+				...running,
+				tool: "shell_command",
+				state: {
+					...running.state,
+					input: { command: ["git", "status", "--short"] },
+				},
+			} as any),
+			fromRaw: getToolSubtitle({
+				...running,
+				state: {
+					input: {},
+					raw: '{"command":"bun test"}',
+					status: "pending",
+					time: { start: 0 },
+					title: "Command",
+				},
+			} as any),
+		}).toEqual({
+			title: "Running",
+			subtitle: "git status",
+			arrayCommand: "git status --short",
+			fromRaw: "bun test",
+		})
+	})
+
+	test("labels question tools even when the SDK fell back to generic tool", () => {
+		const input = {
+			questions: [{ id: "environment", header: "Environment", question: "Where should this run?" }],
+		}
+		expect({
+			named: getToolInfo("request_user_input").title,
+			alias: getToolInfo("question").title,
+			generic: getToolInfo("tool", { input }).title,
+			subtitle: getToolSubtitle(
+				{
+					callID: "call-1",
+					id: "tool-1",
+					tool: "tool",
+					type: "tool",
+					state: { input, status: "running", time: { start: 0 } },
+				} as any,
+			),
+		}).toEqual({
+			named: "Question",
+			alias: "Question",
+			generic: "Question",
+			subtitle: "Where should this run?",
+		})
+	})
+
+	test("keeps file-change path typography aligned with Read", () => {
+		expect({
+			noMonoOnFileChangePath: !chatToolCallSource.includes(
+				'font-mono text-[12px] text-muted-foreground/50',
+			),
+			fileChangePathUsesReadMutedClass: /fileChangeRow[\s\S]*?text-muted-foreground\/60/.test(
+				chatToolCallSource,
+			),
+		}).toEqual({
+			noMonoOnFileChangePath: true,
+			fileChangePathUsesReadMutedClass: true,
+		})
+	})
+})
+
 describe("ChatToolCall memo comparison", () => {
 	test("re-renders when the controlled open state changes so rows can expand", () => {
 		expect({
@@ -170,11 +359,21 @@ describe("ChatToolCall memo comparison", () => {
 			hidesSpinnerWhenTurnIdle: chatToolCallSource.includes(
 				"turnWorking && (status === \"running\" || status === \"pending\")",
 			),
+			gatesNonFileChangeWhileControlledClosed: chatToolCallSource.includes("open === false ? null"),
+			defersFileChangeDiffMount: chatToolCallSource.includes(
+				"<MountWhenVisible>{getToolContent(part)}</MountWhenVisible>",
+			),
+			remountsPierreAfterPanelLayout: !pierreDiffMountSource.includes("setInstanceKey((key) => key + 1)"),
+			mountsOnceAfterWarmup: pierreDiffMountSource.includes("isHighlighterLoaded"),
 		}).toEqual({
 			comparesOpen: true,
 			comparesTurnError: true,
 			comparesTurnWorking: true,
 			hidesSpinnerWhenTurnIdle: true,
+			gatesNonFileChangeWhileControlledClosed: true,
+			defersFileChangeDiffMount: true,
+			remountsPierreAfterPanelLayout: true,
+			mountsOnceAfterWarmup: true,
 		})
 	})
 

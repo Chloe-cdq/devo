@@ -31,6 +31,11 @@ import {
 	stashAndCheckout,
 	stashPop,
 } from "./git-service"
+import {
+	localWorkspaceChangesSummary,
+	localWorkspaceFilePatch,
+	type LocalGitChangeScope,
+} from "./git-workspace-changes"
 import { getResolvedChromeTier, resolveTitleBarOverlay } from "./liquid-glass"
 import { createProjectAgentsMd, listRuleFiles } from "./rules-files"
 import { createLogger } from "./logger"
@@ -44,7 +49,9 @@ import {
 	restoreMigrationBackup,
 	scanProvider,
 } from "./onboarding"
+import { openUserMcpConfigFile } from "./mcp-config"
 import { getOpenInTargets, openInTarget, setPreferredTarget } from "./open-in-targets"
+import { MCP_CONFIG_OPEN_PATH } from "../shared/mcp-config"
 import {
 	ensureServer,
 	getNativeTrafficLogState,
@@ -57,6 +64,10 @@ import {
 	stopServer,
 	subscribeNative,
 } from "./devo-manager"
+import {
+	isSessionNotFoundError,
+	nativeIpcErrorEnvelope,
+} from "../shared/native-ipc-error"
 import { getOpaqueWindows, getSettings, onSettingsChanged, updateSettings } from "./settings-store"
 import { desktopTerminalManager } from "./terminal-manager"
 import {
@@ -207,8 +218,23 @@ export function registerIpcHandlers(): void {
 		"native:request",
 		withLogging(
 			"native:request",
-			async (_, request: { method: string; params?: unknown; directory?: string }) =>
-				await requestNative(request.method, request.params, request.directory),
+			async (_, request: { method: string; params?: unknown; directory?: string }) => {
+				try {
+					return await requestNative(request.method, request.params, request.directory)
+				} catch (err) {
+					// SessionNotFound is an expected race (stale route / deleted session).
+					// Returning an envelope avoids Electron treating the handler rejection
+					// as an unhandled promise rejection; the renderer transport rethrows.
+					if (isSessionNotFoundError(err)) {
+						log.debug("native:request session not found", {
+							method: request.method,
+							message: err instanceof Error ? err.message : String(err),
+						})
+						return nativeIpcErrorEnvelope(err)
+					}
+					throw err
+				}
+			},
 		),
 	)
 
@@ -388,6 +414,39 @@ export function registerIpcHandlers(): void {
 	)
 
 	ipcMain.handle(
+		"git:workspace-changes-summary",
+		withLogging(
+			"git:workspace-changes-summary",
+			async (
+				_,
+				directory: string,
+				scope: LocalGitChangeScope,
+				options?: { baseBranch?: string | null; ignoreWhitespace?: boolean },
+			) => await localWorkspaceChangesSummary(directory, scope, options ?? {}),
+		),
+	)
+
+	ipcMain.handle(
+		"git:workspace-file-patch",
+		withLogging(
+			"git:workspace-file-patch",
+			async (
+				_,
+				directory: string,
+				scope: LocalGitChangeScope | "turn",
+				filePath: string,
+				options?: {
+					baseBranch?: string | null
+					ignoreWhitespace?: boolean
+					fileStatus?: string | null
+					checkpointId?: string | null
+					mergeBase?: string | null
+				},
+			) => await localWorkspaceFilePatch(directory, scope, filePath, options ?? {}),
+		),
+	)
+
+	ipcMain.handle(
 		"git:remote-url",
 		withLogging(
 			"git:remote-url",
@@ -446,6 +505,11 @@ export function registerIpcHandlers(): void {
 		withLogging("rules:create", (_, directory: string) => createProjectAgentsMd(directory)),
 	)
 
+	ipcMain.handle(
+		"mcp:open-config",
+		withLogging("mcp:open-config", async () => await openUserMcpConfigFile()),
+	)
+
 	// --- Fetch proxy (bypasses Chromium connection limits) ---
 
 	ipcMain.handle("fetch:request", withLogging("fetch:request", handleFetchProxy))
@@ -458,8 +522,12 @@ export function registerIpcHandlers(): void {
 		"open-in:open",
 		withLogging(
 			"open-in:open",
-			async (_, directory: string, targetId: string, persistPreferred?: boolean) =>
-				await openInTarget(directory, targetId, { persistPreferred }),
+			async (_, directory: string, targetId: string, persistPreferred?: boolean) => {
+				if (directory === MCP_CONFIG_OPEN_PATH) {
+					return await openUserMcpConfigFile()
+				}
+				await openInTarget(directory, targetId, { persistPreferred })
+			},
 		),
 	)
 

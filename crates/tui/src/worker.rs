@@ -3,58 +3,44 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use devo_client::{ClientEvent, client_event_from_notification};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use devo_core::PermissionPreset;
 use devo_core::ProviderWireApi;
 use devo_core::ReasoningEffort;
 use devo_core::SessionId;
 use devo_core::TurnId;
-use devo_core::TurnStatus;
 use devo_protocol::AgentToolPolicy;
-use devo_protocol::CommandExecExitedPayload;
-use devo_protocol::CommandExecOutputDeltaPayload;
 use devo_protocol::CommandExecParams;
 use devo_protocol::CommandExecProgram;
-use devo_protocol::ProviderModelBinding;
-use devo_protocol::ProviderVendor;
 use devo_protocol::ReferenceSearchId;
 use devo_protocol::ReferenceSearchSnapshot;
 use devo_protocol::SessionHistoryMetadata;
 use devo_protocol::SessionPlanStepStatus;
 use devo_protocol::SpawnAgentParams;
 use devo_protocol::ThreadGoalStatus;
-use devo_protocol::TurnFailedPayload;
 use devo_protocol::native::rpc_session::RollbackMode;
-use devo_server::ApprovalDecisionPayload;
-use devo_server::ApprovalRequestPayload;
 use devo_server::ApprovalResponseParams;
 use devo_server::CollaborationMode;
-use devo_server::CommandExecutionPayload;
 use devo_server::InputItem;
-use devo_server::ItemEnvelope;
+#[cfg(test)]
 use devo_server::ItemEventPayload;
-use devo_server::ItemKind;
-use devo_server::ServerEvent;
 use devo_server::SessionHistoryItem;
 use devo_server::SessionHistoryItemKind;
 use devo_server::SkillSource;
 use devo_server::StdioServerClient;
 use devo_server::StdioServerClientConfig;
-use devo_server::ToolCallPayload;
-use devo_server::ToolResultPayload;
-use devo_server::TurnEventPayload;
 
 use crate::app_command::GoalObjectiveMode;
 use crate::app_command::InputHistoryDirection;
@@ -71,11 +57,30 @@ use crate::events::TextItemKind;
 use crate::events::TranscriptItem;
 use crate::events::TranscriptItemKind;
 use crate::events::WorkerEvent;
+use crate::transcript::lifecycle::ItemLifecycleEvent;
 
+mod approval_items;
+mod compaction_items;
+mod goals;
+mod history;
+mod item_dispatch;
+mod native_items;
+mod plan_items;
+
+mod session_preview;
+mod session_restore;
+mod skills;
 mod subagent_events;
+mod tool_lifecycle;
+mod tool_summaries;
 mod typed_events;
 
-use subagent_events::subagent_monitor_events_from_unwrapped_server_notification;
+#[cfg(test)]
+pub(crate) use tool_summaries::exploration_actions_from_tool_input;
+
+use session_restore::native_session_id;
+use session_restore::restore_session_native;
+use session_restore::session_switched_event_from_restore;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const WORKER_ABORT_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -115,6 +120,68 @@ fn should_apply_terminal_turn_usage_fallback(
     has_authoritative_usage_totals: bool,
 ) -> bool {
     !saw_usage_update_for_turn && !has_authoritative_usage_totals
+}
+
+async fn reconcile_idle_turn(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    turn_id: TurnId,
+    seen_terminal_item_ids: &mut HashSet<String>,
+    seen_terminal_call_ids: &mut HashSet<String>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<devo_protocol::native::turn::Turn> {
+    let turn = client.turn_read_native(session_id, turn_id).await?.turn;
+    if turn.status == devo_protocol::native::turn::TurnStatus::InProgress {
+        anyhow::bail!("server still reports turn {turn_id} in progress");
+    }
+
+    let mut cursor = None;
+    loop {
+        let page = client
+            .turn_items_list_native(session_id, turn_id, cursor.clone(), Some(200))
+            .await?;
+        let page_len = page.data.len();
+        let next_cursor = page.next_cursor;
+        for envelope in page.data {
+            if !matches!(
+                envelope.state,
+                devo_protocol::native::item::ItemState::Completed
+                    | devo_protocol::native::item::ItemState::Failed
+                    | devo_protocol::native::item::ItemState::Interrupted
+                    | devo_protocol::native::item::ItemState::Lost
+            ) {
+                continue;
+            }
+            let call_id = match &envelope.item {
+                devo_protocol::native::item::Item::ToolResult { call_id, .. }
+                | devo_protocol::native::item::Item::CommandExecution { call_id, .. }
+                | devo_protocol::native::item::Item::FileChange { call_id, .. } => {
+                    Some(call_id.clone())
+                }
+                _ => None,
+            };
+            let Some(call_id) = call_id else {
+                continue;
+            };
+            let item_id = envelope.id.to_string();
+            if seen_terminal_item_ids.contains(&item_id)
+                || seen_terminal_call_ids.contains(&call_id)
+            {
+                continue;
+            }
+            let legacy_item_id = devo_core::ItemId::try_from(item_id.as_str())?;
+            for event in native_items::completed_events(&envelope.item, legacy_item_id) {
+                let _ = event_tx.send(WorkerEvent::Transcript(event));
+            }
+            seen_terminal_item_ids.insert(item_id);
+            seen_terminal_call_ids.insert(call_id);
+        }
+        match (next_cursor, page_len) {
+            (Some(next), len) if len > 0 => cursor = Some(next),
+            _ => break,
+        }
+    }
+    Ok(turn)
 }
 
 /// Spawn discovery from a typed `item/completed` ToolResult (L2-DES-APP-009
@@ -220,6 +287,9 @@ pub(crate) struct QueryWorkerConfig {
 /// TODO: Should we extract the OperationCommand to the `protocol` crate? Since it can be shareable.
 /// Commands accepted by the background query worker.
 enum OperationCommand {
+    ContinueTurnRecovery {
+        recovery: devo_protocol::native::rpc_turn::TurnRecovery,
+    },
     /// Submit a new user prompt to the session.
     SubmitInput {
         input: Vec<InputItem>,
@@ -256,23 +326,27 @@ enum OperationCommand {
         model: String,
         /// Optional provider base URL override.
         base_url: Option<String>,
-        /// Optional provider API key override.
+        /// Transient provider API key input; persistence belongs to auth.json.
         api_key: Option<String>,
     },
-    /// Validates provider settings with a temporary probe request.
+    /// Validates a provider Connection with a temporary probe request.
     ValidateProvider {
-        provider_vendor: ProviderVendor,
-        model_binding: ProviderModelBinding,
-        api_key: Option<String>,
+        params: devo_protocol::native::rpc_admin::ProviderValidateParams,
     },
-    /// Request configured provider vendors from the server.
-    ListProviderVendors,
-    /// Add or update one provider vendor through the server.
-    UpsertProviderVendor {
-        provider_vendor: ProviderVendor,
-        model_binding: Option<ProviderModelBinding>,
-        default_model_binding: Option<String>,
-        api_key: Option<String>,
+    /// Request configured provider Connections and directory templates from the server.
+    ListProviders,
+    /// Add or update one provider Connection through the server.
+    ProviderUpsert {
+        params: devo_protocol::native::rpc_admin::ProviderUpsertParams,
+    },
+    /// Disconnect one user-created provider Connection.
+    DisconnectProvider {
+        provider_id: String,
+    },
+    /// Remove one model from a user-created provider Connection.
+    RemoveProviderModel {
+        provider_id: String,
+        model_id: String,
     },
     /// Request a session list from the server.
     ListSessions,
@@ -342,7 +416,10 @@ enum OperationCommand {
         mode: RollbackMode,
     },
     /// Fork a new session at a selected user turn.
-    ForkAtUserTurn(u32),
+    ForkAtUserTurn {
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    },
     /// Interrupt the active turn, task, or shell process currently owned by the TUI.
     InterruptActiveWork,
     /// Push input onto the canonical session queue (busy path).
@@ -399,6 +476,7 @@ enum OperationCommand {
 #[derive(Debug, Clone, PartialEq)]
 struct ShellCommandExecStart {
     process_id: String,
+    command: String,
     started_event: WorkerEvent,
     params: CommandExecParams,
 }
@@ -424,13 +502,14 @@ fn next_shell_command_exec_start(
     });
     ShellCommandExecStart {
         process_id: process_id.clone(),
-        started_event: WorkerEvent::CommandExecutionStarted {
-            tool_use_id: process_id.clone(),
-            command: command.clone(),
-            input: Some(input),
-            source: devo_protocol::protocol::ExecCommandSource::UserShell,
-            command_actions: Vec::new(),
-        },
+        command: command.clone(),
+        started_event: WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_command_source(
+            process_id.clone(),
+            command.clone(),
+            Some(input),
+            devo_protocol::protocol::ExecCommandSource::UserShell,
+            Vec::new(),
+        )),
         params: CommandExecParams {
             session_id,
             process_id,
@@ -441,10 +520,37 @@ fn next_shell_command_exec_start(
     }
 }
 
+#[derive(Default)]
+struct ProviderValidationCancellation(Mutex<Option<CancellationToken>>);
+
+impl ProviderValidationCancellation {
+    fn cancel(&self) {
+        if let Some(token) = self
+            .0
+            .lock()
+            .expect("provider validation cancellation mutex should not be poisoned")
+            .as_ref()
+        {
+            token.cancel();
+        }
+    }
+
+    fn start(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self
+            .0
+            .lock()
+            .expect("provider validation cancellation mutex should not be poisoned") =
+            Some(token.clone());
+        token
+    }
+}
+
 /// Handle used by the UI thread to interact with the background query worker.
 pub(crate) struct QueryWorkerHandle {
     /// Sender used to submit commands to the worker.
     command_tx: mpsc::UnboundedSender<OperationCommand>,
+    provider_validation_cancel: Arc<ProviderValidationCancellation>,
     /// Receiver used by the UI to consume worker events.
     pub(crate) event_rx: mpsc::UnboundedReceiver<WorkerEvent>,
     /// Background task running the worker loop.
@@ -456,9 +562,16 @@ impl QueryWorkerHandle {
     pub(crate) fn spawn(config: QueryWorkerConfig) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let join_handle = tokio::spawn(run_worker(config, command_rx, event_tx));
+        let provider_validation_cancel = Arc::new(ProviderValidationCancellation::default());
+        let join_handle = tokio::spawn(run_worker(
+            config,
+            command_rx,
+            event_tx,
+            Arc::clone(&provider_validation_cancel),
+        ));
         Self {
             command_tx,
+            provider_validation_cancel,
             event_rx,
             join_handle,
         }
@@ -570,43 +683,55 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Validates provider settings with a temporary probe request.
+    /// Validates a provider Connection with a temporary probe request.
     pub(crate) fn validate_provider(
         &self,
-        provider_vendor: ProviderVendor,
-        model_binding: ProviderModelBinding,
-        api_key: Option<String>,
+        params: devo_protocol::native::rpc_admin::ProviderValidateParams,
     ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::ValidateProvider {
-                provider_vendor,
-                model_binding,
-                api_key,
-            })
+            .send(OperationCommand::ValidateProvider { params })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Requests the current configured provider vendors from the background worker.
-    pub(crate) fn list_provider_vendors(&self) -> Result<()> {
+    /// Cancels the in-flight provider validation probe, if any.
+    pub(crate) fn cancel_provider_validation(&self) {
+        self.provider_validation_cancel.cancel();
+    }
+
+    /// Requests the current provider Connections and directory templates.
+    pub(crate) fn list_providers(&self) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::ListProviderVendors)
+            .send(OperationCommand::ListProviders)
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Adds or updates a provider vendor through the background worker.
-    pub(crate) fn upsert_provider_vendor(
+    /// Adds or updates a provider Connection through the background worker.
+    pub(crate) fn upsert_provider(
         &self,
-        provider_vendor: ProviderVendor,
-        model_binding: Option<ProviderModelBinding>,
-        default_model_binding: Option<String>,
-        api_key: Option<String>,
+        params: devo_protocol::native::rpc_admin::ProviderUpsertParams,
     ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::UpsertProviderVendor {
-                provider_vendor,
-                model_binding,
-                default_model_binding,
-                api_key,
+            .send(OperationCommand::ProviderUpsert { params })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Disconnects one provider Connection through the server.
+    pub(crate) fn disconnect_provider(&self, provider_id: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::DisconnectProvider { provider_id })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Removes one model from a provider Connection through the server.
+    pub(crate) fn remove_provider_model(
+        &self,
+        provider_id: String,
+        model_id: String,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::RemoveProviderModel {
+                provider_id,
+                model_id,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -762,13 +887,29 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    pub(crate) fn fork_at_user_turn(&self, user_turn_index: u32) -> Result<()> {
+    pub(crate) fn fork_at_user_turn(
+        &self,
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::ForkAtUserTurn(user_turn_index))
+            .send(OperationCommand::ForkAtUserTurn {
+                user_turn_index,
+                cut,
+            })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
     /// Interrupts the active turn, task, or shell process.
+    pub(crate) fn continue_turn_recovery(
+        &self,
+        recovery: devo_protocol::native::rpc_turn::TurnRecovery,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::ContinueTurnRecovery { recovery })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     pub(crate) fn interrupt_active_work(&self) -> Result<()> {
         self.command_tx
             .send(OperationCommand::InterruptActiveWork)
@@ -941,6 +1082,7 @@ impl QueryWorkerHandle {
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
         Self {
             command_tx,
+            provider_validation_cancel: Arc::new(ProviderValidationCancellation::default()),
             event_rx,
             join_handle: tokio::spawn(async move { while command_rx.recv().await.is_some() {} }),
         }
@@ -951,8 +1093,16 @@ async fn run_worker(
     config: QueryWorkerConfig,
     mut command_rx: mpsc::UnboundedReceiver<OperationCommand>,
     event_tx: mpsc::UnboundedSender<WorkerEvent>,
+    provider_validation_cancel: Arc<ProviderValidationCancellation>,
 ) {
-    if let Err(error) = run_worker_inner(config, &mut command_rx, &event_tx).await {
+    if let Err(error) = run_worker_inner(
+        config,
+        &mut command_rx,
+        &event_tx,
+        provider_validation_cancel,
+    )
+    .await
+    {
         let _ = event_tx.send(WorkerEvent::TurnFailed {
             message: error.to_string(),
             hint: None,
@@ -971,6 +1121,7 @@ async fn run_worker_inner(
     config: QueryWorkerConfig,
     command_rx: &mut mpsc::UnboundedReceiver<OperationCommand>,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+    provider_validation_cancel: Arc<ProviderValidationCancellation>,
 ) -> Result<()> {
     // The worker owns the server client and translates UI commands into server
     // calls, then turns server notifications back into lightweight UI events.
@@ -999,6 +1150,8 @@ async fn run_worker_inner(
     let mut saw_usage_update_for_turn = false;
     let mut has_authoritative_usage_totals = false;
     let mut latest_completed_agent_message: Option<String> = None;
+    let mut seen_terminal_item_ids: HashSet<String> = HashSet::new();
+    let mut seen_terminal_call_ids: HashSet<String> = HashSet::new();
     let mut child_agent_sessions: HashSet<SessionId> = HashSet::new();
     let mut btw_agent_sessions: HashMap<SessionId, BtwQuestionState> = HashMap::new();
     let mut input_history_cursor: Option<usize> = None;
@@ -1019,11 +1172,7 @@ async fn run_worker_inner(
                 model = restore.session.model.model.clone();
                 model_binding_id = (restore.session.model.provider != "unknown")
                     .then(|| restore.session.model.provider.clone());
-                reasoning_effort_selection = restore
-                    .session
-                    .settings
-                    .reasoning_effort
-                    .map(|effort| effort.to_string());
+                reasoning_effort_selection = restore.session.settings.reasoning_effort.clone();
                 session_permission_preset =
                     Some(match restore.session.settings.permission_profile {
                         devo_protocol::native::model::PermissionProfile::Default => {
@@ -1075,9 +1224,22 @@ async fn run_worker_inner(
         }
     }
     let _ = emit_skills_list(&mut client, &session_cwd, event_tx, false).await;
+    let mut recovery_tick = tokio::time::interval(Duration::from_secs(2));
+    recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_recovery = None;
 
     loop {
         tokio::select! {
+            _ = recovery_tick.tick() => {
+                if let Some(active_session_id) = session_id
+                    && let Ok(result) = client.turn_recovery_native(active_session_id).await
+                    && result.recovery != last_recovery
+                {
+                    last_recovery = result.recovery.clone();
+                    let _ = event_tx.send(WorkerEvent::TurnRecovery { recovery: result.recovery, error: None });
+                }
+            }
+
             maybe_command = command_rx.recv() => {
                 match maybe_command {
                     Some(OperationCommand::SubmitInput {
@@ -1260,27 +1422,28 @@ async fn run_worker_inner(
                                 Ok(result) => {
                                     let process_id = result.item_id.as_str().to_string();
                                     active_shell_process_ids.insert(process_id.clone());
-                                    let _ = event_tx.send(
-                                        WorkerEvent::CommandExecutionStarted {
-                                            tool_use_id: process_id,
-                                            command: command.clone(),
-                                            input: Some(input),
-                                            source: devo_protocol::protocol::ExecCommandSource::UserShell,
-                                            command_actions: Vec::new(),
-                                        },
-                                    );
+                                    let _ = event_tx.send(WorkerEvent::Transcript(
+                                        tool_lifecycle::tool_opened_from_command_source(
+                                            process_id,
+                                            command.clone(),
+                                            Some(input),
+                                            devo_protocol::protocol::ExecCommandSource::UserShell,
+                                            Vec::new(),
+                                        ),
+                                    ));
                                 }
                                 Err(error) => {
-                                    let _ = event_tx.send(WorkerEvent::ToolResult {
-                                        tool_use_id: format!(
-                                            "user-shell-failed-{}",
-                                            next_shell_process_index
+                                    let _ = event_tx.send(WorkerEvent::Transcript(
+                                        tool_lifecycle::tool_closed_shell(
+                                            format!(
+                                                "user-shell-failed-{}",
+                                                next_shell_process_index
+                                            ),
+                                            "Shell".to_string(),
+                                            Some(error.to_string()),
+                                            true,
                                         ),
-                                        title: "Shell".to_string(),
-                                        preview: error.to_string(),
-                                        is_error: true,
-                                        truncated: false,
-                                    });
+                                    ));
                                     next_shell_process_index += 1;
                                 }
                             }
@@ -1298,13 +1461,14 @@ async fn run_worker_inner(
                             Ok(_) => {}
                             Err(error) => {
                                 active_shell_process_ids.remove(&shell_start.process_id);
-                                let _ = event_tx.send(WorkerEvent::ToolResult {
-                                    tool_use_id: shell_start.process_id,
-                                    title: "Shell".to_string(),
-                                    preview: error.to_string(),
-                                    is_error: true,
-                                    truncated: false,
-                                });
+                                let _ = event_tx.send(WorkerEvent::Transcript(
+                                    tool_lifecycle::tool_closed_shell(
+                                        shell_start.process_id,
+                                        shell_start.command,
+                                        Some(error.to_string()),
+                                        true,
+                                    ),
+                                ));
                             }
                         }
                     }
@@ -1365,29 +1529,53 @@ async fn run_worker_inner(
                                 .await;
                         }
                     }
-                    Some(OperationCommand::ValidateProvider {
-                        provider_vendor,
-                        model_binding,
-                        api_key,
-                    }) => {
-                        match tokio::time::timeout(
-                            Duration::from_secs(25),
-                            client.provider_validate(
-                                devo_protocol::native::rpc_admin::ProviderValidateParams {
-                                    provider_vendor: provider_vendor.into(),
-                                    model_binding: model_binding.into(),
-                                    api_key,
-                                },
-                            ),
-                        )
-                        .await
-                        {
-                            Ok(Ok(result)) => {
+                    Some(OperationCommand::ValidateProvider { params }) => {
+                        let cancellation = provider_validation_cancel.start();
+                        let upsert_params =
+                            devo_protocol::native::rpc_admin::ProviderUpsertParams {
+                                provider: params.provider.clone(),
+                                default_model: Some(format!("{}/{}", params.provider.id, params.model)),
+                                small_model: None,
+                                api_key: params.api_key.clone(),
+                            };
+                        let validation_result = {
+                            let validation = client.provider_validate(params);
+                            tokio::pin!(validation);
+                            tokio::select! {
+                                result = &mut validation => Some(result),
+                                _ = cancellation.cancelled() => None,
+                            }
+                        };
+                        match validation_result {
+                            Some(Ok(result)) => {
                                 let _ = event_tx.send(WorkerEvent::ProviderValidationSucceeded {
                                     reply_preview: result.reply_preview,
                                 });
+                                match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    client.provider_upsert(upsert_params),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderUpserted {
+                                            provider: result.provider,
+                                            default_model: result.default_model,
+                                        });
+                                    }
+                                    Ok(Err(error)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                            message: "provider upsert request timed out".to_string(),
+                                        });
+                                    }
+                                }
                             }
-                            Ok(Err(error)) => {
+                            Some(Err(error)) => {
                                 let message = error.to_string();
                                 let hint =
                                     devo_provider::recovery_hint_for_message(&message);
@@ -1396,19 +1584,10 @@ async fn run_worker_inner(
                                     hint,
                                 });
                             }
-                            Err(_) => {
-                                let message =
-                                    "provider validation request timed out".to_string();
-                                let hint =
-                                    devo_provider::recovery_hint_for_message(&message);
-                                let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
-                                    message,
-                                    hint,
-                                });
-                            }
+                            None => {}
                         }
                     }
-                    Some(OperationCommand::ListProviderVendors) => {
+                    Some(OperationCommand::ListProviders) => {
                         match tokio::time::timeout(
                             Duration::from_secs(5),
                             client.provider_list(),
@@ -1416,12 +1595,11 @@ async fn run_worker_inner(
                         .await
                         {
                             Ok(Ok(result)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorsListed {
-                                    provider_vendors: result
-                                        .providers
-                                        .into_iter()
-                                        .map(Into::into)
-                                        .collect(),
+                                let _ = event_tx.send(WorkerEvent::ProvidersListed {
+                                    providers: result.providers,
+                                    template_provider_ids: result.template_provider_ids,
+                                    connected_provider_ids: result.connected_provider_ids,
+                                    connection_models: result.connection_models,
                                 });
                             }
                             Ok(Err(error)) => {
@@ -1452,44 +1630,93 @@ async fn run_worker_inner(
                             }
                         }
                     }
-                    Some(OperationCommand::UpsertProviderVendor {
-                        provider_vendor,
-                        model_binding,
-                        default_model_binding,
-                        api_key,
-                    }) => {
+                    Some(OperationCommand::ProviderUpsert { params }) => {
                         match tokio::time::timeout(
                             Duration::from_secs(5),
-                            client.provider_upsert(
-                                devo_protocol::native::rpc_admin::ProviderUpsertParams {
-                                    provider_vendor: provider_vendor.into(),
-                                    model_binding: model_binding.map(Into::into),
-                                    default_model_binding,
-                                    api_key,
+                            client.provider_upsert(params),
+                        )
+                        .await
+                        {
+                            Ok(Ok(result)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderUpserted {
+                                    provider: result.provider,
+                                    default_model: result.default_model,
+                                });
+                            }
+                            Ok(Err(error)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                    message: error.to_string(),
+                                });
+                            }
+                            Err(_) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                    message: "provider upsert request timed out".to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::DisconnectProvider { provider_id }) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(5),
+                            client.provider_disconnect(
+                                devo_protocol::native::rpc_admin::ProviderDisconnectParams {
+                                    provider_id,
                                 },
                             ),
                         )
                         .await
                         {
                             Ok(Ok(result)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpserted {
-                                    provider_vendor: result.provider_vendor.into(),
-                                    model_binding: result.model_binding.map(Into::into),
+                                let _ = event_tx.send(WorkerEvent::ProviderDisconnected {
+                                    provider_id: result.provider_id,
                                 });
                             }
                             Ok(Err(error)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
+                                let _ = event_tx.send(WorkerEvent::ProviderDisconnectFailed {
                                     message: error.to_string(),
                                 });
                             }
                             Err(_) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
-                                    message: "provider upsert request timed out".to_string(),
+                                let _ = event_tx.send(WorkerEvent::ProviderDisconnectFailed {
+                                    message: "provider disconnect request timed out".to_string(),
                                 });
                             }
                         }
                     }
-                Some(OperationCommand::ReconfigureProvider {
+                    Some(OperationCommand::RemoveProviderModel {
+                        provider_id,
+                        model_id,
+                    }) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(5),
+                            client.provider_model_remove(
+                                devo_protocol::native::rpc_admin::ProviderModelRemoveParams {
+                                    provider_id,
+                                    model_id,
+                                },
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(result)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderModelRemoved {
+                                    provider_id: result.provider_id,
+                                    model_id: result.model_id,
+                                });
+                            }
+                            Ok(Err(error)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderModelRemoveFailed {
+                                    message: error.to_string(),
+                                });
+                            }
+                            Err(_) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderModelRemoveFailed {
+                                    message: "provider model removal request timed out".to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::ReconfigureProvider {
                     wire_api: _,
                     model: next_model,
                     base_url: _,
@@ -2417,7 +2644,10 @@ async fn run_worker_inner(
                             }
                         }
                     }
-                    Some(OperationCommand::ForkAtUserTurn(user_turn_index)) => {
+                    Some(OperationCommand::ForkAtUserTurn {
+                        user_turn_index,
+                        cut,
+                    }) => {
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
@@ -2469,7 +2699,7 @@ async fn run_worker_inner(
                             }
                         };
                         match client
-                            .session_fork_native(active_session_id, fork_at)
+                            .session_fork_native_with_cut(active_session_id, fork_at, Some(cut))
                             .await
                         {
                             Ok(result) => {
@@ -2554,6 +2784,25 @@ async fn run_worker_inner(
                             }
                         }
                     }
+                    Some(OperationCommand::ContinueTurnRecovery { recovery }) => {
+                        if let Some(active_session_id) = session_id {
+                            let result = client.turn_resume_native(devo_protocol::native::rpc_turn::TurnResumeParams {
+                                session_id: native_session_id(active_session_id),
+                                expected_turn_id: recovery.turn_id.clone(), recovery_revision: recovery.revision,
+                                idempotency_key: SessionId::new().to_string(),
+                            }).await;
+                            match result {
+                                Ok(result) => {
+                                    active_turn_id = TurnId::try_from(result.turn.id.as_str()).ok();
+                                    last_recovery = None;
+                                    let _ = event_tx.send(WorkerEvent::TurnRecovery { recovery: None, error: None });
+                                }
+                                Err(error) => {
+                                    let _ = event_tx.send(WorkerEvent::TurnRecovery { recovery: Some(recovery), error: Some(error.to_string()) });
+                                }
+                            }
+                        }
+                    }
                     Some(OperationCommand::InterruptActiveWork) => {
                         if let Some(active_session_id) = session_id {
                             if let Err(error) = client
@@ -2567,6 +2816,11 @@ async fn run_worker_inner(
                                 let _ = event_tx.send(WorkerEvent::InterruptFailed {
                                     message: error.to_string(),
                                 });
+                                if last_recovery.is_some() {
+                                    let _ = event_tx.send(WorkerEvent::TurnRecovery {
+                                        recovery: last_recovery.clone(), error: Some(error.to_string()),
+                                    });
+                                }
                             }
                         } else {
                             for process_id in active_shell_process_ids.iter().cloned().collect::<Vec<_>>() {
@@ -2581,10 +2835,10 @@ async fn run_worker_inner(
                                     let _ = event_tx.send(WorkerEvent::InterruptFailed {
                                         message: error.to_string(),
                                     });
-                                }
                             }
                         }
                     }
+                }
                     Some(OperationCommand::RunBtwQuestion { question }) => {
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::BtwFailed {
@@ -3091,33 +3345,6 @@ async fn run_worker_inner(
                     Some(notification) => {
                         let method = notification.method;
                         let params = notification.params;
-                        let normalized_event = client_event_from_notification(
-                            &devo_client::ServerNotificationMessage {
-                                method: method.clone(),
-                                params: params.clone(),
-                            },
-                        )
-                        .ok()
-                        .flatten();
-                        if let Some(ClientEvent::TurnUsageUpdated(payload)) = normalized_event {
-                            saw_usage_update_for_turn = true;
-                            total_input_tokens = payload.total_input_tokens;
-                            total_output_tokens = payload.total_output_tokens;
-                            total_tokens = payload.total_tokens;
-                            total_cache_read_tokens = payload.total_cache_read_tokens;
-                            last_query_total_tokens = payload.usage.display_total_tokens();
-                            last_query_input_tokens = payload.last_query_input_tokens;
-                            has_authoritative_usage_totals = true;
-                            let _ = event_tx.send(WorkerEvent::UsageUpdated {
-                                total_input_tokens: payload.total_input_tokens,
-                                total_output_tokens: payload.total_output_tokens,
-                                total_tokens: payload.total_tokens,
-                                total_cache_read_tokens: payload.total_cache_read_tokens,
-                                last_query_total_tokens: payload.usage.display_total_tokens(),
-                                last_query_input_tokens: payload.last_query_input_tokens,
-                            });
-                            continue;
-                        }
                         if method == "queue/updated"
                             && let Ok(queue_event) =
                                 parse_native_queue_updated(&params)
@@ -3125,11 +3352,8 @@ async fn run_worker_inner(
                             let _ = event_tx.send(queue_event);
                             continue;
                         }
-                        // Native typed events (L2-DES-APP-009): no
-                        // legacy `kind` tag, canonical shapes. Handled
-                        // before the legacy decode; once the TUI opts
-                        // into typed items these become the primary
-                        // shapes and the legacy arms below retire.
+                        // Native typed events (L2-DES-APP-009): canonical
+                        // notification shapes used by the TUI wire client.
                         if params.get("kind").is_none() {
                             match method.as_str() {
                                 "turn/started" => {
@@ -3161,6 +3385,8 @@ async fn run_worker_inner(
                                             continue;
                                         }
                                         active_turn_id = Some(turn_id);
+                                        seen_terminal_item_ids.clear();
+                                        seen_terminal_call_ids.clear();
                                         saw_usage_update_for_turn = false;
                                         model = turn.model.model.clone();
                                         model_binding_id =
@@ -3370,9 +3596,30 @@ async fn run_worker_inner(
                                         if let Ok(item_id) =
                                             devo_protocol::ItemId::try_from(delta.item_id.as_str())
                                         {
-                                            let _ = event_tx.send(WorkerEvent::TextItemDelta {
+                                            let _ = event_tx.send(WorkerEvent::Transcript(
+                                                ItemLifecycleEvent::TextDelta {
+                                                    item_id,
+                                                    kind,
+                                                    delta: delta.delta,
+                                                },
+                                            ));
+                                        }
+                                    }
+                                    continue;
+                                }
+                                "item/plan/delta" => {
+                                    if let Ok(delta) = serde_json::from_value::<
+                                        devo_protocol::native::event::ItemDelta,
+                                    >(params.clone())
+                                    {
+                                        let delta_session =
+                                            SessionId::try_from(delta.session_id.as_str()).ok();
+                                        if delta_session == session_id
+                                            && let Ok(item_id) =
+                                                devo_protocol::ItemId::try_from(delta.item_id.as_str())
+                                        {
+                                            let _ = event_tx.send(WorkerEvent::ProposedPlanDelta {
                                                 item_id,
-                                                kind,
                                                 delta: delta.delta,
                                             });
                                         }
@@ -3396,11 +3643,26 @@ async fn run_worker_inner(
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
                                         if !tool_use_id.is_empty() {
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: tool_use_id.to_string(),
-                                                delta: text.to_string(),
-                                            });
+                                            let _ = event_tx.send(WorkerEvent::Transcript(
+                                                tool_lifecycle::transcript_tool_output_chunk(
+                                                    tool_use_id.to_string(),
+                                                    text.to_string(),
+                                                ),
+                                            ));
                                         }
+                                    }
+                                    continue;
+                                }
+                                "item/toolCall/inputDelta" => {
+                                    if let Ok(delta) = serde_json::from_value::<
+                                        devo_protocol::native::event::ItemDelta,
+                                    >(params)
+                                        && let Some(event) =
+                                            tool_lifecycle::transcript_tool_input_chunk_from_delta_payload(
+                                                &delta.delta,
+                                            )
+                                    {
+                                        let _ = event_tx.send(WorkerEvent::Transcript(event));
                                     }
                                     continue;
                                 }
@@ -3439,13 +3701,12 @@ async fn run_worker_inner(
                                     let changed_session_id = params["sessionId"]
                                         .as_str()
                                         .and_then(|id| SessionId::try_from(id).ok());
+                                    let status = params["status"].as_str().unwrap_or("idle");
                                     if let Some(changed_session_id) = changed_session_id
                                         && child_agent_sessions.contains(&changed_session_id)
                                     {
-                                        let status = match params["status"].as_str() {
-                                            Some("active") => {
-                                                devo_protocol::SessionRuntimeStatus::ActiveTurn
-                                            }
+                                        let status = match status {
+                                            "active" => devo_protocol::SessionRuntimeStatus::ActiveTurn,
                                             _ => devo_protocol::SessionRuntimeStatus::Idle,
                                         };
                                         let _ = event_tx.send(WorkerEvent::SubagentMonitor {
@@ -3454,6 +3715,122 @@ async fn run_worker_inner(
                                                 status,
                                             },
                                         });
+                                    } else if changed_session_id.is_some_and(|id| Some(id) == session_id)
+                                        && status != "active"
+                                        && let (Some(active_session_id), Some(finished_turn_id)) =
+                                            (session_id, active_turn_id)
+                                    {
+                                        tracing::warn!(
+                                            turn_id = %finished_turn_id,
+                                            "turn/completed not observed; reconciling authoritative turn state"
+                                        );
+                                        match reconcile_idle_turn(
+                                            &mut client,
+                                            active_session_id,
+                                            finished_turn_id,
+                                            &mut seen_terminal_item_ids,
+                                            &mut seen_terminal_call_ids,
+                                            event_tx,
+                                        )
+                                        .await
+                                        {
+                                            Ok(turn) => {
+                                                active_turn_id = None;
+                                                if matches!(
+                                                    turn.status,
+                                                    devo_protocol::native::turn::TurnStatus::Completed
+                                                        | devo_protocol::native::turn::TurnStatus::Interrupted
+                                                ) {
+                                                    turn_count += 1;
+                                                }
+                                                if let Some(usage) = &turn.usage {
+                                                    let input = usage.query.input_tokens as usize;
+                                                    let total = usage.query.total_tokens as usize;
+                                                    let cache_read = usage.query.cache_read_input_tokens as usize;
+                                                    if !saw_usage_update_for_turn {
+                                                        last_query_input_tokens = input;
+                                                        last_query_total_tokens = total;
+                                                    }
+                                                    if should_apply_terminal_turn_usage_fallback(
+                                                        saw_usage_update_for_turn,
+                                                        has_authoritative_usage_totals,
+                                                    ) {
+                                                        total_input_tokens += input;
+                                                        total_output_tokens +=
+                                                            usage.query.output_tokens as usize;
+                                                        total_tokens += total;
+                                                        total_cache_read_tokens += cache_read;
+                                                    }
+                                                }
+                                                if let Some(usage) = &turn.usage {
+                                                    let input = usage.query.input_tokens as usize;
+                                                    let total = usage.query.total_tokens as usize;
+                                                    let cache_read = usage.query.cache_read_input_tokens as usize;
+                                                    if !saw_usage_update_for_turn {
+                                                        last_query_input_tokens = input;
+                                                        last_query_total_tokens = total;
+                                                    }
+                                                    if should_apply_terminal_turn_usage_fallback(
+                                                        saw_usage_update_for_turn,
+                                                        has_authoritative_usage_totals,
+                                                    ) {
+                                                        total_input_tokens += input;
+                                                        total_output_tokens +=
+                                                            usage.query.output_tokens as usize;
+                                                        total_tokens += total;
+                                                        total_cache_read_tokens += cache_read;
+                                                    }
+                                                }
+                                                let prompt_token_estimate = turn
+                                                    .usage
+                                                    .as_ref()
+                                                    .map(|usage| usage.query.input_tokens as usize)
+                                                    .unwrap_or(total_input_tokens);
+                                                if turn.status
+                                                    == devo_protocol::native::turn::TurnStatus::Failed
+                                                {
+                                                    let message = turn
+                                                        .error
+                                                        .as_ref()
+                                                        .map(|error| error.message.clone())
+                                                        .unwrap_or_else(|| "Turn failed".to_string());
+                                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                                        hint: devo_provider::recovery_hint_for_message(&message),
+                                                        message,
+                                                        turn_count,
+                                                        total_input_tokens,
+                                                        total_output_tokens,
+                                                        total_tokens,
+                                                        total_cache_read_tokens,
+                                                        prompt_token_estimate,
+                                                        last_query_input_tokens,
+                                                    });
+                                                } else {
+                                                    let _ = event_tx.send(WorkerEvent::TurnFinished {
+                                                        stop_reason: format!("{:?}", turn.status),
+                                                        turn_count,
+                                                        total_input_tokens,
+                                                        total_output_tokens,
+                                                        total_tokens,
+                                                        total_cache_read_tokens,
+                                                        last_query_total_tokens,
+                                                        last_query_input_tokens,
+                                                        prompt_token_estimate,
+                                                    });
+                                                }
+                                                latest_completed_agent_message = None;
+                                            }
+                                            Err(error) => {
+                                                tracing::warn!(
+                                                    turn_id = %finished_turn_id,
+                                                    %error,
+                                                    "idle turn reconciliation failed; preserving live tool state"
+                                                );
+                                                let _ = event_tx.send(WorkerEvent::InterruptFailed {
+                                                    message: "Turn ended, but final tool results are unavailable; preserving live state".to_string(),
+                                                });
+                                            }
+                                        }
                                     }
                                     continue;
                                 }
@@ -3498,10 +3875,11 @@ async fn run_worker_inner(
                                     continue;
                                 }
                                 "item/started" | "item/completed" => {
-                                    if let Ok(payload) = serde_json::from_value::<
+                                    match serde_json::from_value::<
                                         devo_protocol::TypedItemEventPayload,
                                     >(params.clone())
                                     {
+                                        Ok(payload) => {
                                         // Child-session items belong to
                                         // the subagent monitor, not the
                                         // main transcript (L2-DES-APP-009).
@@ -3509,6 +3887,44 @@ async fn run_worker_inner(
                                             SessionId::try_from(payload.item.session_id.as_str())
                                                 .ok();
                                         if item_session_id == session_id {
+                                            if method == "item/completed" {
+                                                let item_id = payload.item.id.to_string();
+                                                if !seen_terminal_item_ids.insert(item_id) {
+                                                    continue;
+                                                }
+                                                let call_id = match &payload.item.item {
+                                                    devo_protocol::native::item::Item::ToolResult {
+                                                        call_id,
+                                                        ..
+                                                    }
+                                                    | devo_protocol::native::item::Item::CommandExecution {
+                                                        call_id,
+                                                        ..
+                                                    }
+                                                    | devo_protocol::native::item::Item::FileChange {
+                                                        call_id,
+                                                        ..
+                                                    } => Some(call_id.clone()),
+                                                    _ => None,
+                                                };
+                                                if let Some(call_id) = call_id
+                                                    && !seen_terminal_call_ids.insert(call_id)
+                                                {
+                                                    continue;
+                                                }
+                                            }
+                                            if method == "item/completed"
+                                                && let devo_protocol::native::item::Item::AssistantMessage {
+                                                    text,
+                                                    ..
+                                                } = &payload.item.item
+                                            {
+                                                let text = text.trim();
+                                                if !text.is_empty() {
+                                                    latest_completed_agent_message =
+                                                        Some(text.to_string());
+                                                }
+                                            }
                                             if method == "item/completed"
                                                 && let devo_protocol::native::item::Item::UserInputRequest {
                                                     request_id,
@@ -3537,13 +3953,24 @@ async fn run_worker_inner(
                                                 )
                                                 .await;
                                             }
-                                            if let Some(legacy) =
-                                                typed_events::legacy_item_event_from_typed(&payload)
-                                            {
-                                                if method == "item/started" {
-                                                    handle_started_item(legacy, event_tx);
-                                                } else {
-                                                    handle_completed_item(legacy, event_tx);
+                                            match devo_core::ItemId::try_from(
+                                                payload.item.id.as_str(),
+                                            ) {
+                                                Ok(item_id) => {
+                                                    item_dispatch::dispatch_typed_item_lifecycle(
+                                                        &method, &payload, item_id, event_tx,
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    // A malformed id must not take the
+                                                    // whole worker down: the row is
+                                                    // skipped and the turn continues.
+                                                    tracing::warn!(
+                                                        method = %method,
+                                                        item_id = %payload.item.id,
+                                                        %error,
+                                                        "dropping typed item with unparseable id"
+                                                    );
                                                 }
                                             }
                                         } else if let Some(child_id) = item_session_id
@@ -3555,6 +3982,16 @@ async fn run_worker_inner(
                                             ) {
                                                 let _ = event_tx.send(event);
                                             }
+                                        }
+                                        }
+                                        Err(error) => {
+                                            // Schema drift or a foreign payload must not
+                                            // silently swallow tool completions.
+                                            tracing::warn!(
+                                                method = %method,
+                                                %error,
+                                                "failed to decode typed item event"
+                                            );
                                         }
                                     }
                                     continue;
@@ -3678,517 +4115,55 @@ async fn run_worker_inner(
                                     }
                                     continue;
                                 }
+                                "context/compactionStarted" => {
+                                    let event_session_matches = params["sessionId"]
+                                        .as_str()
+                                        .and_then(|id| SessionId::try_from(id).ok())
+                                        .is_some_and(|id| Some(id) == session_id);
+                                    if event_session_matches {
+                                        let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
+                                    }
+                                    continue;
+                                }
+                                "context/compactionCompleted" => {
+                                    let event_session_matches = params["sessionId"]
+                                        .as_str()
+                                        .and_then(|id| SessionId::try_from(id).ok())
+                                        .is_some_and(|id| Some(id) == session_id);
+                                    if event_session_matches {
+                                        // Token totals arrive on the accompanying usage /
+                                        // session events; this surfaces busy-state clear.
+                                        let _ = event_tx.send(WorkerEvent::SessionCompacted {
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            last_query_total_tokens,
+                                            last_query_input_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                        });
+                                    }
+                                    continue;
+                                }
+                                "context/compactionFailed" => {
+                                    let event_session_matches = params["sessionId"]
+                                        .as_str()
+                                        .and_then(|id| SessionId::try_from(id).ok())
+                                        .is_some_and(|id| Some(id) == session_id);
+                                    if event_session_matches {
+                                        let message = params["message"]
+                                            .as_str()
+                                            .unwrap_or("Context compaction failed")
+                                            .to_string();
+                                        let _ = event_tx.send(
+                                            WorkerEvent::SessionCompactionFailed { message },
+                                        );
+                                    }
+                                    continue;
+                                }
                                 _ => {}
                             }
                         }
-                        let event: ServerEvent = serde_json::from_value(params)
-                            .with_context(|| format!("failed to decode server event for method {method}"))?;
-                        if handle_btw_agent_event(
-                            &method,
-                            &event,
-                            &mut client,
-                            event_tx,
-                            &mut btw_agent_sessions,
-                        )
-                        .await
-                        {
-                            continue;
-                        }
-                        // Subagent discovery on the devo envelope
-                        // (L2-DES-APP-009): SessionStarted carries the
-                        // same SessionMetadata the ACP session-info
-                        // path folded, including parentage.
-                        if let ServerEvent::SessionStarted(payload) = &event
-                            && payload.session.parent_session_id == session_id
-                            && let Some(agent) =
-                                subagent_events::agent_from_session(&payload.session)
-                            && child_agent_sessions.insert(agent.session_id)
-                        {
-                            let _ = event_tx.send(WorkerEvent::SubagentDiscovered { agent });
-                        }
-                        if let Some(event_session_id) = event.session_id()
-                            && Some(event_session_id) != session_id
-                        {
-                            if child_agent_sessions.contains(&event_session_id) {
-                                for subagent_event in
-                                    subagent_monitor_events_from_unwrapped_server_notification(
-                                        method.as_str(),
-                                        event.clone(),
-                                    )
-                                {
-                                    let _ = event_tx.send(subagent_event);
-                                }
-                            }
-                            continue;
-                        }
-                        match method.as_str() {
-                            "turn/started" => {
-                                if let ServerEvent::TurnStarted(payload) = event {
-                                    active_turn_id = Some(payload.turn.turn_id);
-                                    saw_usage_update_for_turn = false;
-                                    model = payload.turn.model.clone();
-                                    model_binding_id = payload.turn.model_binding_id.clone();
-                                    reasoning_effort_selection = payload.turn.reasoning_effort_selection.clone();
-                                    let _ = event_tx.send(WorkerEvent::TurnStarted {
-                                        model: payload.turn.model,
-                                        model_binding_id: payload.turn.model_binding_id,
-                                        reasoning_effort_selection: payload.turn.reasoning_effort_selection,
-                                        reasoning_effort: payload.turn.reasoning_effort,
-                                        turn_id: payload.turn.turn_id,
-                                    });
-                                }
-                                latest_completed_agent_message = None;
-                            }
-                            "item/started" => {
-                                if let ServerEvent::ItemStarted(payload) = event {
-                                    handle_started_item(payload, event_tx);
-                                }
-                            }
-                            "item/agentMessage/delta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    if let Some(item_id) = payload.context.item_id {
-                                        if let Some(assistant_token_text) =
-                                            assistant_token_log_preview(&payload.delta)
-                                        {
-                                            tracing::debug!(
-                                                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                                                item_id = %item_id,
-                                                event_seq = payload.context.seq,
-                                                delta_len = payload.delta.len(),
-                                                stream_index = ?payload.stream_index,
-                                                channel = ?payload.channel,
-                                                assistant_token_text = %assistant_token_text,
-                                                "server assistant delta"
-                                            );
-                                        } else {
-                                            tracing::debug!(
-                                                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                                                item_id = %item_id,
-                                                event_seq = payload.context.seq,
-                                                delta_len = payload.delta.len(),
-                                                stream_index = ?payload.stream_index,
-                                                channel = ?payload.channel,
-                                                "server assistant delta"
-                                            );
-                                        }
-                                        let _ = event_tx.send(WorkerEvent::TextItemDelta {
-                                            item_id,
-                                            kind: TextItemKind::Assistant,
-                                            delta: payload.delta,
-                                        });
-                                    } else {
-                                        let _ = event_tx.send(WorkerEvent::TextDelta(payload.delta));
-                                    }
-                                }
-                            }
-                            "item/plan/delta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event
-                                    && let Some(item_id) = payload.context.item_id
-                                {
-                                    let _ = event_tx.send(WorkerEvent::ProposedPlanDelta {
-                                        item_id,
-                                        delta: payload.delta,
-                                    });
-                                }
-                            }
-                            "item/commandExecution/outputDelta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    let delta_str = &payload.delta;
-                                    if let Ok(val) =
-                                        serde_json::from_str::<serde_json::Value>(delta_str)
-                                    {
-                                        let tool_use_id = val
-                                            .get("tool_use_id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let text =
-                                            val.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                                        if !tool_use_id.is_empty() {
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: tool_use_id.to_string(),
-                                                delta: text.to_string(),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                            "command/exec/outputDelta" => {
-                                if let ServerEvent::CommandExecOutputDelta(payload) = event {
-                                    let CommandExecOutputDeltaPayload {
-                                        process_id,
-                                        delta_base64,
-                                        ..
-                                    } = payload;
-                                    match BASE64_STANDARD.decode(delta_base64) {
-                                        Ok(bytes) => {
-                                            let delta =
-                                                String::from_utf8_lossy(&bytes).to_string();
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: process_id,
-                                                delta,
-                                            });
-                                        }
-                                        Err(error) => {
-                                            tracing::warn!(
-                                                %error,
-                                                "failed to decode command/exec output delta"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            "command/exec/exited" => {
-                                if let ServerEvent::CommandExecExited(payload) = event {
-                                    let CommandExecExitedPayload {
-                                        process_id,
-                                        exit_code,
-                                        ..
-                                    } = payload;
-                                    if active_shell_process_ids.remove(&process_id) {
-                                        let _ = event_tx.send(WorkerEvent::ToolResult {
-                                            tool_use_id: process_id,
-                                            title: "Shell".to_string(),
-                                            preview: String::new(),
-                                            is_error: false,
-                                            truncated: false,
-                                        });
-                                        let _ = event_tx.send(WorkerEvent::ShellCommandFinished {
-                                            exit_code,
-                                        });
-                                    }
-                                }
-                            }
-                            "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    if let Some(item_id) = payload.context.item_id {
-                                        tracing::debug!(
-                                            item_id = %item_id,
-                                            delta_len = payload.delta.len(),
-                                            stream_index = ?payload.stream_index,
-                                            channel = ?payload.channel,
-                                            "server reasoning delta"
-                                        );
-                                        let _ = event_tx.send(WorkerEvent::TextItemDelta {
-                                            item_id,
-                                            kind: TextItemKind::Reasoning,
-                                            delta: payload.delta,
-                                        });
-                                    } else {
-                                        let _ = event_tx.send(WorkerEvent::ReasoningDelta(payload.delta));
-                                    }
-                                }
-                            }
-                            "item/completed" => {
-                                if let ServerEvent::ItemCompleted(payload) = event {
-                                    tracing::debug!(
-                                        item_id = %payload.item.item_id,
-                                        item_kind = ?payload.item.item_kind,
-                                        "server item completed"
-                                    );
-                                    if let Some(text) = completed_agent_message_text(&payload) {
-                                        latest_completed_agent_message = Some(text);
-                                    }
-                                    // Completed tool items are mapped into compact UI events
-                                    // with pre-rendered summaries and previews.
-                                    handle_completed_item(payload, event_tx);
-                                }
-                            }
-                            "turn/completed" => {
-                                if let ServerEvent::TurnCompleted(payload) = event {
-                                    tracing::debug!(
-                                        turn_id = %payload.turn.turn_id,
-                                        status = ?payload.turn.status,
-                                        "server turn completed"
-                                    );
-                                    active_turn_id = None;
-                                    let completed = payload.turn.status == TurnStatus::Completed
-                                        || payload.turn.status == TurnStatus::Interrupted;
-                                    if completed {
-                                        turn_count += 1;
-                                        if let Some(usage) = &payload.turn.usage {
-                                            if !saw_usage_update_for_turn {
-                                                last_query_input_tokens = usage.input_tokens as usize;
-                                                last_query_total_tokens = usage.display_total_tokens();
-                                            }
-                                            if should_apply_terminal_turn_usage_fallback(
-                                                saw_usage_update_for_turn,
-                                                has_authoritative_usage_totals,
-                                            ) {
-                                                total_input_tokens += usage.input_tokens as usize;
-                                                total_output_tokens += usage.output_tokens as usize;
-                                                total_tokens += usage.display_total_tokens();
-                                                total_cache_read_tokens += usage
-                                                    .cache_read_input_tokens
-                                                    .unwrap_or(0) as usize;
-                                            }
-                                        }
-                                    }
-                                    let _ = event_tx.send(WorkerEvent::TurnFinished {
-                                        stop_reason: format!("{:?}", payload.turn.status),
-                                        turn_count,
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        total_cache_read_tokens,
-                                        last_query_total_tokens,
-                                        last_query_input_tokens,
-                                        prompt_token_estimate: payload
-                                            .turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(total_input_tokens),
-                                    });
-                                    latest_completed_agent_message = None;
-                                }
-                            }
-                            "turn/provider_retry_status" => {
-                                if let ServerEvent::TurnProviderRetryStatus(payload) = event {
-                                    let _ = event_tx.send(WorkerEvent::ProviderRetryStatus {
-                                        turn_id: payload.turn_id,
-                                        attempt: payload.attempt,
-                                        backoff_ms: payload.backoff_ms,
-                                        provider: payload.provider,
-                                        model: payload.model,
-                                        phase: payload.phase,
-                                        message: payload.message,
-                                    });
-                                }
-                            }
-                            "turn/usage/updated" => {
-                                if let ServerEvent::TurnUsageUpdated(payload) = event {
-                                    saw_usage_update_for_turn = true;
-                                    total_input_tokens = payload.total_input_tokens;
-                                    total_output_tokens = payload.total_output_tokens;
-                                    total_tokens = payload.total_tokens;
-                                    total_cache_read_tokens = payload.total_cache_read_tokens;
-                                    last_query_total_tokens = payload.usage.display_total_tokens();
-                                    last_query_input_tokens = payload.last_query_input_tokens;
-                                    has_authoritative_usage_totals = true;
-                                    let _ = event_tx.send(WorkerEvent::UsageUpdated {
-                                        total_input_tokens: payload.total_input_tokens,
-                                        total_output_tokens: payload.total_output_tokens,
-                                        total_tokens: payload.total_tokens,
-                                        total_cache_read_tokens: payload.total_cache_read_tokens,
-                                        last_query_total_tokens: payload.usage.display_total_tokens(),
-                                        last_query_input_tokens: payload.last_query_input_tokens,
-                                    });
-                                }
-                            }
-                            "context/usageUpdated" => {
-                                if let ServerEvent::ContextUsageUpdated(payload) = event
-                                    && session_id.is_some_and(|id| id == payload.session_id)
-                                {
-                                    last_query_total_tokens =
-                                        payload.occupancy.total_tokens as usize;
-                                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated {
-                                        occupancy: payload.occupancy,
-                                    });
-                                }
-                            }
-                            "turn/failed" => {
-                                if let ServerEvent::TurnFailed(TurnFailedPayload { turn, error, .. }) = event {
-                                    active_turn_id = None;
-                                    let (message, hint) = match error {
-                                        Some(error) => {
-                                            let hint = error.recovery_hint.or_else(|| {
-                                                devo_provider::recovery_hint_for_message(
-                                                    &error.message,
-                                                )
-                                            });
-                                            (error.message, hint)
-                                        }
-                                        None => {
-                                            let message = latest_completed_agent_message
-                                                .take()
-                                                .unwrap_or_else(|| {
-                                                    format!(
-                                                        "turn failed with status {:?}",
-                                                        turn.status
-                                                    )
-                                                });
-                                            let hint =
-                                                devo_provider::recovery_hint_for_message(&message);
-                                            (message, hint)
-                                        }
-                                    };
-                                    if let Some(usage) = &turn.usage {
-                                        if !saw_usage_update_for_turn {
-                                            last_query_input_tokens = usage.input_tokens as usize;
-                                            last_query_total_tokens = usage.display_total_tokens();
-                                        }
-                                        if should_apply_terminal_turn_usage_fallback(
-                                            saw_usage_update_for_turn,
-                                            has_authoritative_usage_totals,
-                                        ) {
-                                            total_input_tokens += usage.input_tokens as usize;
-                                            total_output_tokens += usage.output_tokens as usize;
-                                            total_tokens += usage.display_total_tokens();
-                                            total_cache_read_tokens += usage
-                                                .cache_read_input_tokens
-                                                .unwrap_or(0) as usize;
-                                        }
-                                    }
-                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                        message,
-                                        hint,
-                                        turn_count,
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        total_cache_read_tokens,
-                                        prompt_token_estimate: turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(total_input_tokens),
-                                        last_query_input_tokens: turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(last_query_input_tokens),
-                                    });
-                                }
-                            }
-                            "turn/plan/updated" => {
-                                if let ServerEvent::TurnPlanUpdated(payload) = event {
-                                    let steps = payload
-                                        .plan
-                                        .into_iter()
-                                        .filter_map(|step| {
-                                            Some(PlanStep {
-                                                text: step.step,
-                                                status: parse_plan_step_status(&step.status)?,
-                                            })
-                                        })
-                                        .collect::<Vec<_>>();
-                                    let _ = event_tx.send(WorkerEvent::PlanUpdated {
-                                        explanation: payload
-                                            .explanation
-                                            .filter(|text| !text.trim().is_empty()),
-                                        steps,
-                                    });
-                                }
-                            }
-                            "item/tool/requestUserInput" => {
-                                if let ServerEvent::RequestUserInput(payload) = event
-                                    && let Some(turn_id) = payload.request.turn_id
-                                {
-                                    let _ = event_tx.send(WorkerEvent::RequestUserInput {
-                                        session_id: payload.request.session_id,
-                                        turn_id,
-                                        request_id: payload.request.request_id.to_string(),
-                                        questions: payload.questions,
-                                    });
-                                }
-                            }
-                            "search/updated" => {
-                                if let ServerEvent::ReferenceSearchUpdated(snapshot) = event {
-                                    let _ =
-                                        event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                            snapshot,
-                                        });
-                                }
-                            }
-                            "search/completed" => {
-                                if let ServerEvent::ReferenceSearchCompleted(snapshot) = event {
-                                    let _ =
-                                        event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                            snapshot,
-                                        });
-                                }
-                            }
-                            "search/failed" => {
-                                if let ServerEvent::ReferenceSearchFailed(payload) = event {
-                                    tracing::warn!(
-                                        search_id = %payload.search_id,
-                                        query = %payload.query,
-                                        message = %payload.message,
-                                        "reference search failed"
-                                    );
-                                    // End the composer loading state instead of waiting forever
-                                    // for a completion notification that will never arrive.
-                                    let snapshot = ReferenceSearchSnapshot {
-                                        search_id: payload.search_id,
-                                        query: payload.query,
-                                        results: Vec::new(),
-                                        total_file_match_count: 0,
-                                        scanned_file_count: 0,
-                                        file_search_complete: true,
-                                    };
-                                    let _ = event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                        snapshot,
-                                    });
-                                }
-                            }
-                            "session/title/updated" => {
-                                if let ServerEvent::SessionTitleUpdated(payload) = event
-                                    && let Some(title) = payload.session.title {
-                                        let _ = event_tx.send(WorkerEvent::SessionTitleUpdated {
-                                            session_id: payload.session.session_id.to_string(),
-                                            title,
-                                        });
-                                    }
-                            }
-                            "session/effective_context_window/updated" => {
-                                if let ServerEvent::SessionEffectiveContextWindowUpdated(
-                                    payload,
-                                ) = event
-                                    && session_id == Some(payload.session_id)
-                                {
-                                    let _ = event_tx.send(
-                                        WorkerEvent::EffectiveContextWindowUpdated {
-                                            effective_context_window: payload
-                                                .effective_context_window,
-                                        },
-                                    );
-                                }
-                            }
-                            "session/compaction/started" => {
-                                if let ServerEvent::SessionCompactionStarted(_) = event {
-                                    let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
-                                }
-                            }
-                            "session/compaction/completed" => {
-                                if let ServerEvent::SessionCompactionCompleted(payload) = event {
-                                    total_input_tokens = payload.session.total_input_tokens;
-                                    total_output_tokens = payload.session.total_output_tokens;
-                                    total_tokens = payload.session.total_tokens;
-                                    let (compacted_last_query_total, compacted_last_query_input) =
-                                        last_query_tokens_from_resume(&payload.session);
-                                    last_query_total_tokens = payload
-                                        .session
-                                        .last_context_occupancy
-                                        .as_ref()
-                                        .map(|occupancy| occupancy.total_tokens as usize)
-                                        .filter(|tokens| *tokens > 0)
-                                        .unwrap_or(compacted_last_query_total);
-                                    last_query_input_tokens = payload
-                                        .session
-                                        .last_context_occupancy
-                                        .as_ref()
-                                        .map(|occupancy| occupancy.total_tokens as usize)
-                                        .filter(|tokens| *tokens > 0)
-                                        .unwrap_or(compacted_last_query_input);
-                                    let _ = event_tx.send(WorkerEvent::SessionCompacted {
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        last_query_total_tokens,
-                                        last_query_input_tokens,
-                                        prompt_token_estimate: payload.session.prompt_token_estimate,
-                                    });
-                                }
-                            }
-                            "session/compaction/failed" => {
-                                if let ServerEvent::SessionCompactionFailed(payload) = event {
-                                    let _ = event_tx.send(WorkerEvent::SessionCompactionFailed {
-                                        message: payload.message,
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
+                        tracing::debug!(method = %method, "ignoring unsupported non-Native notification");
                     }
                     None => break,
                 }
@@ -4353,20 +4328,6 @@ async fn prepare_session_for_command(
     Ok(active_session_id)
 }
 
-/// Result of restoring a session through canonical APIs (resume + items
-/// list + queue list), replacing the legacy `session/resume` aggregate
-/// result (L2-DES-APP-008 Phase C).
-struct NativeSessionRestore {
-    session: devo_protocol::native::session::Session,
-    history_items: Vec<devo_protocol::SessionHistoryItem>,
-    pending_texts: Vec<String>,
-}
-
-/// Restores a session through canonical APIs: `session/resume` (hydration),
-/// `session/items/list` pages (transcript), and `session/queue/list`
-/// (pending input previews). Approximations vs the legacy aggregate result:
-/// `prompt_token_estimate` falls back to total input tokens, and the
-/// per-query live meter starts at zero (it has no canonical source yet).
 /// Resolves a user-turn index (counting `Regular` turns in sequence order,
 /// matching the fork machinery's user-turn counting) into a turn id for
 /// canonical `session/fork` (L2-DES-APP-008 Phase C).
@@ -4560,137 +4521,6 @@ fn restored_history_items(
             .filter_map(typed_events::history_item_from_native_item),
     );
     history_items
-}
-
-async fn restore_session_native(
-    client: &mut StdioServerClient,
-    session_id: SessionId,
-) -> Result<NativeSessionRestore> {
-    let resumed = client.session_resume_native(session_id).await?;
-    let fallback_mode = resumed
-        .session
-        .settings
-        .mode
-        .as_deref()
-        .and_then(|mode| serde_json::from_value(serde_json::Value::String(mode.to_string())).ok())
-        .unwrap_or_default();
-
-    let mut turns = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = client
-            .session_turns_list_native(session_id, cursor.clone(), Some(200))
-            .await?;
-        let page_len = page.data.len();
-        let next_cursor = page.next_cursor;
-        turns.extend(page.data);
-        match (next_cursor, page_len) {
-            (Some(next), len) if len > 0 => cursor = Some(next),
-            _ => break,
-        }
-    }
-
-    let mut items = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = client
-            .session_items_list_native(session_id, cursor.clone(), Some(500))
-            .await?;
-        let page_len = page.data.len();
-        let next_cursor = page.next_cursor;
-        items.extend(page.data);
-        match (next_cursor, page_len) {
-            (Some(next), len) if len > 0 => cursor = Some(next),
-            _ => break,
-        }
-    }
-    let history_items = restored_history_items(turns, items, fallback_mode);
-
-    let queue = client
-        .session_queue_list(devo_protocol::native::rpc_turn::SessionQueueListParams {
-            session_id: native_session_id(session_id),
-        })
-        .await?;
-    let pending_texts = queue
-        .entries
-        .iter()
-        .map(|entry| entry.preview.clone())
-        .collect();
-
-    Ok(NativeSessionRestore {
-        session: resumed.session,
-        history_items,
-        pending_texts,
-    })
-}
-
-/// Builds the `SessionSwitched` event from a canonical restore. Mapping
-/// notes: `prompt_token_estimate` falls back to total input tokens (no
-/// canonical source), and the last-query meter starts at zero (the
-/// query-level usage event has no canonical vocabulary yet).
-fn session_switched_event_from_restore(
-    session_id: SessionId,
-    restore: &NativeSessionRestore,
-) -> WorkerEvent {
-    let session = &restore.session;
-    let active_agent_label = session.parent.as_ref().map(|parent| {
-        let label = match parent {
-            devo_protocol::native::session::SessionParent::Fork { .. } => "Fork".to_string(),
-            devo_protocol::native::session::SessionParent::Agent { role, .. } => {
-                role.clone().unwrap_or_else(|| "subagent".to_string())
-            }
-        };
-        format!("Agent: {label}")
-    });
-    let total_usage = &session.usage.total;
-    let legacy_session_id = session_id;
-    WorkerEvent::SessionSwitched {
-        session_id: legacy_session_id.to_string(),
-        cwd: session.cwd.clone(),
-        title: session.title.clone(),
-        model: Some(session.model.model.clone()),
-        model_binding_id: (session.model.provider != "unknown")
-            .then(|| session.model.provider.clone()),
-        reasoning_effort_selection: session
-            .settings
-            .reasoning_effort
-            .map(|effort| effort.to_string()),
-        reasoning_effort: session.settings.reasoning_effort,
-        active_agent_label,
-        total_input_tokens: total_usage.input_tokens as usize,
-        total_output_tokens: total_usage.output_tokens as usize,
-        total_tokens: total_usage.total_tokens as usize,
-        total_cache_read_tokens: total_usage.cache_read_input_tokens as usize,
-        last_query_total_tokens: 0,
-        last_query_input_tokens: 0,
-        prompt_token_estimate: total_usage.input_tokens as usize,
-        history_items: project_history_items(&restore.history_items),
-        rich_history_items: restore.history_items.clone(),
-        loaded_item_count: restore.history_items.len() as u64,
-        pending_texts: restore.pending_texts.clone(),
-        collaboration_mode: session
-            .settings
-            .mode
-            .as_deref()
-            .and_then(|mode| {
-                serde_json::from_value(serde_json::Value::String(mode.to_string())).ok()
-            })
-            .unwrap_or_default(),
-        permission_preset: Some(match session.settings.permission_profile {
-            devo_protocol::native::model::PermissionProfile::Default => PermissionPreset::Default,
-            devo_protocol::native::model::PermissionProfile::AutoReview => {
-                PermissionPreset::AutoReview
-            }
-            devo_protocol::native::model::PermissionProfile::FullAccess => {
-                PermissionPreset::FullAccess
-            }
-        }),
-        effective_context_window: session.settings.effective_context_window,
-    }
-}
-
-fn native_session_id(session_id: SessionId) -> devo_protocol::native::ids::SessionId {
-    devo_protocol::native::ids::SessionId::from_string(session_id.to_string())
 }
 
 /// Converts a canonical goal back into the legacy `ThreadGoal` shape the
@@ -5193,22 +5023,6 @@ fn render_skill_source(source: &SkillSource) -> String {
     }
 }
 
-fn completed_agent_message_text(payload: &ItemEventPayload) -> Option<String> {
-    match &payload.item {
-        ItemEnvelope {
-            item_kind: ItemKind::AgentMessage,
-            payload,
-            ..
-        } => payload
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(ToOwned::to_owned),
-        _ => None,
-    }
-}
-
 fn btw_agent_prompt(question: &str) -> String {
     format!(
         "You are answering a /btw side question in a lightweight forked agent.\n\
@@ -5237,432 +5051,12 @@ fn btw_spawn_params(session_id: SessionId, question: &str) -> SpawnAgentParams {
     }
 }
 
-async fn handle_btw_agent_event(
-    method: &str,
-    event: &ServerEvent,
-    client: &mut StdioServerClient,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-    btw_agent_sessions: &mut HashMap<SessionId, BtwQuestionState>,
-) -> bool {
-    let Some(child_session_id) = event.session_id() else {
-        return false;
-    };
-    if !btw_agent_sessions.contains_key(&child_session_id) {
-        return false;
-    }
-
-    match method {
-        "item/completed" => {
-            if let ServerEvent::ItemCompleted(payload) = event
-                && let Some(text) = completed_agent_message_text(payload)
-                && let Some(state) = btw_agent_sessions.get_mut(&child_session_id)
-            {
-                state.latest_answer = Some(text);
-            }
-        }
-        "turn/completed" => {
-            let Some(state) = btw_agent_sessions.remove(&child_session_id) else {
-                return true;
-            };
-            let answer = state
-                .latest_answer
-                .unwrap_or_else(|| "Side question finished without an answer.".to_string());
-            let completed = matches!(
-                event,
-                ServerEvent::TurnCompleted(TurnEventPayload { turn, .. })
-                    if turn.status == TurnStatus::Completed
-            );
-            let _ = if completed {
-                event_tx.send(WorkerEvent::BtwCompleted {
-                    question: state.question,
-                    answer,
-                })
-            } else {
-                event_tx.send(WorkerEvent::BtwFailed { message: answer })
-            };
-            close_btw_agent(client, child_session_id).await;
-        }
-        "turn/failed" => {
-            let Some(state) = btw_agent_sessions.remove(&child_session_id) else {
-                return true;
-            };
-            let message = state
-                .latest_answer
-                .unwrap_or_else(|| "Side question failed.".to_string());
-            let _ = event_tx.send(WorkerEvent::BtwFailed { message });
-            close_btw_agent(client, child_session_id).await;
-        }
-        _ => {}
-    }
-
-    true
-}
-
 async fn close_btw_agent(client: &mut StdioServerClient, child_session_id: SessionId) {
     // Native `agent/cancel` (L2-DES-APP-008 facade): the item id is the
     // child session uuid, `item_`-prefixed.
     let item_id =
         devo_protocol::native::ids::ItemId::from_string(format!("item_{child_session_id}"));
     let _ = client.agent_cancel_native(&item_id).await;
-}
-
-fn emit_approval_request_item(
-    payload: serde_json::Value,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-) {
-    let Ok(payload) = serde_json::from_value::<ApprovalRequestPayload>(payload) else {
-        return;
-    };
-    let Some(turn_id) = payload.request.turn_id else {
-        return;
-    };
-    let _ = event_tx.send(WorkerEvent::ApprovalRequest {
-        session_id: payload.request.session_id,
-        turn_id,
-        approval_id: payload.approval_id.to_string(),
-        action_summary: payload.action_summary,
-        justification: payload.justification,
-        resource: payload.resource,
-        available_scopes: payload.available_scopes,
-        path: payload.path,
-        host: payload.host,
-        target: payload.target,
-        command_pattern: payload.command_pattern,
-        command_prefix: payload.command_prefix,
-    });
-}
-
-pub(crate) fn handle_started_item(
-    payload: ItemEventPayload,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-) {
-    tracing::debug!(
-        item_id = %payload.item.item_id,
-        item_kind = ?payload.item.item_kind,
-        "server item started"
-    );
-    let ItemEnvelope {
-        item_id,
-        item_kind,
-        payload,
-    } = payload.item;
-    match item_kind {
-        ItemKind::AgentMessage => {
-            let _ = event_tx.send(WorkerEvent::TextItemStarted {
-                item_id,
-                kind: TextItemKind::Assistant,
-            });
-        }
-        ItemKind::Reasoning => {
-            let _ = event_tx.send(WorkerEvent::TextItemStarted {
-                item_id,
-                kind: TextItemKind::Reasoning,
-            });
-        }
-        ItemKind::Plan => {
-            if is_proposed_plan_payload(&payload) {
-                let _ = event_tx.send(WorkerEvent::ProposedPlanStarted { item_id });
-            }
-        }
-        ItemKind::CommandExecution => {
-            if let Ok(payload) = serde_json::from_value::<CommandExecutionPayload>(payload) {
-                let _ = event_tx.send(WorkerEvent::CommandExecutionStarted {
-                    tool_use_id: payload.tool_call_id,
-                    command: payload.command,
-                    input: payload.input,
-                    source: payload.source,
-                    command_actions: payload.command_actions,
-                });
-            }
-        }
-        ItemKind::ToolCall => {
-            if let Ok(payload) = serde_json::from_value::<ToolCallPayload>(payload) {
-                let details = WorkerEvent::ToolCallDetails {
-                    tool_use_id: payload.tool_call_id.clone(),
-                    tool_name: payload.tool_name.clone(),
-                    input: payload.parameters.clone(),
-                };
-                let _ = event_tx.send(tool_call_started_event(payload));
-                let _ = event_tx.send(details);
-            }
-        }
-        ItemKind::ContextCompaction => {
-            let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
-        }
-        ItemKind::ApprovalRequest => emit_approval_request_item(payload, event_tx),
-        ItemKind::UserMessage
-        | ItemKind::ToolResult
-        | ItemKind::FileChange
-        | ItemKind::McpToolCall
-        | ItemKind::WebSearch
-        | ItemKind::ImageView
-        | ItemKind::ApprovalDecision => {}
-    }
-}
-
-pub(crate) fn handle_completed_item(
-    payload: ItemEventPayload,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-) {
-    match payload.item {
-        ItemEnvelope {
-            item_id,
-            item_kind: ItemKind::AgentMessage,
-            payload,
-            ..
-        } => {
-            let text = payload
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(ToOwned::to_owned);
-            if let Some(text) = text {
-                tracing::debug!(
-                    item_id = %item_id,
-                    final_text_len = text.len(),
-                    "emitting assistant item completion"
-                );
-                let _ = event_tx.send(WorkerEvent::TextItemCompleted {
-                    item_id,
-                    kind: TextItemKind::Assistant,
-                    final_text: text,
-                });
-            }
-        }
-        ItemEnvelope {
-            item_id,
-            item_kind: ItemKind::Reasoning,
-            payload,
-            ..
-        } => {
-            let text = payload
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(ToOwned::to_owned);
-            if let Some(text) = text {
-                tracing::debug!(
-                    item_id = %item_id,
-                    final_text_len = text.len(),
-                    "emitting reasoning item completion"
-                );
-                let _ = event_tx.send(WorkerEvent::TextItemCompleted {
-                    item_id,
-                    kind: TextItemKind::Reasoning,
-                    final_text: text,
-                });
-            }
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ToolCall,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<ToolCallPayload>(payload) else {
-                return;
-            };
-            let summary = summarize_tool_call_update(&payload);
-            let parsed_commands = tool_call_updated_actions(&payload, &summary);
-            let _ = event_tx.send(WorkerEvent::ToolCallDetails {
-                tool_use_id: payload.tool_call_id.clone(),
-                tool_name: payload.tool_name.clone(),
-                input: payload.parameters.clone(),
-            });
-            if !parsed_commands.is_empty() {
-                let _ = event_tx.send(WorkerEvent::ToolCallUpdated {
-                    tool_use_id: payload.tool_call_id,
-                    summary,
-                    parsed_commands,
-                });
-            }
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::FileChange,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<devo_server::FileChangePayload>(payload)
-            else {
-                return;
-            };
-            let changes = payload
-                .changes
-                .into_iter()
-                .collect::<std::collections::HashMap<_, _>>();
-            let tool_use_id = payload.tool_call_id;
-            let event = match (payload.tool_name, payload.input) {
-                (Some(tool_name), Some(input)) => WorkerEvent::PatchAppliedIo {
-                    tool_use_id,
-                    tool_name,
-                    input,
-                    changes,
-                },
-                _ => WorkerEvent::PatchApplied {
-                    tool_use_id,
-                    changes,
-                },
-            };
-            let _ = event_tx.send(event);
-        }
-        ItemEnvelope {
-            item_id,
-            item_kind: ItemKind::Plan,
-            payload,
-        } if is_proposed_plan_payload(&payload) => {
-            let _ = event_tx.send(WorkerEvent::ProposedPlanCompleted {
-                item_id,
-                final_text: proposed_plan_text(&payload),
-            });
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ContextCompaction,
-            payload,
-            ..
-        } => {
-            let error = payload.get("error").filter(|error| !error.is_null());
-            let failed = payload
-                .get("is_error")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-                || payload
-                    .get("failed")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-                || payload
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|status| {
-                        status.eq_ignore_ascii_case("failed")
-                            || status.eq_ignore_ascii_case("error")
-                    })
-                || payload
-                    .get("title")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|title| title.eq_ignore_ascii_case("Compaction failed"))
-                || error.is_some();
-            if failed {
-                let message = error
-                    .and_then(|error| {
-                        error
-                            .as_str()
-                            .or_else(|| error.get("message").and_then(serde_json::Value::as_str))
-                    })
-                    .or_else(|| payload.get("message").and_then(serde_json::Value::as_str))
-                    .map(str::trim)
-                    .filter(|message| !message.is_empty())
-                    .unwrap_or("Context compaction failed")
-                    .to_string();
-                let _ = event_tx.send(WorkerEvent::SessionCompactionFailed { message });
-                return;
-            }
-            let title = payload
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-                .unwrap_or("Context Compaction")
-                .to_string();
-            let _ = event_tx.send(WorkerEvent::ContextCompactionCompleted { title });
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ToolResult,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<ToolResultPayload>(payload) else {
-                return;
-            };
-            // Compatibility fallback until all live file changes come through ItemKind::FileChange.
-            if let Some(patch_event) = patch_event_from_tool_result(&payload) {
-                let _ = event_tx.send(patch_event);
-                return;
-            }
-            // Compatibility fallback until all live plan updates come through turn/plan/updated.
-            if let Some(plan_event) = plan_event_from_tool_result(&payload) {
-                let _ = event_tx.send(plan_event);
-                return;
-            }
-            let title = if payload.summary.is_empty() {
-                summarize_tool_result_title(payload.tool_name.as_deref(), payload.is_error)
-            } else {
-                payload.summary
-            };
-            let event = match payload.input {
-                Some(input) => WorkerEvent::ToolResultIo {
-                    tool_use_id: payload.tool_call_id,
-                    tool_name: payload.tool_name.unwrap_or_else(|| "tool".to_string()),
-                    title,
-                    input,
-                    output: payload.content,
-                    display_content: payload.display_content,
-                    is_error: payload.is_error,
-                    truncated: false,
-                },
-                None => WorkerEvent::ToolResult {
-                    tool_use_id: payload.tool_call_id,
-                    title,
-                    preview: payload
-                        .display_content
-                        .unwrap_or_else(|| render_json_value_text(&payload.content)),
-                    is_error: payload.is_error,
-                    truncated: false,
-                },
-            };
-            let _ = event_tx.send(event);
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::CommandExecution,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<CommandExecutionPayload>(payload) else {
-                return;
-            };
-            let _ = event_tx.send(WorkerEvent::ToolResult {
-                tool_use_id: payload.tool_call_id,
-                title: payload.command,
-                preview: payload
-                    .output
-                    .as_ref()
-                    .map(render_json_value_text)
-                    .unwrap_or_default(),
-                is_error: payload.is_error,
-                truncated: false,
-            });
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ApprovalRequest,
-            payload,
-            ..
-        } => emit_approval_request_item(payload, event_tx),
-        ItemEnvelope {
-            item_kind: ItemKind::ApprovalDecision,
-            payload,
-            ..
-        } => {
-            let tool_name = payload
-                .get("tool_name")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            let rationale = payload
-                .get("rationale")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            let Ok(payload) = serde_json::from_value::<ApprovalDecisionPayload>(payload) else {
-                return;
-            };
-            let _ = event_tx.send(WorkerEvent::ApprovalDecision {
-                approval_id: payload.approval_id.to_string(),
-                decision: payload.decision,
-                scope: payload.scope,
-                tool_name,
-                rationale,
-            });
-        }
-        _ => {}
-    }
 }
 
 fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
@@ -5835,756 +5229,6 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
     transcript
 }
 
-fn summarize_tool_result_title(tool_name: Option<&str>, is_error: bool) -> String {
-    match (tool_name, is_error) {
-        (Some(tool_name), true) => format!("{tool_name} error"),
-        (Some(tool_name), false) => format!("{tool_name} output"),
-        (None, true) => "Tool error".to_string(),
-        (None, false) => "Tool output".to_string(),
-    }
-}
-
-fn tool_call_started_event(payload: ToolCallPayload) -> WorkerEvent {
-    let preparing = matches!(payload.tool_name.as_str(), "write" | "apply_patch");
-    let summary = if preparing && payload.tool_name == "apply_patch" {
-        "apply_patch".to_string()
-    } else {
-        summarize_tool_call(&payload)
-    };
-    let parsed_commands = tool_call_started_actions(&payload);
-    WorkerEvent::ToolCall {
-        tool_use_id: payload.tool_call_id,
-        summary,
-        preparing,
-        parsed_commands: Some(parsed_commands),
-    }
-}
-
-fn summarize_tool_call(payload: &ToolCallPayload) -> String {
-    if is_web_search_tool_name(&payload.tool_name)
-        && let Some(query) = web_search_query(&payload.parameters)
-    {
-        return format!("Web Search({})", serde_json::Value::String(query));
-    }
-    if is_web_fetch_tool_name(&payload.tool_name)
-        && let Some(url) = web_fetch_url(&payload.parameters)
-    {
-        return format!("Web Fetch({})", serde_json::Value::String(url));
-    }
-
-    match pretty_tool_call_summary(&payload.tool_name, &payload.parameters) {
-        Some(summary) => summary,
-        None => {
-            let detail = summarize_tool_input(&payload.tool_name, &payload.parameters);
-            if detail.is_empty() {
-                payload.tool_name.clone()
-            } else {
-                format!("{} {detail}", payload.tool_name)
-            }
-        }
-    }
-}
-
-fn pretty_tool_call_summary(tool_name: &str, input: &serde_json::Value) -> Option<String> {
-    let quote = |text: &str| serde_json::Value::String(compact_tool_summary(text, 96)).to_string();
-    let path_value = || {
-        input
-            .get("filePath")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("path").and_then(serde_json::Value::as_str))
-            .map(make_path_relative)
-    };
-    match tool_name {
-        "bash" | "shell_command" | "exec_command" => input
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("cmd").and_then(serde_json::Value::as_str))
-            .map(|command| format!("Shell {}", compact_tool_summary(command, 96))),
-        "read" => path_value().map(|path| format!("Read {path}{}", fmt_line_range(input))),
-        "write" => path_value().map(|path| format!("Write {path}")),
-        "edit" => Some("Edit".to_string()),
-        "apply_patch" => path_value().map(|path| format!("Patch {path}")),
-        "find" | "glob" => input
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .map(make_path_relative)
-            .or_else(|| {
-                input
-                    .get("pattern")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToString::to_string)
-            })
-            .map(|path| format!("List {path}")),
-        "grep" => {
-            let pattern = input.get("pattern").and_then(serde_json::Value::as_str)?;
-            let query = quote(pattern);
-            match input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative)
-            {
-                Some(path) => Some(format!("Search {query} in {path}")),
-                None => Some(format!("Search {query}")),
-            }
-        }
-        "code_search" | "mcp__code_search__code_search" => {
-            let query = input
-                .get("query")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("pattern").and_then(serde_json::Value::as_str))
-                .unwrap_or_default();
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("file_path").and_then(serde_json::Value::as_str))
-                .map(make_path_relative);
-            match (query.is_empty(), path) {
-                (false, Some(path)) => Some(format!("Code-Search {} in {path}", quote(query))),
-                (false, None) => Some(format!("Code-Search {}", quote(query))),
-                (true, Some(path)) => Some(format!("Code-Search in {path}")),
-                (true, None) => Some("Code-Search".to_string()),
-            }
-        }
-        "spawn_agent" | "agent_spawn" => {
-            let nickname = input
-                .get("agent_nickname")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("nickname").and_then(serde_json::Value::as_str))
-                .or_else(|| input.get("agent_path").and_then(serde_json::Value::as_str))
-                .unwrap_or("agent");
-            let prompt = input
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("prompt").and_then(serde_json::Value::as_str))
-                .unwrap_or_default();
-            Some(format!("Spawn-Agent {} {}", quote(nickname), quote(prompt)))
-        }
-        "await_task" | "wait_agent" | "agent_wait" => {
-            let target = input
-                .get("task_id")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("target").and_then(serde_json::Value::as_str))
-                .or_else(|| {
-                    input
-                        .get("agent_nickname")
-                        .and_then(serde_json::Value::as_str)
-                })
-                .unwrap_or("agent");
-            let timeout = input
-                .get("timeout_secs")
-                .and_then(serde_json::Value::as_u64)
-                .map(|secs| format!("{secs}s"))
-                .or_else(|| {
-                    input
-                        .get("timeout")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToString::to_string)
-                })
-                .unwrap_or_else(|| "default".to_string());
-            Some(format!("Await-Task {} {}", quote(target), quote(&timeout)))
-        }
-        "cancel_task" | "close_agent" | "agent_close" => {
-            let target = input
-                .get("task_id")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("target").and_then(serde_json::Value::as_str))
-                .or_else(|| {
-                    input
-                        .get("agent_nickname")
-                        .and_then(serde_json::Value::as_str)
-                })
-                .unwrap_or("agent");
-            Some(format!("Cancel-Task {}", quote(target)))
-        }
-        "list_tasks" | "list_agents" | "list_agent" | "agent_list" => {
-            Some("List-Tasks".to_string())
-        }
-        _ => None,
-    }
-}
-
-fn is_web_search_tool_name(tool_name: &str) -> bool {
-    matches!(tool_name, "web_search" | "websearch" | "web-search")
-}
-
-fn is_web_fetch_tool_name(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "webfetch" | "web_fetch" | "web-fetch" | "fetch_url" | "fetch-url"
-    )
-}
-
-fn web_search_query(input: &serde_json::Value) -> Option<String> {
-    input
-        .get("query")
-        .and_then(serde_json::Value::as_str)
-        .filter(|query| !query.is_empty())
-        .map(ToString::to_string)
-}
-
-fn web_fetch_url(input: &serde_json::Value) -> Option<String> {
-    input
-        .get("url")
-        .and_then(serde_json::Value::as_str)
-        .filter(|url| !url.is_empty())
-        .map(ToString::to_string)
-}
-
-fn summarize_tool_call_update(payload: &ToolCallPayload) -> String {
-    let summary = summarize_tool_call(payload);
-    if payload.tool_name == "read"
-        && summary == "read {}"
-        && let Some(cmd) = payload
-            .command_actions
-            .iter()
-            .find_map(|action| match action {
-                devo_protocol::parse_command::ParsedCommand::Read { cmd, .. }
-                    if !cmd.is_empty() =>
-                {
-                    Some(cmd.clone())
-                }
-                _ => None,
-            })
-    {
-        return cmd;
-    }
-    if matches!(payload.tool_name.as_str(), "find" | "glob")
-        && (summary == "find {}" || summary == "glob {}")
-        && let Some(cmd) = payload
-            .command_actions
-            .iter()
-            .find_map(|action| match action {
-                devo_protocol::parse_command::ParsedCommand::ListFiles { cmd, .. }
-                    if !cmd.is_empty() =>
-                {
-                    Some(cmd.clone())
-                }
-                _ => None,
-            })
-    {
-        return cmd;
-    }
-    summary
-}
-
-fn read_command_action_from_parameters(
-    command: &str,
-    input: &serde_json::Value,
-) -> Option<devo_protocol::parse_command::ParsedCommand> {
-    let path = input
-        .get("filePath")
-        .or_else(|| input.get("path"))
-        .and_then(serde_json::Value::as_str)?
-        .trim();
-    if path.is_empty() {
-        return None;
-    }
-    let mut name = path.to_string();
-    let offset = input.get("offset").and_then(serde_json::Value::as_u64);
-    let limit = input.get("limit").and_then(serde_json::Value::as_u64);
-    match (offset, limit) {
-        (Some(offset), Some(limit)) => {
-            let end = offset.saturating_add(limit.saturating_sub(1));
-            name.push_str(&format!(" L:{offset}-{end}"));
-        }
-        (Some(offset), None) => name.push_str(&format!(" L:{offset}-")),
-        (None, Some(limit)) => name.push_str(&format!(" L:1-{limit}")),
-        (None, None) => {}
-    }
-    Some(devo_protocol::parse_command::ParsedCommand::Read {
-        cmd: command.to_string(),
-        name,
-        path: PathBuf::from(path),
-    })
-}
-
-fn find_command_action_from_parameters(
-    command: &str,
-    input: &serde_json::Value,
-) -> Option<devo_protocol::parse_command::ParsedCommand> {
-    let pattern = input
-        .get("pattern")
-        .and_then(serde_json::Value::as_str)
-        .filter(|pattern| !pattern.is_empty())?;
-    let path = input.get("path").and_then(serde_json::Value::as_str);
-    let display = match path.filter(|path| !path.is_empty()) {
-        Some(path) => format!("{pattern} in {path}"),
-        None => pattern.to_string(),
-    };
-    Some(devo_protocol::parse_command::ParsedCommand::ListFiles {
-        cmd: command.to_string(),
-        path: Some(display),
-    })
-}
-
-fn tool_call_started_actions(
-    payload: &ToolCallPayload,
-) -> Vec<devo_protocol::parse_command::ParsedCommand> {
-    if !payload.command_actions.is_empty() {
-        return payload.command_actions.clone();
-    }
-    if payload.tool_name == "read" {
-        return vec![
-            read_command_action_from_parameters("read", &payload.parameters).unwrap_or_else(|| {
-                devo_protocol::parse_command::ParsedCommand::Read {
-                    cmd: String::new(),
-                    name: String::new(),
-                    path: PathBuf::new(),
-                }
-            }),
-        ];
-    }
-    if matches!(payload.tool_name.as_str(), "find" | "glob") {
-        let command = payload.tool_name.as_str();
-        return vec![
-            find_command_action_from_parameters(command, &payload.parameters).unwrap_or_else(
-                || devo_protocol::parse_command::ParsedCommand::ListFiles {
-                    cmd: command.to_string(),
-                    path: Some(command.to_string()),
-                },
-            ),
-        ];
-    }
-    if payload.tool_name == "code_search" || payload.tool_name == "mcp__code_search__code_search" {
-        return code_search_command_action_from_parameters("code_search", &payload.parameters)
-            .into_iter()
-            .collect();
-    }
-    Vec::new()
-}
-
-fn tool_call_updated_actions(
-    payload: &ToolCallPayload,
-    summary: &str,
-) -> Vec<devo_protocol::parse_command::ParsedCommand> {
-    if !payload.command_actions.is_empty() {
-        return payload.command_actions.clone();
-    }
-    match payload.tool_name.as_str() {
-        "read" => read_command_action_from_parameters(summary, &payload.parameters)
-            .into_iter()
-            .collect(),
-        "find" | "glob" => find_command_action_from_parameters(summary, &payload.parameters)
-            .into_iter()
-            .collect(),
-        "code_search" | "mcp__code_search__code_search" => {
-            code_search_command_action_from_parameters(summary, &payload.parameters)
-                .into_iter()
-                .collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn code_search_command_action_from_parameters(
-    command: &str,
-    input: &serde_json::Value,
-) -> Option<devo_protocol::parse_command::ParsedCommand> {
-    match input
-        .get("operation")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("search")
-    {
-        "find_related" => {
-            let path = input
-                .get("file_path")
-                .and_then(serde_json::Value::as_str)
-                .filter(|path| !path.is_empty())?;
-            let line = input
-                .get("line")
-                .and_then(serde_json::Value::as_u64)
-                .map(|line| line.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            Some(devo_protocol::parse_command::ParsedCommand::Search {
-                cmd: command.to_string(),
-                query: Some(format!("related {path}:{line}")),
-                path: Some(path.to_string()),
-            })
-        }
-        _ => {
-            let query = input
-                .get("query")
-                .and_then(serde_json::Value::as_str)
-                .filter(|query| !query.is_empty())?;
-            Some(devo_protocol::parse_command::ParsedCommand::Search {
-                cmd: command.to_string(),
-                query: Some(query.to_string()),
-                path: input
-                    .get("path")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-            })
-        }
-    }
-}
-
-fn make_path_relative(path: &str) -> String {
-    let p = std::path::PathBuf::from(path);
-    if p.is_absolute()
-        && let Ok(cwd) = std::env::current_dir()
-        && let Ok(rel) = p.strip_prefix(&cwd)
-    {
-        return rel.to_string_lossy().to_string();
-    }
-    path.to_string()
-}
-
-fn code_search_summary_from_input(input: &serde_json::Value) -> String {
-    match input
-        .get("operation")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("search")
-    {
-        "find_related" => {
-            let path = input
-                .get("file_path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            let line = input.get("line").and_then(serde_json::Value::as_u64);
-            match (path, line) {
-                (Some(path), Some(line)) => format!("related {path}:{line}"),
-                (Some(path), None) => format!("related {path}"),
-                (None, _) => "related".to_string(),
-            }
-        }
-        _ => {
-            let query = input
-                .get("query")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            match (query.is_empty(), path) {
-                (false, Some(path)) => format!("{query} in {path}"),
-                (false, None) => query.to_string(),
-                (true, Some(path)) => format!("in {path}"),
-                (true, None) => String::new(),
-            }
-        }
-    }
-}
-
-fn fmt_offset_limit(input: &serde_json::Value) -> String {
-    let offset = input.get("offset").and_then(|v| v.as_u64());
-    let limit = input.get("limit").and_then(|v| v.as_u64());
-    match (offset, limit) {
-        (Some(o), Some(l)) => format!(" (offset:{o}, limit:{l})"),
-        (Some(o), None) => format!(" (offset:{o})"),
-        (None, Some(l)) => format!(" (limit:{l})"),
-        (None, None) => String::new(),
-    }
-}
-
-fn fmt_line_range(input: &serde_json::Value) -> String {
-    let offset = input.get("offset").and_then(serde_json::Value::as_u64);
-    let limit = input.get("limit").and_then(serde_json::Value::as_u64);
-    match (offset, limit) {
-        (Some(start), Some(limit)) => format!(" L:{start}-{}", start.saturating_add(limit)),
-        (Some(start), None) => format!(" L:{start}"),
-        (None, Some(limit)) => format!(" L:0-{limit}"),
-        (None, None) => String::new(),
-    }
-}
-
-fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
-    let candidate = match tool_name {
-        "bash" | "shell_command" | "exec_command" => input
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("cmd").and_then(serde_json::Value::as_str))
-            .map(|s| s.to_string()),
-        "read" => input
-            .get("filePath")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("path").and_then(serde_json::Value::as_str))
-            .map(|path| {
-                let rel = make_path_relative(path);
-                let ext = fmt_offset_limit(input);
-                format!("{rel}{ext}")
-            }),
-        "write" | "edit" | "apply_patch" => input
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("filePath").and_then(serde_json::Value::as_str))
-            .map(make_path_relative),
-        "grep" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            match path {
-                Some(p) => Some(format!("'{pattern}' in {p}")),
-                None => Some(format!("'{pattern}'")),
-            }
-        }
-        "find" | "glob" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            match path {
-                Some(p) => Some(format!("{pattern} in {p}")),
-                None => Some(pattern.to_string()),
-            }
-        }
-        "code_search" | "mcp__code_search__code_search" => {
-            Some(code_search_summary_from_input(input))
-        }
-        "webfetch" | "web_fetch" | "web-fetch" | "fetch_url" | "fetch-url" => web_fetch_url(input),
-        "web_search" | "websearch" | "web-search" => web_search_query(input),
-        "lsp" => {
-            let path = input
-                .get("filePath")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            let line = input.get("line").and_then(|v| v.as_i64());
-            let col = input.get("character").and_then(|v| v.as_i64());
-            match (path, line, col) {
-                (Some(p), Some(l), Some(c)) => Some(format!("{p}:{l}:{c}")),
-                (Some(p), Some(l), None) => Some(format!("{p}:{l}")),
-                (Some(p), None, _) => Some(p),
-                _ => None,
-            }
-        }
-        "question" => None,
-        "skill" => input
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .map(|s| s.to_string()),
-        "spawn_agent" => input
-            .get("message")
-            .and_then(serde_json::Value::as_str)
-            .filter(|message| !message.is_empty())
-            .map(|message| message.to_string()),
-        _ => None,
-    };
-
-    candidate
-        .map(|text| compact_tool_summary(&text, 96))
-        .unwrap_or_else(|| compact_tool_summary(&render_json_preview(input), 96))
-}
-
-fn compact_tool_summary(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let truncated = compact.chars().count() > max_chars;
-    let mut out = compact.chars().take(max_chars).collect::<String>();
-    if truncated {
-        out.push('…');
-    }
-    out
-}
-
-fn render_json_preview(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::String(text) => truncate_tool_output(text),
-        serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
-            let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-            truncate_tool_output(&pretty)
-        }
-        _ => truncate_tool_output(&value.to_string()),
-    }
-}
-
-fn render_json_value_text(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.clone(),
-        _ => value.to_string(),
-    }
-}
-
-// Legacy compatibility fallback for sessions/items persisted before server-side
-fn is_proposed_plan_payload(payload: &serde_json::Value) -> bool {
-    payload
-        .get("title")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|title| title == "Proposed Plan")
-}
-
-fn proposed_plan_text(payload: &serde_json::Value) -> String {
-    payload
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn plan_event_from_tool_result(payload: &ToolResultPayload) -> Option<WorkerEvent> {
-    let tool_name = payload.tool_name.as_deref()?;
-    match tool_name {
-        "update_plan" => {
-            let plan = payload.content.get("plan")?.as_array()?;
-            let explanation = payload
-                .content
-                .get("explanation")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-                .filter(|text| !text.trim().is_empty());
-            let steps = plan
-                .iter()
-                .filter_map(|item| {
-                    let text = item.get("step")?.as_str()?.to_string();
-                    let status = parse_plan_step_status(
-                        item.get("status").and_then(serde_json::Value::as_str)?,
-                    )?;
-                    Some(PlanStep { text, status })
-                })
-                .collect::<Vec<_>>();
-            Some(WorkerEvent::PlanUpdated { explanation, steps })
-        }
-        _ => None,
-    }
-}
-
-// Legacy compatibility fallback for sessions/items persisted before server-side
-// FileChange became the primary live source.
-fn patch_event_from_tool_result(payload: &ToolResultPayload) -> Option<WorkerEvent> {
-    if !matches!(payload.tool_name.as_deref()?, "apply_patch" | "write") {
-        return None;
-    }
-    let files = payload.content.get("files")?.as_array()?;
-    let mut changes = std::collections::HashMap::new();
-    for file in files {
-        let path = std::path::PathBuf::from(file.get("path")?.as_str()?);
-        let kind = file.get("kind").and_then(serde_json::Value::as_str)?;
-        let additions = file
-            .get("additions")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let deletions = file
-            .get("deletions")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let change = match kind {
-            "add" => devo_protocol::protocol::FileChange::Add {
-                content: file
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| "\n".repeat(additions as usize)),
-            },
-            "delete" => devo_protocol::protocol::FileChange::Delete {
-                content: file
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| "\n".repeat(deletions as usize)),
-            },
-            "update" | "move" => devo_protocol::protocol::FileChange::Update {
-                unified_diff: file
-                    .get("diff")
-                    .or_else(|| file.get("patch"))
-                    .or_else(|| payload.content.get("diff"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                old_text: file
-                    .get("oldContent")
-                    .or_else(|| file.get("preContent"))
-                    .or_else(|| file.get("pre_content"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-                new_text: file
-                    .get("postContent")
-                    .or_else(|| file.get("post_content"))
-                    .or_else(|| file.get("content"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-                move_path: file
-                    .get("move_path")
-                    .and_then(serde_json::Value::as_str)
-                    .map(std::path::PathBuf::from),
-            },
-            _ => continue,
-        };
-        changes.insert(path, change);
-    }
-    if changes.is_empty() {
-        return None;
-    }
-    match (payload.tool_name.clone(), payload.input.clone()) {
-        (Some(tool_name), Some(input)) => Some(WorkerEvent::PatchAppliedIo {
-            tool_use_id: payload.tool_call_id.clone(),
-            tool_name,
-            input,
-            changes,
-        }),
-        _ => Some(WorkerEvent::PatchApplied {
-            tool_use_id: payload.tool_call_id.clone(),
-            changes,
-        }),
-    }
-}
-
-fn parse_plan_step_status(status: &str) -> Option<PlanStepStatus> {
-    match status {
-        "pending" => Some(PlanStepStatus::Pending),
-        "in_progress" => Some(PlanStepStatus::InProgress),
-        "completed" => Some(PlanStepStatus::Completed),
-        "cancelled" => Some(PlanStepStatus::Cancelled),
-        _ => None,
-    }
-}
-
-fn truncate_tool_output(content: &str) -> String {
-    const MAX_LINES: usize = 8;
-    const MAX_CHARS: usize = 1200;
-    let content = normalize_display_output(content);
-    let content = content.as_str();
-
-    let mut lines = Vec::new();
-    let mut chars = 0usize;
-    for line in content.lines() {
-        if lines.len() >= MAX_LINES || chars >= MAX_CHARS {
-            break;
-        }
-        let remaining = MAX_CHARS.saturating_sub(chars);
-        if line.chars().count() > remaining {
-            let preview = line.chars().take(remaining).collect::<String>();
-            lines.push(preview);
-            break;
-        }
-        chars += line.chars().count();
-        lines.push(line.to_string());
-    }
-
-    if lines.is_empty() && !content.is_empty() {
-        let preview = content.chars().take(MAX_CHARS).collect::<String>();
-        return if preview == content {
-            preview
-        } else {
-            format!("{preview}\n… ")
-        };
-    }
-
-    let preview = lines.join("\n");
-    if preview == content {
-        preview
-    } else if preview.is_empty() {
-        "… ".to_string()
-    } else {
-        format!("{preview}\n… ")
-    }
-}
-
-fn normalize_display_output(content: &str) -> String {
-    content
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .trim_matches('\n')
-        .to_string()
-}
-
 fn map_join_error(error: JoinError) -> anyhow::Error {
     if error.is_cancelled() {
         anyhow::anyhow!("interactive worker task was cancelled")
@@ -6604,11 +5248,62 @@ fn map_worker_join_result(result: std::result::Result<(), JoinError>) -> Result<
 }
 
 #[cfg(test)]
+pub(crate) fn dispatch_legacy_item_event_for_test(
+    method: &str,
+    payload: ItemEventPayload,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) {
+    use chrono::Utc;
+    use devo_protocol::EventContext;
+    use devo_protocol::TypedItemEventPayload;
+    use devo_protocol::native::ids::{
+        ItemId as NativeItemId, SessionId as NativeSessionId, TurnId as NativeTurnId,
+    };
+    use devo_protocol::native::item::{ItemEnvelope as NativeItemEnvelope, ItemState};
+    use devo_protocol::native::wire_projector::project_wire_item;
+
+    let item_id = payload.item.item_id;
+    let session_id = payload.context.session_id;
+    let turn_id = payload.context.turn_id.unwrap_or_default();
+    let projected_at = Utc::now();
+    let native_item =
+        project_wire_item(&payload.item.item_kind, &payload.item.payload, projected_at)
+            .expect("legacy test payload must project to native item");
+    let typed = TypedItemEventPayload {
+        context: EventContext {
+            session_id,
+            turn_id: Some(turn_id),
+            item_id: Some(item_id),
+            seq: payload.context.seq,
+            item_seq: payload.context.item_seq,
+        },
+        item: NativeItemEnvelope {
+            id: NativeItemId::from_legacy_uuid(item_id.into()),
+            session_id: NativeSessionId::from_legacy_uuid(session_id.into()),
+            turn_id: NativeTurnId::from_legacy_uuid(turn_id.into()),
+            seq: payload.context.item_seq.unwrap_or(payload.context.seq),
+            revision: 1,
+            created_at: projected_at,
+            updated_at: projected_at,
+            state: if method == "item/completed" {
+                ItemState::Completed
+            } else {
+                ItemState::Running
+            },
+            item: native_item,
+        },
+    };
+    item_dispatch::dispatch_typed_item_lifecycle(method, &typed, item_id, event_tx);
+}
+
+#[cfg(test)]
 mod tests {
+    use super::ProviderValidationCancellation;
     use chrono::Utc;
     use pretty_assertions::assert_eq;
     use std::future::pending;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use devo_core::SessionId;
@@ -6628,22 +5323,20 @@ mod tests {
     use super::append_preview_item;
     use super::btw_agent_prompt;
     use super::btw_spawn_params;
-    use super::handle_completed_item;
-    use super::handle_started_item;
+    use super::dispatch_legacy_item_event_for_test;
     use super::last_query_tokens_from_resume;
     use super::next_shell_command_exec_start;
-    use super::normalize_display_output;
     use super::project_history_items;
     use super::render_skill_list_body;
     use super::restored_history_items;
     use super::should_apply_terminal_turn_usage_fallback;
     use super::should_pause_goal_before_session_leave;
-    use super::summarize_tool_call;
-    use super::tool_call_started_actions;
-    use super::tool_call_started_event;
-    use super::truncate_tool_output;
-    use crate::events::PlanStep;
-    use crate::events::PlanStepStatus;
+    use super::tool_lifecycle;
+    use super::tool_summaries::normalize_display_output;
+    use super::tool_summaries::summarize_tool_call;
+    use super::tool_summaries::tool_call_started_actions;
+    use super::tool_summaries::tool_call_started_event;
+    use super::tool_summaries::truncate_tool_output;
     use crate::events::SessionListEntry;
     use crate::events::SubagentMonitorAgent;
     use crate::events::SubagentMonitorEvent;
@@ -6661,6 +5354,7 @@ mod tests {
     use devo_protocol::ThreadGoal;
     use devo_protocol::ThreadGoalStatus;
     use devo_server::ApprovalRequestPayload;
+    use devo_server::FileChangePayload;
     use devo_server::ItemEnvelope;
     use devo_server::ItemEventPayload;
     use devo_server::ItemKind;
@@ -6693,6 +5387,7 @@ mod tests {
         let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let worker = QueryWorkerHandle {
             command_tx,
+            provider_validation_cancel: Arc::new(ProviderValidationCancellation::default()),
             event_rx,
             join_handle: tokio::spawn(async {
                 pending::<()>().await;
@@ -6730,16 +5425,18 @@ mod tests {
             vec![
                 ShellCommandExecStart {
                     process_id: "user-shell-1".to_string(),
-                    started_event: WorkerEvent::CommandExecutionStarted {
-                        tool_use_id: "user-shell-1".to_string(),
-                        command: "pwd".to_string(),
-                        input: Some(serde_json::json!({
-                            "cmd": "pwd",
-                            "cwd": PathBuf::from("/tmp/project"),
-                        })),
-                        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-                        command_actions: Vec::new(),
-                    },
+                    command: "pwd".to_string(),
+                    started_event:
+                        super::super::worker_event_test_helpers::command_execution_started(
+                            "user-shell-1".to_string(),
+                            "pwd".to_string(),
+                            Some(serde_json::json!({
+                                "cmd": "pwd",
+                                "cwd": PathBuf::from("/tmp/project"),
+                            })),
+                            devo_protocol::protocol::ExecCommandSource::UserShell,
+                            Vec::new(),
+                        ),
                     params: devo_protocol::CommandExecParams {
                         session_id: Some(session_id),
                         process_id: "user-shell-1".to_string(),
@@ -6752,16 +5449,18 @@ mod tests {
                 },
                 ShellCommandExecStart {
                     process_id: "user-shell-2".to_string(),
-                    started_event: WorkerEvent::CommandExecutionStarted {
-                        tool_use_id: "user-shell-2".to_string(),
-                        command: "whoami".to_string(),
-                        input: Some(serde_json::json!({
-                            "cmd": "whoami",
-                            "cwd": PathBuf::from("/tmp/project"),
-                        })),
-                        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-                        command_actions: Vec::new(),
-                    },
+                    command: "whoami".to_string(),
+                    started_event:
+                        super::super::worker_event_test_helpers::command_execution_started(
+                            "user-shell-2".to_string(),
+                            "whoami".to_string(),
+                            Some(serde_json::json!({
+                                "cmd": "whoami",
+                                "cwd": PathBuf::from("/tmp/project"),
+                            })),
+                            devo_protocol::protocol::ExecCommandSource::UserShell,
+                            Vec::new(),
+                        ),
                     params: devo_protocol::CommandExecParams {
                         session_id: None,
                         process_id: "user-shell-2".to_string(),
@@ -6800,7 +5499,7 @@ mod tests {
             (
                 "read",
                 serde_json::json!({ "path": "/tmp/project/src/lib.rs", "offset": 9, "limit": 4 }),
-                "Read /tmp/project/src/lib.rs L:9-13",
+                "Read /tmp/project/src/lib.rs L:9-12",
             ),
             (
                 "write",
@@ -6978,7 +5677,8 @@ mod tests {
     #[test]
     fn completed_tool_result_uses_display_content_preview() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7009,13 +5709,17 @@ mod tests {
 
         assert_eq!(
             event_rx.try_recv().expect("worker event"),
-            WorkerEvent::ToolResult {
-                tool_use_id: "call-1".to_string(),
-                title: "read output".to_string(),
-                preview: "canonical".to_string(),
-                is_error: false,
-                truncated: false,
-            }
+            WorkerEvent::Transcript(tool_lifecycle::tool_closed_from_result(
+                &ToolResultPayload {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: None,
+                    input: None,
+                    content: serde_json::Value::String("<content>canonical</content>".to_string(),),
+                    display_content: Some("canonical".to_string()),
+                    is_error: false,
+                    summary: String::new(),
+                },
+            ))
         );
     }
 
@@ -7024,7 +5728,8 @@ mod tests {
         let session_id = SessionId::new();
         let turn_id = TurnId::new();
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_started_item(
+        dispatch_legacy_item_event_for_test(
+            "item/started",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id,
@@ -7115,7 +5820,7 @@ mod tests {
         assert_eq!(
             tool_call_started_actions(&payload),
             vec![devo_protocol::parse_command::ParsedCommand::Read {
-                cmd: "read".to_string(),
+                cmd: "Read crates/core/src/query.rs L:10-14".to_string(),
                 name: "crates/core/src/query.rs L:10-14".to_string(),
                 path: PathBuf::from("crates/core/src/query.rs"),
             }]
@@ -7136,17 +5841,8 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "Code-Search \"live tool feedback\" in crates".to_string(),
-                preparing: false,
-                parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
-                    cmd: "code_search".to_string(),
-                    query: Some("live tool feedback".to_string()),
-                    path: Some("crates".to_string()),
-                }]),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
@@ -7160,13 +5856,8 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "Code-Search".to_string(),
-                preparing: false,
-                parsed_commands: Some(Vec::new()),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
@@ -7180,13 +5871,8 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "apply_patch".to_string(),
-                preparing: true,
-                parsed_commands: Some(Vec::new()),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
@@ -7200,20 +5886,16 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "Edit".to_string(),
-                preparing: false,
-                parsed_commands: Some(Vec::new()),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
     #[test]
     fn completed_read_tool_call_emits_update_event() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7228,12 +5910,10 @@ mod tests {
                     payload: serde_json::to_value(ToolCallPayload {
                         tool_call_id: "call-1".to_string(),
                         tool_name: "read".to_string(),
-                        parameters: serde_json::json!({}),
-                        command_actions: vec![devo_protocol::parse_command::ParsedCommand::Read {
-                            cmd: "read crates/tui/src/mod.rs".to_string(),
-                            name: "mod.rs".to_string(),
-                            path: PathBuf::from("crates/tui/src/mod.rs"),
-                        }],
+                        parameters: serde_json::json!({
+                            "filePath": "crates/tui/src/mod.rs"
+                        }),
+                        command_actions: Vec::new(),
                     })
                     .expect("serialize tool call payload"),
                 },
@@ -7241,32 +5921,33 @@ mod tests {
             &event_tx,
         );
 
+        use crate::transcript::lifecycle::ItemLifecycleEvent;
+
         assert_eq!(
-            event_rx.try_recv().expect("worker details event"),
-            WorkerEvent::ToolCallDetails {
+            event_rx.try_recv().expect("worker refresh event"),
+            WorkerEvent::Transcript(ItemLifecycleEvent::ToolOpened {
                 tool_use_id: "call-1".to_string(),
                 tool_name: "read".to_string(),
-                input: serde_json::json!({}),
-            }
-        );
-        assert_eq!(
-            event_rx.try_recv().expect("worker update event"),
-            WorkerEvent::ToolCallUpdated {
-                tool_use_id: "call-1".to_string(),
-                summary: "read crates/tui/src/mod.rs".to_string(),
+                input: serde_json::json!({
+                    "filePath": "crates/tui/src/mod.rs"
+                }),
+                item_seq: None,
+                command: None,
+                command_source: None,
                 parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::Read {
-                    cmd: "read crates/tui/src/mod.rs".to_string(),
-                    name: "mod.rs".to_string(),
+                    cmd: "Read crates/tui/src/mod.rs".to_string(),
+                    name: "crates/tui/src/mod.rs".to_string(),
                     path: PathBuf::from("crates/tui/src/mod.rs"),
                 }],
-            }
+            })
         );
     }
 
     #[test]
     fn completed_glob_tool_call_emits_update_with_pattern_and_path() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7294,33 +5975,32 @@ mod tests {
         );
 
         assert_eq!(
-            event_rx.try_recv().expect("worker details event"),
-            WorkerEvent::ToolCallDetails {
-                tool_use_id: "call-1".to_string(),
-                tool_name: "glob".to_string(),
-                input: serde_json::json!({
-                    "pattern": "**/Cargo.toml",
-                    "path": "crates"
-                }),
-            }
-        );
-        assert_eq!(
-            event_rx.try_recv().expect("worker update event"),
-            WorkerEvent::ToolCallUpdated {
-                tool_use_id: "call-1".to_string(),
-                summary: "List crates".to_string(),
-                parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
-                    cmd: "List crates".to_string(),
-                    path: Some("**/Cargo.toml in crates".to_string()),
-                }],
-            }
+            event_rx.try_recv().expect("worker refresh event"),
+            WorkerEvent::Transcript(
+                crate::transcript::lifecycle::ItemLifecycleEvent::ToolOpened {
+                    tool_use_id: "call-1".to_string(),
+                    tool_name: "glob".to_string(),
+                    input: serde_json::json!({
+                        "pattern": "**/Cargo.toml",
+                        "path": "crates"
+                    }),
+                    item_seq: None,
+                    command: None,
+                    command_source: None,
+                    parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
+                        cmd: "List crates".to_string(),
+                        path: Some("**/Cargo.toml in crates".to_string()),
+                    }],
+                }
+            )
         );
     }
 
     #[test]
     fn completed_tool_result_falls_back_to_content_preview() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7351,20 +6031,25 @@ mod tests {
 
         assert_eq!(
             event_rx.try_recv().expect("worker event"),
-            WorkerEvent::ToolResult {
-                tool_use_id: "call-1".to_string(),
-                title: "read output".to_string(),
-                preview: "<content>canonical</content>".to_string(),
-                is_error: false,
-                truncated: false,
-            }
+            WorkerEvent::Transcript(tool_lifecycle::tool_closed_from_result(
+                &ToolResultPayload {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: None,
+                    input: None,
+                    content: serde_json::Value::String("<content>canonical</content>".to_string(),),
+                    display_content: None,
+                    is_error: false,
+                    summary: String::new(),
+                },
+            ))
         );
     }
 
     #[test]
-    fn completed_update_plan_tool_result_emits_plan_updated() {
+    fn completed_file_change_item_dispatches_via_legacy_projection() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7375,44 +6060,38 @@ mod tests {
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
+                    item_kind: ItemKind::FileChange,
+                    payload: serde_json::to_value(FileChangePayload {
                         tool_call_id: "call-1".to_string(),
-                        tool_name: Some("update_plan".to_string()),
+                        tool_name: Some("apply_patch".to_string()),
                         input: None,
-                        content: serde_json::json!({
-                            "explanation": "Working through the task",
-                            "plan": [
-                                { "step": "Inspect code", "status": "completed" },
-                                { "step": "Patch bug", "status": "in_progress" }
-                            ]
-                        }),
-                        display_content: None,
+                        changes: vec![(
+                            PathBuf::from("foo.txt"),
+                            devo_protocol::protocol::FileChange::Update {
+                                unified_diff: "diff --git a/foo.txt b/foo.txt\n--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                                old_text: None,
+                                new_text: None,
+                                move_path: None,
+                            },
+                        )],
                         is_error: false,
-                        summary: "update_plan".to_string(),
                     })
-                    .expect("serialize tool result payload"),
+                    .expect("serialize file change payload"),
                 },
             },
             &event_tx,
         );
 
-        assert_eq!(
-            event_rx.try_recv().expect("worker event"),
-            WorkerEvent::PlanUpdated {
-                explanation: Some("Working through the task".to_string()),
-                steps: vec![
-                    PlanStep {
-                        text: "Inspect code".to_string(),
-                        status: PlanStepStatus::Completed,
-                    },
-                    PlanStep {
-                        text: "Patch bug".to_string(),
-                        status: PlanStepStatus::InProgress,
-                    },
-                ],
-            }
-        );
+        let WorkerEvent::Transcript(crate::transcript::lifecycle::ItemLifecycleEvent::ToolClosed {
+            tool_use_id,
+            file_changes: Some(changes),
+            ..
+        }) = event_rx.try_recv().expect("worker event")
+        else {
+            panic!("expected file change tool closed event");
+        };
+        assert_eq!(tool_use_id, "call-1");
+        assert!(changes.contains_key(&PathBuf::from("foo.txt")));
     }
 
     #[test]
@@ -7427,223 +6106,6 @@ mod tests {
         assert!(!super::should_apply_terminal_turn_usage_fallback(
             /*saw_usage_update_for_turn*/ true, /*has_authoritative_usage_totals*/ false,
         ));
-    }
-
-    #[test]
-    fn completed_apply_patch_tool_result_emits_patch_applied() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("apply_patch".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                            "files": [
-                                {
-                                    "path": "foo.txt",
-                                    "kind": "update",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "apply_patch".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        assert!(changes.contains_key(&std::path::PathBuf::from("foo.txt")));
-    }
-
-    #[test]
-    fn completed_write_tool_result_emits_patch_applied() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("write".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "diff --git a/foo.txt b/foo.txt\n--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                            "files": [
-                                {
-                                    "path": "foo.txt",
-                                    "kind": "update",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "write foo.txt".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        assert!(changes.contains_key(&std::path::PathBuf::from("foo.txt")));
-    }
-
-    #[test]
-    fn completed_apply_patch_tool_result_with_real_metadata_shape_emits_patch_applied() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("apply_patch".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                            "files": [
-                                {
-                                    "path": "update.txt",
-                                    "filePath": "/tmp/update.txt",
-                                    "relativePath": "update.txt",
-                                    "kind": "update",
-                                    "type": "update",
-                                    "diff": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                                    "patch": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "apply_patch".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        assert!(changes.contains_key(&std::path::PathBuf::from("update.txt")));
-    }
-
-    #[test]
-    fn completed_apply_patch_prefers_file_local_diff_over_top_level_diff() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("apply_patch".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "BROKEN TOP LEVEL DIFF",
-                            "files": [
-                                {
-                                    "path": "update.txt",
-                                    "kind": "update",
-                                    "diff": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "apply_patch".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        let devo_protocol::protocol::FileChange::Update { unified_diff, .. } = changes
-            .get(&std::path::PathBuf::from("update.txt"))
-            .expect("update change")
-        else {
-            panic!("expected update change");
-        };
-        assert!(unified_diff.contains("--- a/update.txt"));
-        assert!(!unified_diff.contains("BROKEN TOP LEVEL DIFF"));
     }
 
     #[test]
@@ -7666,20 +6128,20 @@ mod tests {
         };
 
         assert_eq!(
-            WorkerEvent::CommandExecutionStarted {
-                tool_use_id: payload.tool_call_id.clone(),
-                command: payload.command.clone(),
-                input: payload.input.clone(),
-                source: payload.source,
-                command_actions: payload.command_actions.clone(),
-            },
-            WorkerEvent::CommandExecutionStarted {
-                tool_use_id: payload.tool_call_id,
-                command: payload.command,
-                input: payload.input,
-                source: devo_protocol::protocol::ExecCommandSource::Agent,
-                command_actions: payload.command_actions,
-            }
+            super::super::worker_event_test_helpers::command_execution_started(
+                payload.tool_call_id.clone(),
+                payload.command.clone(),
+                payload.input.clone(),
+                payload.source,
+                payload.command_actions.clone(),
+            ),
+            super::super::worker_event_test_helpers::command_execution_started(
+                payload.tool_call_id,
+                payload.command,
+                payload.input,
+                devo_protocol::protocol::ExecCommandSource::Agent,
+                payload.command_actions,
+            )
         );
     }
 
@@ -7695,8 +6157,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: parent_session_id.map(|_| "root/reviewer".to_string()),
             agent_nickname: parent_session_id.map(|_| "reviewer".to_string()),
             agent_role: parent_session_id.map(|_| "default".to_string()),
@@ -7860,104 +6324,6 @@ mod tests {
     }
 
     #[test]
-    fn child_turn_completed_routes_to_subagent_monitor_turn_finished() {
-        use devo_protocol::ServerEvent;
-        use devo_protocol::TurnEventPayload;
-        use devo_protocol::TurnKind;
-        use devo_protocol::TurnMetadata;
-        use devo_protocol::TurnStatus;
-
-        let child = SessionId::new();
-        let turn = TurnMetadata {
-            turn_id: TurnId::new(),
-            session_id: child,
-            sequence: 1,
-            status: TurnStatus::Completed,
-            kind: TurnKind::Regular,
-            model: "test-model".to_string(),
-            model_binding_id: None,
-            reasoning_effort_selection: None,
-            reasoning_effort: None,
-            request_model: "test-model".to_string(),
-            request_thinking: None,
-            started_at: chrono::Utc::now(),
-            completed_at: Some(chrono::Utc::now()),
-            usage: None,
-            stop_reason: None,
-            failure_reason: None,
-        };
-        let event = ServerEvent::TurnCompleted(TurnEventPayload {
-            session_id: child,
-            turn: turn.clone(),
-        });
-
-        let events =
-            super::subagent_events::subagent_monitor_events_from_unwrapped_server_notification(
-                "turn/completed",
-                event,
-            );
-
-        assert_eq!(
-            events,
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::TurnFinished {
-                    session_id: child,
-                    status: "done".to_string(),
-                },
-            }]
-        );
-    }
-
-    #[test]
-    fn child_unwrapped_turn_completed_routes_to_subagent_monitor_turn_finished() {
-        use devo_protocol::ServerEvent;
-        use devo_protocol::TurnEventPayload;
-        use devo_protocol::TurnKind;
-        use devo_protocol::TurnMetadata;
-        use devo_protocol::TurnStatus;
-
-        let child = SessionId::new();
-        let turn = TurnMetadata {
-            turn_id: TurnId::new(),
-            session_id: child,
-            sequence: 1,
-            status: TurnStatus::Completed,
-            kind: TurnKind::Regular,
-            model: "test-model".to_string(),
-            model_binding_id: None,
-            reasoning_effort_selection: None,
-            reasoning_effort: None,
-            request_model: "test-model".to_string(),
-            request_thinking: None,
-            started_at: chrono::Utc::now(),
-            completed_at: Some(chrono::Utc::now()),
-            usage: None,
-            stop_reason: None,
-            failure_reason: None,
-        };
-        let event = ServerEvent::TurnCompleted(TurnEventPayload {
-            session_id: child,
-            turn: turn.clone(),
-        });
-
-        let events =
-            super::subagent_events::subagent_monitor_events_from_unwrapped_server_notification(
-                "turn/completed",
-                event,
-            );
-
-        assert_eq!(
-            events,
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::TurnFinished {
-                    session_id: child,
-                    status: "done".to_string(),
-                },
-            }]
-        );
-    }
-
-    #[test]
     fn child_typed_tool_result_updates_subagent_preview() {
         let child = SessionId::new();
         let item = devo_protocol::native::item::ItemEnvelope {
@@ -8057,8 +6423,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -8106,8 +6474,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -8439,6 +6809,7 @@ mod tests {
             model: devo_protocol::native::model::ModelBinding {
                 provider: "test".to_string(),
                 model: "test-model".to_string(),
+                variant: None,
                 reasoning_effort: None,
             },
             collaboration_mode: Some(devo_protocol::CollaborationMode::Plan),

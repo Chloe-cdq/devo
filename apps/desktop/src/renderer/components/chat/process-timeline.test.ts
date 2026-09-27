@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import type { ReasoningPart, ToolPart } from "../../lib/types"
-import { buildProcessTimeline, isReasoningPartActivelyStreaming } from "./process-timeline"
+import {
+	buildProcessTimeline,
+	isReasoningPartActivelyStreaming,
+	processTimelineRowId,
+} from "./process-timeline"
 
 function reasoning(id: string): { kind: "reasoning"; part: ReasoningPart } {
 	return {
@@ -46,6 +50,22 @@ describe("buildProcessTimeline", () => {
 			},
 		])
 	})
+
+	test("keeps compaction markers in chronological order among tools", () => {
+		expect(
+			buildProcessTimeline([
+				tool("t1"),
+				{ kind: "compaction", id: "c-started", status: "started" },
+				{ kind: "compaction", id: "c-done", status: "completed" },
+				tool("t2", "bash"),
+			]),
+		).toEqual([
+			{ kind: "tool", part: tool("t1").part },
+			{ kind: "compaction", id: "c-started", status: "started" },
+			{ kind: "compaction", id: "c-done", status: "completed" },
+			{ kind: "tool", part: tool("t2", "bash").part },
+		])
+	})
 })
 
 function reasoningWithoutEnd(id: string): { kind: "reasoning"; part: ReasoningPart } {
@@ -80,5 +100,16 @@ describe("isReasoningPartActivelyStreaming", () => {
 		]
 
 		expect(isReasoningPartActivelyStreaming(parts, reasoningWithoutEnd("r1").part)).toBe(false)
+	})
+})
+
+describe("processTimelineRowId", () => {
+	test("uses stable tool-group ids from category and tool ids", () => {
+		const items = buildProcessTimeline([tool("t1"), tool("t2")])
+		const group = items.find((item) => item.kind === "tool-group")
+		expect(group).toBeTruthy()
+		if (!group || group.kind !== "tool-group") return
+		expect(processTimelineRowId(group, 0)).toBe(`group-${group.category}-t1+t2`)
+		expect(processTimelineRowId(group, 99)).toBe(`group-${group.category}-t1+t2`)
 	})
 })

@@ -245,8 +245,6 @@ Top-level preference keys (outside `[defaults]`) that the TUI/runtime also honor
 
 - `theme`: optional UI theme id (also accepted historically under `[defaults]`).
 - `collapse_reasoning`: optional boolean controlling reasoning display collapsing.
-- `compaction_token_limit`: optional absolute auto-compaction token threshold applied
-  globally to all sessions (clamped per model `context_window`).
 
 Rules:
 
@@ -324,9 +322,12 @@ Required fields for an enabled provider:
 Optional fields:
 
 - `availability_status`: last known safe status such as `unknown`, `valid`, `auth_required`, or `unavailable`.
-- `timeout_ms`: provider request timeout.
-- `connect_timeout_ms`: provider connection timeout.
 - `headers`: JSON object encoded as a TOML string. Object keys are HTTP header names and object values must be strings.
+
+Provider response duration is not configured in TOML. Runtime requests keep an
+internal connection-establishment deadline, but model loading and generation
+have no application-level response deadline; the owning turn or user may cancel
+them.
 
 Provider ids are stable program-generated identifiers. Changing `name` must not change the provider id.
 
@@ -413,13 +414,14 @@ Supported fields include `display_name`, `description`, `channel`,
 with safe defaults; invocability still requires a matching provider and model
 binding.
 
-Legacy top-level `model = "slug"` remains readable, but new configuration must
-select through `[defaults].model_binding` because `[model.<slug>]` owns the
-top-level `model` table namespace. Old user `~/.devo/models.json` and workspace
-`<workspace>/.devo/models.json` files are ignored. Migration is manual: copy
-desired metadata fields into the corresponding user or workspace
-`config.toml` `[model.<slug>]` section, then retain or add the required provider
-and binding records. Credential values remain in user-scoped `auth.json`.
+Legacy top-level `model = "slug"` remains readable by the startup migration, but
+new provider/model configuration is stored in `providers.json`. The tracked
+directory is `crates/core/providers.json`; user and workspace Connections are
+stored in the corresponding `providers.json` overlays. Old user
+`~/.devo/models.json` and workspace `<workspace>/.devo/models.json` files are
+ignored. On first startup, legacy provider, model, binding, and default records
+are migrated automatically to the JSON overlay and credential values are copied
+to user-scoped `auth.json`; the old provider-owned TOML records are then removed.
 
 ## Model Bindings
 

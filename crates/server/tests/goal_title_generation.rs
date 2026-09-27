@@ -12,7 +12,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
@@ -64,7 +63,17 @@ impl ModelProviderSDK for GoalTitleProvider {
         _request: ModelRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.stream_requests.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::pin(stream::pending()))
+        Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::MessageDone {
+            response: ModelResponse {
+                id: "goal-turn".to_string(),
+                content: vec![ResponseContent::Text(
+                    "Goal continuation complete.".to_string(),
+                )],
+                stop_reason: Some(StopReason::EndTurn),
+                usage: Usage::default(),
+                metadata: ResponseMetadata::default(),
+            },
+        })])))
     }
 
     fn name(&self) -> &str {
@@ -72,6 +81,8 @@ impl ModelProviderSDK for GoalTitleProvider {
     }
 }
 
+/// Trace: L2-DES-SERVER-title-generation
+/// Verifies: goal/set applies a heuristic title immediately, then optional LLM polish.
 #[tokio::test]
 async fn goal_set_objective_generates_session_title_for_new_session() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -97,6 +108,7 @@ async fn goal_set_objective_generates_session_title_for_new_session() -> Result<
         .await
         .context("session/goal/set response")?;
 
+    wait_for_title_update(&mut notifications_rx, "investigate goal title generation").await?;
     wait_for_title_update(&mut notifications_rx, "Generated goal title").await?;
 
     let list_response = runtime
@@ -225,7 +237,6 @@ fn build_runtime(
                 display_name: "test-model".to_string(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -285,20 +296,19 @@ async fn start_untitled_session(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model"
+                    "idempotencyKey": "goal-title-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(start_response)?;
-    Ok(response.result.session.session_id)
+        .context("session/new response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(start_response)?;
+    Ok(SessionId::try_from(response.result.session.id.as_str())?)
 }
 
 async fn wait_for_title_update(

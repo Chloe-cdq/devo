@@ -19,7 +19,6 @@ import {
 	EyeOffIcon,
 	FilmIcon,
 	GitBranchIcon,
-	GitForkIcon,
 	MonitorIcon,
 	MoonIcon,
 	PaletteIcon,
@@ -28,6 +27,7 @@ import {
 	RefreshCwIcon,
 	ScanEyeIcon,
 	SparklesIcon,
+	SplitIcon,
 	SunIcon,
 	SunMoonIcon,
 	Undo2Icon,
@@ -154,9 +154,13 @@ export function CommandPalette({ open, onOpenChange, agents, onForkSession }: Co
 	const hasSession = !!activeAgent
 
 	return (
-		<CommandDialog open={open} onOpenChange={onOpenChange}>
+		<CommandDialog
+			open={open}
+			onOpenChange={onOpenChange}
+			className="w-[calc(100%-2rem)] sm:max-w-2xl"
+		>
 			<CommandInput placeholder="Type a command or search..." />
-			<CommandList>
+			<CommandList className="max-h-[min(32rem,60vh)]">
 				<CommandEmpty>No results found.</CommandEmpty>
 
 				<CommandGroup heading="Actions">
@@ -213,7 +217,7 @@ export function CommandPalette({ open, onOpenChange, agents, onForkSession }: Co
 							await onForkSession()
 						}}
 					>
-						<GitForkIcon />
+						<SplitIcon />
 						<span>Fork Session</span>
 					</CommandItem>
 				)}

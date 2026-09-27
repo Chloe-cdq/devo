@@ -39,7 +39,7 @@ Devo предназначен для команд, которым нужен cod
 экосистемы моделей. Он оставляет Desktop experience, terminal workflow, выбор
 модели, поведение runtime и выполнение в workspace под вашим контролем.
 
-- **Подключайте свою модель** - Через provider/model bindings можно подключать
+- **Подключайте свою модель** - Через provider/model Connections можно подключать
   OpenAI-compatible Chat Completions, OpenAI-compatible Responses, Anthropic
   Messages, DeepSeek, Qwen, Kimi или приватные model gateways.
 - **Подходит для приватных и intranet-сред** - Devo запускается как единый
@@ -54,7 +54,7 @@ Devo предназначен для команд, которым нужен cod
 
 ## Возможности
 
-- **Модельно-нейтральный provider runtime** - Используйте provider/model bindings
+- **Модельно-нейтральный provider runtime** - Используйте provider/model Connections
   для OpenAI-совместимых, Anthropic-совместимых, DeepSeek, Qwen, Kimi, GLM,
   MiniMax, Xiaomi MiMo, OpenRouter или локальных endpoint.
 - **Поддержка MCP** - Подключайте внешние инструменты и контекст через серверы
@@ -81,10 +81,10 @@ Devo предназначен для команд, которым нужен cod
 - **Легковесный Rust runtime** - Построен на Rust, с малым расходом памяти и
   компактным локальным runtime.
 - **Встроенный семантический поиск по коду (MCP)** - Опциональный bundled MCP
-  сервер (`code_search` / `devo-code-search-mcp`), **по умолчанию выключен**.
-  Запускает локальную CPU-модель эмбеддингов и сочетает dense retrieval с BM25,
-  сокращая контекст поиска по сравнению с агентами только на grep/find. Включите
-  через `devo mcp enable code_search` или TUI `/mcps`.
+  сервер (`code_search` / `devo-code-search-mcp`), **по умолчанию не устанавливается и
+  выключен**. Запускает локальную CPU-модель эмбеддингов и сочетает dense retrieval с BM25,
+  сокращая контекст поиска по сравнению с агентами только на grep/find. Установите через
+  `--with-code-search`, затем включите через `devo mcp enable code_search` или TUI `/mcps`.
 
 ## Проверенные модели
 
@@ -98,7 +98,7 @@ Devo предназначен для команд, которым нужен cod
 
 Встроенный каталог моделей Devo содержит проверенные определения моделей для
 Qwen, Kimi, MiniMax, GLM и DeepSeek. Endpoint поставщиков остаются настраиваемыми
-через provider/model bindings.
+через provider/model Connections.
 
 ## Проверенные платформы
 
@@ -167,25 +167,25 @@ Windows:
 irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
-Онлайн-установщик размещает `devo` в Devo home directory, устанавливает
-вспомогательный `rg` sidecar для быстрого поиска по репозиторию и поддерживает
-дополнительную настройку локальной модели, которую использует `code_search`.
+Онлайн-установщик размещает `devo` в Devo home directory и устанавливает
+вспомогательный `rg` sidecar для быстрого поиска по репозиторию. По умолчанию
+`code_search` MCP и его локальная модель не устанавливаются.
 
 <details>
-<summary>Необязательно: предварительно установить локальную модель <code>code_search</code></summary>
+<summary>Необязательно: установить <code>code_search</code> MCP и локальную модель</summary>
 
-Используйте это только если хотите скачать модель Hugging Face во время установки.
+Используйте это только если хотите установить code-search MCP и скачать модель Hugging Face во время установки.
 
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 Windows:
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 </details>
@@ -221,15 +221,15 @@ devo resume <session-id>
 ## Конфигурация
 
 `devo onboard` - рекомендуемый путь настройки. Он записывает provider и model
-bindings в `config.toml` и сохраняет API key в пользовательском `auth.json`.
+Connections и каталог моделей в `providers.json`, а API key сохраняет в пользовательском `auth.json`.
 
 Чтобы вручную подключить свой ключ и кастомную модель:
 
-1. Определите параметры `[model.<slug>]`, `[providers.<id>]` и
-   `[model_bindings.<id>]` в `config.toml`.
+1. Определите `provider.<id>.models.<model-id>` в `providers.json` и задайте модель
+   по умолчанию в форме `provider/model`.
 2. Положите секрет в `DEVO_HOME/auth.json` и ссылайтесь на этот credential id из
-   `[providers.<id>].credential` — не пишите сам API key в `config.toml`.
-3. Установите `invocation_method` в соответствии с протоколом endpoint:
+   `provider.<id>.credential` — не пишите сам API key в `providers.json`.
+3. Установите `wire_api` в соответствии с протоколом endpoint:
    `openai_chat_completions`, `openai_responses` или `anthropic_messages`.
 
 Полный пример (параметры кастомной модели + API key) и описание протоколов:
@@ -253,12 +253,12 @@ Devo находится на стадии pre-1.0 и активно развив
 Встроенные метаданные моделей сейчас покрывают семейства Qwen, Kimi, MiniMax,
 GLM и DeepSeek. Любой endpoint модели, который поддерживает OpenAI-compatible
 Chat Completions, OpenAI-compatible Responses или Anthropic Messages API, можно
-подключить через provider/model bindings.
+подключить через provider/model Connections.
 
 ### Как подключить свой API key?
 
 Используйте `devo onboard` или отредактируйте пользовательский `auth.json` и
-укажите этот credential id в `[providers.<id>].credential` в `config.toml`. См.
+укажите этот credential id в `provider.<id>.credential` в `providers.json`. См.
 [Конфигурацию](./docs/configuration.ru.md#свой-api-key).
 
 ### Что выбрать: Desktop app или TUI/CLI?

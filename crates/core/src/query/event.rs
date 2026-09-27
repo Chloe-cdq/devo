@@ -24,14 +24,21 @@ pub enum QueryEvent {
     /// Context compaction replaced the current prompt history.
     ContextCompactionCompleted {
         /// Full compacted history (summary + preserved suffix), including tool
-        /// pairs. Callers persist snapshots from this before Message-only
-        /// prompt conversion drops non-message items.
+        /// pairs. Prompt reconstruction preserves every retained variant.
         compacted_items: Vec<ResponseItem>,
     },
     /// Context compaction did not replace the current prompt history.
     ContextCompactionFailed {
         /// Human-readable reason the compaction did not complete.
         message: String,
+    },
+    /// Assembled request context estimate (before / between model legs).
+    ///
+    /// Emitted after each prompt build so UIs can refresh context occupancy
+    /// when tools finish and the next request is assembled — not only at
+    /// turn end.
+    ContextEstimate {
+        breakdown: crate::RawContextBreakdown,
     },
     /// Incremental text from the assistant.
     TextDelta(String),
@@ -50,6 +57,13 @@ pub enum QueryEvent {
         name: String,
         /// Fully decoded tool input payload, when available.
         input: serde_json::Value,
+    },
+    /// Incremental tool-call input JSON from the provider stream.
+    ToolUseInputDelta {
+        /// Stable provider-issued tool use identifier.
+        id: String,
+        /// Partial JSON fragment to append to the in-flight tool input.
+        partial_json: String,
     },
     /// A locally executed tool has passed permission checks and started running.
     ToolExecutionStart {
@@ -117,6 +131,9 @@ pub enum QueryProviderRetryPhase {
 
 #[derive(Clone, Default)]
 pub struct QueryOptions {
+    pub output_store: Option<Arc<devo_tools::output_store::OutputStore>>,
+    /// Acknowledged journal for durable sessions; absent for ephemeral callers.
+    pub journal: Option<Arc<dyn crate::durable_execution::ToolIntentJournal>>,
     pub cancel_token: Option<CancellationToken>,
     /// Optional provider used only for compaction summaries. Servers use this
     /// seam to attach Compaction metering without misclassifying the main

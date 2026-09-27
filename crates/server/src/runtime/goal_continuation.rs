@@ -264,7 +264,10 @@ impl ServerRuntime {
         })
     }
 
-    async fn pause_goal_continuation_after_failed_turn(
+    /// Pause an active goal when the latest turn failed after the goal was last
+    /// updated. Exposed so post-turn scheduling can still pause goals even when
+    /// recovery availability blocks auto-continuation.
+    pub(crate) async fn pause_goal_continuation_after_failed_turn(
         &self,
         session_id: SessionId,
         session_handle: &SessionHandle,
@@ -449,9 +452,8 @@ impl ServerRuntime {
             .await
             .remove(&turn_id);
 
-        // Turns run inline on the session actor. Do not touch the actor mailbox
-        // while ExecuteTurn is in flight — cancel the turn token and wait for
-        // `finalize_executed_turn` to emit lifecycle events instead.
+        // Interrupt via the cancel token and wait for
+        // `finalize_executed_turn` / `MergeTurn` to emit lifecycle events.
         if self.runtime_active_turn_id(session_id).await != Some(turn_id) {
             let already_terminal = self.recent_terminal_turn_status(turn_id).await.is_some();
             if already_terminal {

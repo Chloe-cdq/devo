@@ -31,30 +31,8 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        // Dual-shape boundary (L2-DES-APP-008 DD-4): the canonical shape is
-        // detected by its required `idempotencyKey`.
-        if params.get("idempotencyKey").is_some() {
-            return self
-                .handle_native_turn_start(connection_id, request_id, params)
-                .await;
-        }
-        let params: TurnStartParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid turn/start params: {error}"),
-                );
-            }
-        };
-        self.handle_turn_start_with_queue_policy(
-            connection_id,
-            request_id,
-            params,
-            TurnStartQueuePolicy::Queue,
-        )
-        .await
+        self.handle_native_turn_start(connection_id, request_id, params)
+            .await
     }
 
     /// Native `turn/start` (L2-DES-APP-008 Phase B): lean params (input +
@@ -79,7 +57,7 @@ impl ServerRuntime {
                     );
                 }
             };
-        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+        let Ok(session_id) = SessionId::try_from(params.session_id.as_str()) else {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::SessionNotFound,
@@ -114,7 +92,7 @@ impl ServerRuntime {
             input.push(converted);
         }
         // Idempotent replay: return the originally started turn snapshot.
-        let idempotency_key = (legacy_session_id, params.idempotency_key.clone());
+        let idempotency_key = (session_id, params.idempotency_key.clone());
         if let Some(turn) = self
             .turn_start_idempotency
             .lock()
@@ -129,8 +107,19 @@ impl ServerRuntime {
             .expect("serialize canonical turn/start response");
         }
 
-        let legacy_params = TurnStartParams {
-            session_id: legacy_session_id,
+        let collaboration_mode = match self.session(session_id).await {
+            Some(handle) => handle.collaboration_mode().await.unwrap_or_default(),
+            None => Default::default(),
+        };
+        if let Err(error) = self.cancel_saved_turn(session_id).await {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                error.to_string(),
+            );
+        }
+        let turn_params = TurnStartParams {
+            session_id,
             input,
             model: None,
             model_binding_id: None,
@@ -138,14 +127,14 @@ impl ServerRuntime {
             sandbox: None,
             approval_policy: None,
             cwd: None,
-            collaboration_mode: Default::default(),
+            collaboration_mode,
             execution_mode: Default::default(),
         };
         let response = self
             .handle_turn_start_with_queue_policy(
                 connection_id,
                 request_id.clone(),
-                legacy_params,
+                turn_params,
                 TurnStartQueuePolicy::RejectActive,
             )
             .await;
@@ -163,14 +152,11 @@ impl ServerRuntime {
                 "session already has an active prompt turn",
             );
         };
-        // `spawn_active_turn_task` has already queued `ExecuteTurn`, so the
-        // actor mailbox is unresponsive until that turn ends. Read the
-        // runtime registry instead of `session_turn_reservation_snapshot`
-        // (mailbox) or the TUI's second `turn/start` times out while the
-        // turn continues in the background.
+        // Prefer runtime registry metadata over a mailbox reservation read:
+        // `spawn_active_turn_task` registers before the turn task checkouts.
         let Some(metadata) = self
             .active_turns
-            .active_turn_metadata(legacy_session_id)
+            .active_turn_metadata(session_id)
             .await
             .filter(|turn| turn.turn_id == turn_id)
         else {
@@ -217,8 +203,8 @@ impl ServerRuntime {
             );
         };
         // Registry presence is mailbox-free: `spawn_active_turn_task`
-        // records the turn before `ExecuteTurn` registers a stream. Native
-        // busy clients must reject here instead of waiting on the actor.
+        // records the turn before the stream is registered. Native busy
+        // clients must reject here instead of waiting on the actor.
         if queue_policy == TurnStartQueuePolicy::RejectActive
             && self
                 .runtime_active_turn_id(params.session_id)
@@ -232,10 +218,7 @@ impl ServerRuntime {
             );
         }
         // A busy session needs no state-change gate to enqueue: the queue
-        // mutex is the serialization point for queue ops, and the gate can
-        // be held for the rest of a turn (final title generation parking
-        // on the busy actor mailbox) or across a compaction provider call,
-        // which would park every push behind it without responding.
+        // mutex is the serialization point for queue ops (01 §4.3).
         let Some(mut reservation) = self
             .session_turn_reservation_snapshot(params.session_id)
             .await
@@ -294,23 +277,10 @@ impl ServerRuntime {
                     .config_store
                     .lock()
                     .expect("app config store mutex should not be poisoned");
-                let provider_config = &config_store.effective_config().provider;
-                match provider_config.model_bindings.get(binding_id) {
-                    None => Some(format!("model binding `{binding_id}` does not exist")),
-                    Some(binding) if !binding.enabled => {
-                        Some(format!("model binding `{binding_id}` is disabled"))
-                    }
-                    Some(binding) => match provider_config.providers.get(&binding.provider) {
-                        None => Some(format!(
-                            "model binding `{binding_id}` references missing provider `{}`",
-                            binding.provider
-                        )),
-                        Some(provider) if !provider.enabled => Some(format!(
-                            "model binding `{binding_id}` references disabled provider `{}`",
-                            binding.provider
-                        )),
-                        Some(_) => None,
-                    },
+                let provider_config = config_store.effective_config().provider_catalog_config();
+                match provider_config.resolve_model(Some(binding_id)) {
+                    Ok(_) => None,
+                    Err(error) => Some(error.to_string()),
                 }
             };
             if let Some(error) = binding_error {
@@ -398,11 +368,9 @@ impl ServerRuntime {
                 now,
             );
             let queued_input_id = item.id;
-            // Push into the shared queue directly instead of the actor
-            // mailbox: a busy actor does not service its mailbox until the
-            // turn finishes, and callers must see their entry synchronously
-            // (01 §4.3 last-write-wins). The actor reads the same shared
-            // queue at drain time.
+            // Push into the shared queue directly (01 §4.3 last-write-wins):
+            // callers must see their entry synchronously at decision points.
+            // The actor / turn drain reads the same shared queue.
             reservation
                 .pending_turn_queue
                 .lock()
@@ -515,8 +483,6 @@ impl ServerRuntime {
             )
             .await;
         }
-        self.maybe_start_title_generation_from_user_input(params.session_id, &display_input)
-            .await;
         if let Some(persistence) = session_handle.turn_persistence_snapshot().await
             && persistence.record.is_some()
             && let Err(error) = self
@@ -537,6 +503,12 @@ impl ServerRuntime {
             self.register_turn_spawn_snapshot(params.session_id, turn.turn_id, Arc::new(spawn))
                 .await;
         }
+
+        // First untitled session: record first user input and apply an
+        // immediate heuristic title. LLM polish runs after the turn merges via
+        // notify_title_polish — never inline here (client turn/start timeouts).
+        self.prepare_title_from_user_input(params.session_id, &display_input)
+            .await;
 
         let runtime = Arc::clone(self);
         let turn_for_task = turn.clone();

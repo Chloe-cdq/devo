@@ -12,10 +12,12 @@ pub mod event;
 pub mod goal;
 pub mod ids;
 pub mod item;
+pub mod legacy_projector;
 pub mod methods;
 pub mod model;
 pub mod page;
 pub mod patch;
+pub mod plan_parse;
 pub mod queue;
 pub mod rpc_admin;
 pub mod rpc_memory;
@@ -27,3 +29,9 @@ pub mod session;
 pub mod turn;
 pub mod usage;
 pub mod wire_projector;
+
+pub use legacy_projector::legacy_wire_from_native_item;
+pub use plan_parse::{
+    plan_entries_from_plan_text, plan_entries_from_plan_text_or_single,
+    plan_entries_from_update_plan_json, plan_entry_from_json, plan_step_status_from_str,
+};

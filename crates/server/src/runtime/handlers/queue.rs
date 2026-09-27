@@ -68,15 +68,15 @@ impl ServerRuntime {
             );
         };
 
-        // Idle vs busy is decided by the exact turn/start path: it starts a
-        // new turn when the session is idle and queues otherwise (the same
-        // operation turn/start uses today, so the two entry points can
-        // never disagree).
+        // Idle vs busy is decided by the shared admission path: it starts a
+        // new turn when the session is idle and queues otherwise. The
+        // request itself stays Native; the internal domain params are not a
+        // second wire protocol.
         let response = self
-            .handle_turn_start_for_connection(
+            .handle_turn_start_with_queue_policy(
                 Some(connection_id),
                 request_id.clone(),
-                serde_json::to_value(TurnStartParams {
+                TurnStartParams {
                     session_id: legacy_session_id,
                     input: input_items,
                     model: None,
@@ -87,8 +87,8 @@ impl ServerRuntime {
                     cwd: None,
                     collaboration_mode: CollaborationMode::default(),
                     execution_mode: TurnExecutionMode::default(),
-                })
-                .expect("serialize turn/start params"),
+                },
+                TurnStartQueuePolicy::Queue,
             )
             .await;
         if response.get("error").is_some() {
@@ -447,11 +447,8 @@ impl ServerRuntime {
             }
         };
         let pending_id = PendingInputId::from(queue_item_uuid);
-        // Remove directly through the shared queue, not the actor mailbox:
-        // the actor loop is busy for the whole duration of a running turn
-        // (`ExecuteTurn` is inline in the actor), so a mailbox round-trip
-        // would block the RPC until the turn ends. The queue mutex is the
-        // per-session serialization point for queue ops (01 §4.3).
+        // Remove through the shared queue mutex (01 §4.3 last-write-wins),
+        // not an actor command: queue ops must stay zero-hop at decision points.
         let Some(reservation) = self
             .session_turn_reservation_snapshot(legacy_session_id)
             .await
@@ -899,6 +896,7 @@ pub(crate) fn native_turn_from_metadata(turn: &crate::turn::TurnMetadata) -> Nat
             } else {
                 turn.request_model.clone()
             },
+            variant: None,
             reasoning_effort: turn
                 .reasoning_effort_selection
                 .as_deref()

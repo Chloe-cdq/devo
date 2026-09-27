@@ -463,34 +463,40 @@ fn webfetch_schema() -> JsonSchema {
 }
 
 fn app_config_uses_local_web_search(config: &AppConfig) -> bool {
+    let provider_catalog = config.provider_catalog_config();
     config.tools.web_search.mode == devo_config::WebSearchMode::Local
-        || config.provider.providers.values().any(|provider| {
+        || provider_catalog.providers.values().any(|provider| {
             provider
                 .web_search
                 .as_ref()
                 .is_some_and(|web_search| web_search.mode == devo_config::WebSearchMode::Local)
         })
-        || config.provider.model_bindings.values().any(|binding| {
-            binding
-                .web_search
-                .as_ref()
-                .is_some_and(|web_search| web_search.mode == devo_config::WebSearchMode::Local)
+        || provider_catalog.providers.values().any(|provider| {
+            provider.models.values().any(|model| {
+                model
+                    .web_search
+                    .as_ref()
+                    .is_some_and(|web_search| web_search.mode == devo_config::WebSearchMode::Local)
+            })
         })
 }
 
 fn app_config_uses_local_web_fetch(config: &AppConfig) -> bool {
+    let provider_catalog = config.provider_catalog_config();
     config.tools.web_fetch.mode == devo_config::WebFetchMode::Local
-        || config.provider.providers.values().any(|provider| {
+        || provider_catalog.providers.values().any(|provider| {
             provider
                 .web_fetch
                 .as_ref()
                 .is_some_and(|web_fetch| web_fetch.mode == devo_config::WebFetchMode::Local)
         })
-        || config.provider.model_bindings.values().any(|binding| {
-            binding
-                .web_fetch
-                .as_ref()
-                .is_some_and(|web_fetch| web_fetch.mode == devo_config::WebFetchMode::Local)
+        || provider_catalog.providers.values().any(|provider| {
+            provider.models.values().any(|model| {
+                model
+                    .web_fetch
+                    .as_ref()
+                    .is_some_and(|web_fetch| web_fetch.mode == devo_config::WebFetchMode::Local)
+            })
         })
 }
 
@@ -761,7 +767,7 @@ pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
     plan.push(
         ToolSpec {
             name: "request_user_input".to_string(),
-            description: "Ask the user one or more Plan Mode questions and wait for the response."
+            description: "Ask the user one or more questions and wait for the response."
                 .to_string(),
             input_schema: question_schema(),
             output_mode: ToolOutputMode::StructuredJson,

@@ -15,7 +15,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
@@ -132,8 +131,9 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     let runtime = build_runtime(data_root.path(), router.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session = start_session(&runtime, connection_id, data_root.path()).await?;
+    let session_id = SessionId::try_from(session.id.as_str())?;
 
-    let failed_turn_id = start_turn(&runtime, connection_id, session.session_id, 3).await?;
+    let failed_turn_id = start_turn(&runtime, connection_id, session_id, 3).await?;
     let mut retry_statuses = Vec::new();
     let mut failed_error = None;
     let mut failed_completion_count = 0;
@@ -175,7 +175,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
 
     assert_eq!(
         retry_statuses,
-        expected_retry_statuses(session.session_id, failed_turn_id)
+        expected_retry_statuses(session_id, failed_turn_id)
     );
     assert_eq!(
         failed_error,
@@ -218,58 +218,38 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             serde_json::json!({
                 "id": 5,
                 "method": "session/resume",
-                "params": { "session_id": session.session_id }
+                "params": { "sessionId": session_id }
             }),
         )
         .await
         .context("session/resume after failed turn")?;
     let resume = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
-    let terminal_history = resume
-        .history_items
-        .iter()
-        .filter(|item| {
-            matches!(
-                item.kind,
-                devo_protocol::SessionHistoryItemKind::Error
-                    | devo_protocol::SessionHistoryItemKind::TurnSummary
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let failed_turn = resume.latest_turn.context("latest failed turn")?;
-    let duration_secs = failed_turn.completed_at.and_then(|completed| {
-        let seconds = (completed - failed_turn.started_at).num_seconds();
-        (seconds > 0).then_some(seconds as u64)
-    });
-    assert_eq!(
-        terminal_history,
-        vec![
-            devo_protocol::SessionHistoryItem::new(
-                None,
-                devo_protocol::SessionHistoryItemKind::Error,
-                "PROVIDER_SERVER_ERROR".to_string(),
-                format!(
-                    "model provider error: provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
-                ),
-            ),
-            devo_protocol::SessionHistoryItem {
-                tool_call_id: None,
-                kind: devo_protocol::SessionHistoryItemKind::TurnSummary,
-                title: failed_turn.model,
-                body: "failed".to_string(),
-                tool_io: None,
-                metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
-                    collaboration_mode: devo_protocol::CollaborationMode::Build,
-                }),
-                duration_ms: duration_secs,
-            },
-        ]
+    let turns_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 6,
+                "method": "session/turns/list",
+                "params": { "sessionId": session.id }
+            }),
+        )
+        .await
+        .context("session/turns/list response")?;
+    let turns: devo_protocol::native::page::Page<devo_protocol::native::turn::Turn> =
+        serde_json::from_value(turns_response["result"].clone())?;
+    assert!(
+        turns
+            .data
+            .iter()
+            .any(|turn| turn.id.as_str() == failed_turn_id.to_string()),
+        "latest failed turn should be listed"
     );
+    assert_eq!(resume.session.id.as_str(), session_id.to_string());
 
-    let successful_turn_id = start_turn(&runtime, connection_id, session.session_id, 4).await?;
+    let successful_turn_id = start_turn(&runtime, connection_id, session_id, 4).await?;
     wait_for_turn_completed(&mut notifications_rx, successful_turn_id).await?;
     let requests = router.requests();
     let successful_request = requests.last().context("successful provider request")?;
@@ -294,15 +274,14 @@ fn expected_retry_statuses(session_id: SessionId, turn_id: TurnId) -> Vec<serde_
             "error": {
                 "errorCode": "PROVIDER_TEMPORARY_FAILURE",
                 "message": format!(
-                    "Retrying provider request in {:.1}s",
-                    Duration::from_millis(backoff_ms).as_secs_f64()
+                    "provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
                 ),
                 "retryable": true,
                 "retryAfterMs": backoff_ms,
                 "requiresSnapshot": false
             },
             "provider": "openai",
-            "model": "default-model",
+            "model": "openai/provider-model",
             "phase": "scheduled"
         }));
         statuses.push(serde_json::json!({
@@ -313,13 +292,15 @@ fn expected_retry_statuses(session_id: SessionId, turn_id: TurnId) -> Vec<serde_
             "nextDelayMs": 0,
             "error": {
                 "errorCode": "PROVIDER_TEMPORARY_FAILURE",
-                "message": "Retrying provider request now",
+                "message": format!(
+                    "provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
+                ),
                 "retryable": true,
                 "retryAfterMs": 0,
                 "requiresSnapshot": false
             },
             "provider": "openai",
-            "model": "default-model",
+            "model": "openai/provider-model",
             "phase": "resumed"
         }));
     }
@@ -381,7 +362,6 @@ fn build_runtime(
                 display_name: "Default Model".to_string(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -426,25 +406,43 @@ async fn start_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     cwd: &std::path::Path,
-) -> Result<devo_server::SessionMetadata> {
+) -> Result<devo_protocol::native::session::Session> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": null,
-                    "model_binding_id": "main"
+                    "idempotencyKey": "provider-failure-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(response)?;
+        .context("session/new response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(response)?;
+    let session_id = response.result.session.id.clone();
+    let metadata_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "modelBindingId": "main"
+                }
+            }),
+        )
+        .await
+        .context("session/metadata/update response")?;
+    let _: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+    > = serde_json::from_value(metadata_response)?;
     Ok(response.result.session)
 }
 
@@ -461,17 +459,17 @@ async fn start_turn(
                 "id": id,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "try the provider" }],
-                    "model_binding_id": "main"
+                    "idempotencyKey": format!("provider-failure-turn-{id}")
                 }
             }),
         )
         .await
         .context("turn/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let response: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response)?;
-    response.result.turn_id().context("turn should start")
+    Ok(TurnId::try_from(response.result.turn.id.as_str())?)
 }
 
 async fn wait_for_turn_completed(
@@ -495,7 +493,7 @@ async fn wait_for_turn_completed(
 
 fn rollout_path(
     data_root: &std::path::Path,
-    session: &devo_server::SessionMetadata,
+    session: &devo_protocol::native::session::Session,
 ) -> std::path::PathBuf {
     let timestamp = session
         .created_at
@@ -506,7 +504,7 @@ fn rollout_path(
         .join(format!("{:04}", session.created_at.year()))
         .join(format!("{:02}", session.created_at.month()))
         .join(format!("{:02}", session.created_at.day()))
-        .join(format!("rollout-{timestamp}-{}.jsonl", session.session_id))
+        .join(format!("rollout-{timestamp}-{}.jsonl", session.id))
 }
 
 fn model_response(text: &str) -> ModelResponse {
@@ -517,4 +515,66 @@ fn model_response(text: &str) -> ModelResponse {
         usage: Usage::default(),
         metadata: ResponseMetadata::default(),
     }
+}
+
+/// Trace: L2-DES-CONTEXT-004. Recovery preserves the request and turn identity.
+#[tokio::test(start_paused = true)]
+async fn continue_failed_turn_reuses_context_and_is_idempotent() -> Result<()> {
+    let data_root = TempDir::new()?;
+    write_provider_config(data_root.path())?;
+    let router = Arc::new(ExhaustingRouter::default());
+    let runtime = build_runtime(data_root.path(), router.clone())?;
+    let (connection_id, mut notifications) = initialize_connection(&runtime).await?;
+    let session = start_session(&runtime, connection_id, data_root.path()).await?;
+    let session_id = SessionId::try_from(session.id.as_str())?;
+    let turn_id = start_turn(&runtime, connection_id, session_id, 21).await?;
+    let recovery = timeout(Duration::from_secs(30), async {
+        while let Some(event) = notifications.recv().await {
+            if event["method"] == "turn/recoveryUpdated" && event["params"]["recovery"].is_object()
+            {
+                return event["params"]["recovery"].clone();
+            }
+        }
+        panic!("notification stream closed");
+    })
+    .await
+    .context("recovery notification")?;
+    assert_eq!(recovery["turnId"], serde_json::json!(turn_id));
+    let request = serde_json::json!({
+        "id": 22, "method": "turn/resume", "params": {
+            "sessionId": session_id, "expectedTurnId": turn_id,
+            "recoveryRevision": recovery["revision"], "idempotencyKey": "resume-once"
+        }
+    });
+    let first = runtime
+        .handle_incoming(connection_id, request.clone())
+        .await
+        .context("continue response")?;
+    assert!(first.get("error").is_none(), "{first}");
+    let duplicate = runtime
+        .handle_incoming(connection_id, request)
+        .await
+        .context("duplicate continue response")?;
+    assert_eq!(duplicate, first);
+    assert_eq!(first["result"]["turn"]["id"], serde_json::json!(turn_id));
+    timeout(Duration::from_secs(30), async {
+        while let Some(event) = notifications.recv().await {
+            if event["method"] == "turn/completed"
+                && event["params"]["turn"]["status"] == "completed"
+            {
+                assert_eq!(event["params"]["turn"]["id"], serde_json::json!(turn_id));
+                return;
+            }
+        }
+        panic!("notification stream closed");
+    })
+    .await
+    .context("resumed completion")?;
+    let requests = router.requests();
+    assert_eq!(requests.len(), FAILING_ATTEMPTS + 1);
+    assert_eq!(
+        serde_json::to_value(&requests.first().unwrap().messages)?,
+        serde_json::to_value(&requests.last().unwrap().messages)?
+    );
+    Ok(())
 }

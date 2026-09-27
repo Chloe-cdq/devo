@@ -1,7 +1,7 @@
-import { Loader2Icon } from "lucide-react"
 import { memo, useCallback, type ReactNode } from "react"
 import type { ToolPart } from "../../lib/types"
-import { ChatToolCall, describeToolGroup, isGroupRunning } from "./chat-tool-call"
+import { ChatToolCall, describeToolGroup } from "./chat-tool-call"
+import { CompactionStatusDivider } from "./compaction-status-divider"
 import {
 	buildProcessTimeline,
 	isReasoningPartActivelyStreaming,
@@ -37,29 +37,144 @@ const TranscriptToolGroupRow = memo(function TranscriptToolGroupRow({
 	turnWorking?: boolean
 }) {
 	const description = describeToolGroup(category, tools, projectRoot)
-	const running = isGroupRunning(tools, turnWorking)
 
 	return (
 		<TranscriptDisclosure defaultOpen={defaultOpen} open={open} onOpenChange={onOpenChange}>
-			<TranscriptDisclosureTrigger
-				label={<span>{description}</span>}
-				trailing={
-					running ? (
-						<Loader2Icon className="size-3 animate-spin text-muted-foreground/30" />
-					) : undefined
-				}
-			/>
-			<TranscriptDisclosureContent rail className="space-y-0.5">
+			<TranscriptDisclosureTrigger label={<span>{description}</span>} />
+			<TranscriptDisclosureContent rail className="space-y-0">
 				{tools.map((tool) => (
 					<ChatToolCall
 						key={tool.id}
 						part={tool}
 						projectRoot={projectRoot}
 						turnWorking={turnWorking}
+						compact
 					/>
 				))}
 			</TranscriptDisclosureContent>
 		</TranscriptDisclosure>
+	)
+})
+
+const ProcessTimelineTextRow = memo(function ProcessTimelineTextRow({
+	children,
+}: {
+	children: ReactNode
+}) {
+	return <div>{children}</div>
+})
+
+const ProcessTimelineThoughtRow = memo(function ProcessTimelineThoughtRow({
+	rowId,
+	part,
+	isStreaming,
+	defaultExpandAll,
+	expanded,
+	onToggleRow,
+}: {
+	rowId: string
+	part: Extract<ProcessTimelineItem, { kind: "thought" }>["part"]
+	isStreaming: boolean
+	defaultExpandAll: boolean
+	expanded?: boolean
+	onToggleRow?: (rowId: string, open: boolean) => void
+}) {
+	const handleOpenChange = useCallback(
+		(open: boolean) => {
+			onToggleRow?.(rowId, open)
+		},
+		[onToggleRow, rowId],
+	)
+
+	return (
+		<ThoughtRow
+			defaultOpen={defaultExpandAll}
+			isStreaming={isStreaming}
+			onOpenChange={onToggleRow ? handleOpenChange : undefined}
+			open={expanded}
+			part={part}
+		/>
+	)
+})
+
+const ProcessTimelineToolRow = memo(function ProcessTimelineToolRow({
+	rowId,
+	part,
+	defaultExpandAll,
+	expanded,
+	onToggleRow,
+	onDeleteToolPart,
+	projectRoot,
+	turnHasError,
+	working,
+}: {
+	rowId: string
+	part: ToolPart
+	defaultExpandAll: boolean
+	expanded?: boolean
+	onToggleRow?: (rowId: string, open: boolean) => void
+	onDeleteToolPart?: (part: ToolPart) => Promise<void>
+	projectRoot?: string | null
+	turnHasError?: boolean
+	working: boolean
+}) {
+	const handleOpenChange = useCallback(
+		(open: boolean) => {
+			onToggleRow?.(rowId, open)
+		},
+		[onToggleRow, rowId],
+	)
+
+	return (
+		<ChatToolCall
+			defaultOpen={defaultExpandAll}
+			onDelete={onDeleteToolPart}
+			open={expanded}
+			onOpenChange={onToggleRow ? handleOpenChange : undefined}
+			part={part}
+			projectRoot={projectRoot}
+			turnHasError={turnHasError}
+			turnWorking={working}
+		/>
+	)
+})
+
+const ProcessTimelineToolGroupRow = memo(function ProcessTimelineToolGroupRow({
+	rowId,
+	category,
+	tools,
+	defaultOpen,
+	expanded,
+	onToggleRow,
+	projectRoot,
+	working,
+}: {
+	rowId: string
+	category: ToolCategory
+	tools: ToolPart[]
+	defaultOpen: boolean
+	expanded?: boolean
+	onToggleRow?: (rowId: string, open: boolean) => void
+	projectRoot?: string | null
+	working: boolean
+}) {
+	const handleOpenChange = useCallback(
+		(open: boolean) => {
+			onToggleRow?.(rowId, open)
+		},
+		[onToggleRow, rowId],
+	)
+
+	return (
+		<TranscriptToolGroupRow
+			category={category}
+			defaultOpen={defaultOpen}
+			onOpenChange={onToggleRow ? handleOpenChange : undefined}
+			open={expanded}
+			projectRoot={projectRoot}
+			tools={tools}
+			turnWorking={working}
+		/>
 	)
 })
 
@@ -98,58 +213,63 @@ export const ProcessTimelineView = memo(function ProcessTimelineView({
 	)
 
 	return (
-		<div className="space-y-1">
+		<div className="flex flex-col gap-0.5">
 			{items.map((item, index) => {
 				const rowId = processTimelineRowId(item, index)
 
 				if (item.kind === "text") {
-					return <div key={rowId}>{renderText(item)}</div>
+					return (
+						<ProcessTimelineTextRow key={rowId}>{renderText(item)}</ProcessTimelineTextRow>
+					)
 				}
 
 				if (item.kind === "thought") {
 					const isStreaming = working && isReasoningPartActivelyStreaming(orderedParts, item.part)
 					return (
-						<ThoughtRow
+						<ProcessTimelineThoughtRow
 							key={rowId}
-							defaultOpen={defaultExpandAll}
+							defaultExpandAll={defaultExpandAll}
+							expanded={expandedRowIds ? expandedRowIds.has(rowId) : undefined}
 							isStreaming={isStreaming}
-							onOpenChange={
-								onToggleRow ? (open) => onToggleRow(rowId, open) : undefined
-							}
-							open={expandedRowIds ? expandedRowIds.has(rowId) : undefined}
+							onToggleRow={onToggleRow}
 							part={item.part}
+							rowId={rowId}
 						/>
 					)
 				}
 
 				if (item.kind === "tool") {
 					return (
-						<ChatToolCall
+						<ProcessTimelineToolRow
 							key={rowId}
-							defaultOpen={defaultExpandAll}
-							onDelete={onDeleteToolPart}
-							open={expandedRowIds ? expandedRowIds.has(rowId) : undefined}
-							onOpenChange={
-								onToggleRow ? (open) => onToggleRow(rowId, open) : undefined
-							}
+							defaultExpandAll={defaultExpandAll}
+							expanded={expandedRowIds ? expandedRowIds.has(rowId) : undefined}
+							onDeleteToolPart={onDeleteToolPart}
+							onToggleRow={onToggleRow}
 							part={item.part}
 							projectRoot={projectRoot}
+							rowId={rowId}
 							turnHasError={turnHasError}
-							turnWorking={working}
+							working={working}
 						/>
 					)
 				}
 
+				if (item.kind === "compaction") {
+					return <CompactionStatusDivider key={rowId} status={item.status} />
+				}
+
 				return (
-					<TranscriptToolGroupRow
+					<ProcessTimelineToolGroupRow
 						key={rowId}
 						category={item.category}
 						defaultOpen={resolveOpen(rowId, defaultExpandAll)}
-						onOpenChange={onToggleRow ? (open) => onToggleRow(rowId, open) : undefined}
-						open={expandedRowIds ? expandedRowIds.has(rowId) : undefined}
+						expanded={expandedRowIds ? expandedRowIds.has(rowId) : undefined}
+						onToggleRow={onToggleRow}
 						projectRoot={projectRoot}
+						rowId={rowId}
 						tools={item.tools}
-						turnWorking={working}
+						working={working}
 					/>
 				)
 			})}

@@ -10,7 +10,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SessionId;
 use devo_core::SkillsConfig;
 use devo_core::tools::AgentToolCoordinator;
@@ -127,7 +126,6 @@ fn build_test_runtime_with_provider(
                 display_name: "test-model".into(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -202,26 +200,26 @@ async fn start_native_session(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": "memory runtime seam test",
-                    "model": "test-model"
+                    "idempotencyKey": uuid::Uuid::new_v4().to_string()
                 }
             }),
         )
         .await
-        .expect("Native session/start response");
-    Ok(
-        serde_json::from_value::<devo_server::SuccessResponse<devo_server::SessionStartResult>>(
-            response,
-        )?
-        .result
-        .session
-        .session_id
-        .to_string(),
-    )
+        .expect("Native session/new response");
+    anyhow::ensure!(
+        response.get("result").is_some(),
+        "session/new failed: {response}"
+    );
+    Ok(serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+    >(response)?
+    .result
+    .session
+    .id
+    .to_string())
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 3 DD-2, DD-13
@@ -760,7 +758,7 @@ async fn root_memory_remember_rejects_stale_item_and_wrong_turn() -> Result<()> 
         turn_ids.push(turn.id.to_string());
         item_ids.push(item_id);
         if index == 0 {
-            release.notify_waiters();
+            release.notify_one();
             loop {
                 let notification =
                     tokio::time::timeout(Duration::from_secs(/*seconds*/ 5), notifications.recv())

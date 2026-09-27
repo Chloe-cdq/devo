@@ -17,7 +17,7 @@ use devo_protocol::native::ids::{ItemId, SessionId, TurnId};
 use devo_protocol::native::item::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalScope, ApprovalTarget, CompactionTrigger,
     ContextUsage, ExecOrigin, ExecutionMode, InternalEntry, Item, ItemEnvelope, ItemState,
-    PlanEntry, PlanStepStatus, ToolSource, UserInput, UserMessageEntry,
+    ToolSource, UserInput, UserMessageEntry,
 };
 use devo_protocol::native::model::{ModelBinding, PermissionProfile};
 use devo_protocol::native::session::{
@@ -97,6 +97,28 @@ pub struct LegacyProjector {
     /// Approval requests seen so far, keyed by `approval_id`, so a later
     /// decision folds into the same item id/seq with a bumped revision.
     approvals: HashMap<String, ApprovalFold>,
+}
+
+fn permission_profile_from_session_record(
+    record: &crate::conversation::SessionRecord,
+) -> PermissionProfile {
+    use devo_protocol::PermissionPreset;
+
+    match record.permission_preset {
+        Some(PermissionPreset::Default) => PermissionProfile::Default,
+        Some(PermissionPreset::AutoReview) => PermissionProfile::AutoReview,
+        Some(PermissionPreset::FullAccess) => PermissionProfile::FullAccess,
+        None => {
+            let approval_mode = record.approval_mode.to_ascii_lowercase();
+            if approval_mode.contains("auto") {
+                PermissionProfile::AutoReview
+            } else if approval_mode.contains("full") {
+                PermissionProfile::FullAccess
+            } else {
+                PermissionProfile::Default
+            }
+        }
+    }
 }
 
 impl Default for LegacyProjector {
@@ -345,34 +367,36 @@ impl LegacyProjector {
         let record = &line.session;
         self.session_cwd = Some(record.cwd.clone());
 
-        let parent = match record.parent_session_id {
-            Some(parent_id)
-                if record.agent_role.is_some()
-                    || record.agent_nickname.is_some()
-                    || record.agent_path.is_some() =>
-            {
-                Some(SessionParent::Agent {
-                    session_id: SessionId::from_legacy_uuid(legacy_uuid(parent_id)?),
-                    role: record.agent_role.clone(),
-                })
-            }
-            Some(parent_id) => Some(SessionParent::Fork {
+        let parent_id = record.parent_session_id;
+        let is_agent = record.agent_role.is_some()
+            || record.agent_nickname.is_some()
+            || record.agent_path.is_some();
+        let parent = match (parent_id, is_agent) {
+            (Some(parent_id), true) => Some(SessionParent::Agent {
                 session_id: SessionId::from_legacy_uuid(legacy_uuid(parent_id)?),
-                at_turn_id: None,
+                role: record.agent_role.clone(),
             }),
+            _ => None,
+        };
+        // Prefer explicit fork lineage; fall back to legacy rows that stored
+        // user forks in parent_session_id without agent markers.
+        let fork_from_id = match record.fork_from_id {
+            Some(id) => Some(SessionId::from_legacy_uuid(legacy_uuid(id)?)),
+            None if parent_id.is_some() && !is_agent => Some(SessionId::from_legacy_uuid(
+                legacy_uuid(parent_id.expect("checked"))?,
+            )),
+            None => None,
+        };
+        let at_turn_id = match record.fork_at_turn_id {
+            Some(id) => Some(TurnId::from_legacy_uuid(legacy_uuid(id)?)),
             None => None,
         };
 
         // Legacy approval modes were free-form strings ("on-request",
-        // "full-auto", ...); map by keyword, defaulting to the safest profile.
-        let approval_mode = record.approval_mode.to_ascii_lowercase();
-        let permission_profile = if approval_mode.contains("auto") {
-            PermissionProfile::AutoReview
-        } else if approval_mode.contains("full") {
-            PermissionProfile::FullAccess
-        } else {
-            PermissionProfile::Default
-        };
+        // "full-auto", ...). When `permission_preset` is set on the record it
+        // is authoritative — the actor/runtime preset can disagree with the
+        // legacy `approval_mode` default ("on-request").
+        let permission_profile = permission_profile_from_session_record(record);
 
         let git_info = if record.git_sha.is_some()
             || record.git_branch.is_some()
@@ -404,6 +428,8 @@ impl LegacyProjector {
             cwd: record.cwd.clone(),
             additional_directories: record.additional_directories.clone(),
             parent,
+            fork_from_id,
+            at_turn_id,
             ephemeral: false,
             created_at: record.created_at,
             status: SessionStatus::Idle,
@@ -412,11 +438,13 @@ impl LegacyProjector {
             active_turn_id: None,
             queued_count: 0,
             title: record.title.clone(),
+            title_state: record.title_state.clone(),
             model: ModelBinding {
                 provider: record.model_provider.clone(),
                 // Sessions that never recorded a resolved model keep an
                 // explicitly empty slug: unknown, not fabricated.
                 model: record.model.clone().unwrap_or_default(),
+                variant: None,
                 reasoning_effort: record
                     .reasoning_effort_selection
                     .as_deref()
@@ -424,7 +452,11 @@ impl LegacyProjector {
             },
             settings: SessionSettings {
                 permission_profile,
-                reasoning_effort: None,
+                // Raw selection literal (toggle keywords included) so the
+                // canonical snapshot round-trips what the user chose; the
+                // parse into `ModelBinding.reasoning_effort` above only
+                // projects the request-parameter subset.
+                reasoning_effort: record.reasoning_effort_selection.clone(),
                 mode: None,
                 sandbox_profile: (!record.sandbox_policy.is_empty())
                     .then(|| record.sandbox_policy.clone()),
@@ -535,7 +567,7 @@ impl LegacyProjector {
                     turn_id: turn_id.clone(),
                     seq,
                     revision,
-                    created_at: record.timestamp,
+                    created_at: record.started_at.unwrap_or(record.timestamp),
                     updated_at: record.timestamp,
                     state,
                     item,
@@ -586,14 +618,13 @@ impl LegacyProjector {
             },
             TurnItem::Plan(item) => Projected::Item {
                 state: ItemState::Completed,
-                // The legacy plan is a plain rendered text blob; one entry
-                // preserves it verbatim. Cold files are almost always finished
-                // turns, so the step is marked completed.
+                // Structured `update_plan` JSON expands into one entry per
+                // step. Proposed Plan markdown stays a single completed entry.
                 item: Item::Plan {
-                    entries: vec![PlanEntry {
-                        step: item.text.clone(),
-                        status: PlanStepStatus::Completed,
-                    }],
+                    entries:
+                        devo_protocol::native::plan_parse::plan_entries_from_plan_text_or_single(
+                            item.text.clone(),
+                        ),
                 },
             },
             TurnItem::Reasoning(item) => Projected::Item {
@@ -815,26 +846,35 @@ pub fn canonical_turn_from_record(record: &TurnRecord) -> Result<Turn, LegacyPro
         projected
     });
 
-    let usage = record.usage.as_ref().map(|usage| CanonicalTurnUsage {
-        query: UsageTotals {
-            total_tokens: u64::from(
-                usage
-                    .total_tokens
-                    .unwrap_or(usage.input_tokens + usage.output_tokens),
-            ),
-            input_tokens: u64::from(usage.input_tokens),
-            output_tokens: u64::from(usage.output_tokens),
-            reasoning_tokens: u64::from(usage.reasoning_output_tokens.unwrap_or(0)),
-            cache_read_input_tokens: u64::from(usage.cache_read_input_tokens.unwrap_or(0)),
-            cache_creation_input_tokens: u64::from(usage.cache_creation_input_tokens.unwrap_or(0)),
-            call_count: 0,
-            // The provider reported usage, so the turn had at least one
-            // metered call.
-            metered_call_count: 1,
-            ..UsageTotals::default()
-        },
-        overhead: UsageTotals::default(),
-    });
+    // Prefer latest-query usage when present: that is the display total the
+    // context bar and resume path need. Aggregate `usage` remains only as a
+    // fallback for older rollouts that never recorded a per-query snapshot.
+    let usage = record
+        .latest_query_usage
+        .as_ref()
+        .or(record.usage.as_ref())
+        .map(|usage| CanonicalTurnUsage {
+            query: UsageTotals {
+                total_tokens: u64::from(
+                    usage
+                        .total_tokens
+                        .unwrap_or(usage.input_tokens + usage.output_tokens),
+                ),
+                input_tokens: u64::from(usage.input_tokens),
+                output_tokens: u64::from(usage.output_tokens),
+                reasoning_tokens: u64::from(usage.reasoning_output_tokens.unwrap_or(0)),
+                cache_read_input_tokens: u64::from(usage.cache_read_input_tokens.unwrap_or(0)),
+                cache_creation_input_tokens: u64::from(
+                    usage.cache_creation_input_tokens.unwrap_or(0),
+                ),
+                call_count: 0,
+                // The provider reported usage, so the turn had at least one
+                // metered call.
+                metered_call_count: 1,
+                ..UsageTotals::default()
+            },
+            overhead: UsageTotals::default(),
+        });
 
     Ok(Turn {
         id: TurnId::from_legacy_uuid(legacy_uuid(record.id)?),
@@ -852,6 +892,7 @@ pub fn canonical_turn_from_record(record: &TurnRecord) -> Result<Turn, LegacyPro
             } else {
                 record.request_model.clone()
             },
+            variant: None,
             reasoning_effort: record
                 .reasoning_effort_selection
                 .as_deref()
@@ -882,6 +923,7 @@ fn legacy_uuid(id: impl Display) -> Result<Uuid, LegacyProjectError> {
 /// Rebuilds a legacy approval request payload from the canonical approval
 /// parts (the inverse of [`approval_request_item`]); used when hydrating the
 /// fold map from an on-disk v2 approval envelope.
+#[allow(clippy::too_many_arguments)]
 fn approval_request_from_parts(
     approval_id: &str,
     action_summary: &str,

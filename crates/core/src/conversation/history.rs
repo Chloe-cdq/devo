@@ -31,6 +31,14 @@ pub struct CanonicalHistory {
     pub turns: Vec<Turn>,
     /// Item envelopes in ascending `seq` order, approval folds applied.
     pub items: Vec<ItemEnvelope>,
+    /// Latest approval-resume checkpoints keyed by approval id (last wins).
+    pub approval_checkpoints: std::collections::HashMap<
+        String,
+        crate::durable_record::TurnApprovalCheckpointRecordedRecord,
+    >,
+    /// Latest context-window occupancy observed while reading the rollout
+    /// (turn extras or compaction snapshots), when present.
+    pub latest_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
 }
 
 /// Errors from reading a rollout file as canonical history.
@@ -98,8 +106,24 @@ pub fn read_canonical_history(path: &Path) -> Result<CanonicalHistory, HistoryRe
 fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
     match line {
         RolloutLineV2::SessionMeta { session, .. } => history.session = Some(session),
-        RolloutLineV2::Turn { turn, .. } => history.turns.push(turn),
+        RolloutLineV2::Turn { turn, extras, .. } => {
+            history.turns.push(turn);
+            if let Some(extras) = extras
+                .as_ref()
+                .and_then(|extras| extras.context_occupancy.clone())
+            {
+                history.latest_context_occupancy = Some(extras);
+            }
+        }
         RolloutLineV2::Item { item, .. } => history.items.push(item),
+        RolloutLineV2::Internal {
+            entry: InternalRecordV2::TurnApprovalCheckpoint(checkpoint),
+            ..
+        } => {
+            history
+                .approval_checkpoints
+                .insert(checkpoint.approval_id.clone(), (*checkpoint).clone());
+        }
         RolloutLineV2::Internal {
             entry:
                 InternalRecordV2::SessionSettings {
@@ -144,11 +168,17 @@ fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
         // the prompt, not the displayed history; workspace lines are not part
         // of the conversational timeline.
         RolloutLineV2::Internal { .. }
-        | RolloutLineV2::CompactionSnapshot { .. }
         | RolloutLineV2::WorkspaceCheckpoint { .. }
         | RolloutLineV2::WorkspaceChange { .. }
         | RolloutLineV2::WorkspaceRestoreStarted { .. }
         | RolloutLineV2::WorkspaceRestoreCompleted { .. } => {}
+        RolloutLineV2::CompactionSnapshot {
+            context_occupancy, ..
+        } => {
+            if let Some(occupancy) = context_occupancy {
+                history.latest_context_occupancy = Some(occupancy);
+            }
+        }
     }
 }
 
@@ -185,10 +215,15 @@ fn apply_settings_to_canonical_session(
             }
         }
         SessionSettingsField::ReasoningEffortSelection => {
-            if let Ok(Some(raw)) = serde_json::from_value::<Option<String>>(value)
-                && let Ok(effort) = raw.parse::<devo_protocol::ReasoningEffort>()
-            {
-                session.settings.reasoning_effort = Some(effort);
+            // The stored value is the user's selection literal, including the
+            // toggle keywords (`on`/`off`, plus legacy `enabled`/`disabled`)
+            // the `ReasoningEffort` enum cannot express — keep it normalized
+            // instead of parsing, which silently dropped those and broke restore.
+            if let Ok(Some(raw)) = serde_json::from_value::<Option<String>>(value) {
+                let normalized = devo_protocol::normalize_reasoning_effort_literal(&raw);
+                if !normalized.is_empty() {
+                    session.settings.reasoning_effort = Some(normalized);
+                }
             }
         }
         SessionSettingsField::CollaborationMode => {
@@ -249,6 +284,7 @@ mod tests {
             turn_id,
             seq,
             timestamp: Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap(),
+            started_at: None,
             attempt_placement: None,
             turn_status: Some(TurnStatus::Running),
             sibling_turn_ids: Vec::new(),
@@ -271,14 +307,14 @@ mod tests {
         write_lines(
             &dir.path().join("rollout.jsonl"),
             &[
-                RolloutLine::Item(ItemLine {
+                RolloutLine::Item(Box::new(ItemLine {
                     timestamp: kept_item.timestamp,
                     item: kept_item,
-                }),
-                RolloutLine::Item(ItemLine {
+                })),
+                RolloutLine::Item(Box::new(ItemLine {
                     timestamp: dropped_item.timestamp,
                     item: dropped_item,
-                }),
+                })),
                 RolloutLine::SessionRollback(Box::new(SessionRollbackLine {
                     timestamp: Utc.with_ymd_and_hms(2026, 7, 1, 12, 1, 0).unwrap(),
                     session_id,
@@ -306,10 +342,10 @@ mod tests {
         let item = item_record(1, session_id, turn_id, "ok");
         let mut text = String::new();
         text.push_str(
-            &serde_json::to_string(&RolloutLine::Item(ItemLine {
+            &serde_json::to_string(&RolloutLine::Item(Box::new(ItemLine {
                 timestamp: item.timestamp,
                 item,
-            }))
+            })))
             .expect("serialize"),
         );
         text.push('\n');
@@ -328,10 +364,10 @@ mod tests {
         let item = item_record(1, session_id, turn_id, "ok");
         let mut text = String::new();
         text.push_str(
-            &serde_json::to_string(&RolloutLine::Item(ItemLine {
+            &serde_json::to_string(&RolloutLine::Item(Box::new(ItemLine {
                 timestamp: item.timestamp,
                 item,
-            }))
+            })))
             .expect("serialize"),
         );
         text.push('\n');
@@ -380,6 +416,8 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,
@@ -440,10 +478,7 @@ mod tests {
             devo_protocol::native::model::PermissionProfile::FullAccess
         );
         assert_eq!(session.settings.sandbox_profile.as_deref(), Some("strict"));
-        assert_eq!(
-            session.settings.reasoning_effort,
-            Some(devo_protocol::ReasoningEffort::High)
-        );
+        assert_eq!(session.settings.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(
             session.settings.memory_recall,
             devo_protocol::native::session::MemorySetting::Off
@@ -454,5 +489,78 @@ mod tests {
         );
         // Five settings epochs raise the SessionMeta version (1) to 6.
         assert_eq!(session.version, 6);
+    }
+
+    /// Toggle keywords and level labels both survive the fold, and the raw
+    /// literal is normalized on the way in so a stored selection compares
+    /// equal to the same selection arriving in a patch.
+    #[test]
+    fn settings_fold_keeps_toggle_keywords_and_normalizes() {
+        let fold_one = |raw: &str| -> Option<String> {
+            let dir = tempfile::TempDir::new().expect("temp dir");
+            let session_id = SessionId::new();
+            let now = Utc.with_ymd_and_hms(2026, 8, 2, 12, 0, 0).unwrap();
+            let record = crate::conversation::SessionRecord {
+                id: session_id,
+                rollout_path: dir.path().join("rollout.jsonl"),
+                created_at: now,
+                updated_at: now,
+                last_activity_at: Some(now),
+                source: "cli".into(),
+                agent_nickname: None,
+                agent_role: None,
+                agent_path: None,
+                model_provider: "test".into(),
+                model: Some("test-model".into()),
+                model_binding_id: None,
+                reasoning_effort_selection: None,
+                cwd: dir.path().to_path_buf(),
+                additional_directories: Vec::new(),
+                cli_version: "test".into(),
+                title: None,
+                title_state: crate::conversation::SessionTitleState::Unset,
+                sandbox_policy: "workspace-write".into(),
+                approval_mode: "on-request".into(),
+                effective_context_window: None,
+                tokens_used: 0,
+                first_user_message: None,
+                archived_at: None,
+                git_sha: None,
+                git_branch: None,
+                git_origin_url: None,
+                parent_session_id: None,
+                fork_from_id: None,
+                fork_at_turn_id: None,
+                session_context: None,
+                latest_turn_context: None,
+                collaboration_mode: None,
+                permission_preset: None,
+                schema_version: 2,
+            };
+            write_lines(
+                &dir.path().join("rollout.jsonl"),
+                &[
+                    RolloutLine::SessionMeta(Box::new(crate::conversation::SessionMetaLine {
+                        timestamp: now,
+                        session: record,
+                    })),
+                    RolloutLine::SessionSettings(crate::conversation::SessionSettingsLine {
+                        timestamp: now,
+                        session_id,
+                        field: crate::conversation::SessionSettingsField::ReasoningEffortSelection,
+                        value: serde_json::to_value(Some(raw.to_string()))
+                            .expect("serialize effort"),
+                        epoch: 0,
+                    }),
+                ],
+            );
+            let history =
+                read_canonical_history(&dir.path().join("rollout.jsonl")).expect("read history");
+            history.session.expect("session").settings.reasoning_effort
+        };
+
+        assert_eq!(fold_one("enabled").as_deref(), Some("on"));
+        assert_eq!(fold_one("disabled").as_deref(), Some("off"));
+        assert_eq!(fold_one(" High ").as_deref(), Some("high"));
     }
 }

@@ -13,7 +13,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::AgentToolCoordinator;
 use devo_core::tools::create_default_tool_registry;
@@ -30,10 +29,10 @@ use devo_protocol::SpawnAgentParams;
 use devo_protocol::SpawnAgentResult;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
-use devo_protocol::TurnStartResult;
 use devo_protocol::Usage;
 use devo_protocol::WaitAgentParams;
 use devo_protocol::WaitAgentResult;
+use devo_protocol::native::rpc_turn::TurnStartResult;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
@@ -301,7 +300,6 @@ pub fn build_runtime_with_dependencies(
         devo_server::empty_mcp_manager(),
         "test-model".to_string(),
         Arc::new(PresetModelCatalog::default()),
-        Arc::new(ProviderVendorCatalog::default()),
         Box::new(FileSystemSkillCatalog::new(SkillsConfig {
             bundled: Some(BundledSkillsConfig { enabled: false }),
             ..SkillsConfig::default()
@@ -362,25 +360,24 @@ pub async fn start_parent_session(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": "parent",
-                    "model": "test-model"
+                    "idempotencyKey": uuid::Uuid::new_v4().to_string()
                 }
             }),
         )
         .await
-        .context("session/start")?;
-    Ok(
-        serde_json::from_value::<devo_server::SuccessResponse<devo_server::SessionStartResult>>(
-            response,
-        )?
+        .context("session/new")?;
+    Ok(devo_protocol::SessionId::try_from(
+        serde_json::from_value::<
+            devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+        >(response)?
         .result
         .session
-        .session_id,
-    )
+        .id
+        .as_str(),
+    )?)
 }
 
 pub async fn spawn_child(
@@ -566,6 +563,26 @@ pub async fn start_turn_with_approval_policy(
     text: &str,
     approval_policy: Option<&str>,
 ) -> Result<TurnStartResult> {
+    if approval_policy == Some("never") {
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 8,
+                    "method": "session/metadata/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "expectedVersion": 0,
+                        "settings": { "permissionProfile": "fullAccess" }
+                    }
+                }),
+            )
+            .await
+            .context("session/metadata/update")?;
+        if response.get("error").is_some() {
+            anyhow::bail!("session/metadata/update failed: {response}");
+        }
+    }
     let response = runtime
         .handle_incoming(
             connection_id,
@@ -573,13 +590,9 @@ pub async fn start_turn_with_approval_policy(
                 "id": 9,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": text }],
-                    "model": null,
-                    "thinking": null,
-                    "sandbox": null,
-                    "approval_policy": approval_policy,
-                    "cwd": null
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4())
                 }
             }),
         )

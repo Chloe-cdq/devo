@@ -21,16 +21,24 @@ const chatViewSource = readFileSync(
   new URL("./chat-view.tsx", import.meta.url),
   "utf8",
 );
+const permissionOptionsSource = readFileSync(
+  new URL("./chat-permission-options.ts", import.meta.url),
+  "utf8",
+);
+const eventProcessorSource = readFileSync(
+  new URL("../../atoms/actions/event-processor.ts", import.meta.url),
+  "utf8",
+);
+const chipSource = readFileSync(
+  new URL("./composer-mode-chip.tsx", import.meta.url),
+  "utf8",
+);
 const chatToolCallSource = readFileSync(
   new URL("./chat-tool-call.tsx", import.meta.url),
   "utf8",
 );
 const compactionDividerSource = readFileSync(
   new URL("./compaction-status-divider.tsx", import.meta.url),
-  "utf8",
-);
-const eventProcessorSource = readFileSync(
-  new URL("../../atoms/actions/event-processor.ts", import.meta.url),
   "utf8",
 );
 const clientSource = readFileSync(
@@ -95,38 +103,31 @@ describe("ChatTurnComponent transcript controls", () => {
     });
   });
 
-  test("wires pending permission requests into the active chat turn", () => {
+  test("routes pending permission requests through the composer flow", () => {
     expect({
-      chatTurnAcceptsPendingPermission: source.includes(
-        "pendingPermission?: PendingPermission",
-      ),
-      chatTurnRendersPermissionItem:
-        source.includes("<PermissionItem") &&
-        source.includes("pendingPermission.request"),
-      chatViewPassesPermissionToLastTurn: chatViewSource.includes(
-        "pendingPermission={index === turns.length - 1 ? effectivePermission : undefined}",
-      ),
-      inputKeepsNoTurnPermissionFallback: chatViewSource.includes(
-        "turns.length === 0 && effectivePermission",
-      ),
+      chatViewUsesComposerPermissionFlow:
+        chatViewSource.includes("<ChatPermissionFlow") &&
+        chatViewSource.includes("effectivePermission ?"),
+      permissionOptionsFollowTuiShape:
+        permissionOptionsSource.includes("buildApprovalChoices") &&
+        permissionOptionsSource.includes('label: "Deny"') &&
+        permissionOptionsSource.includes("Does not surface turn"),
+      chatViewPrioritizesQuestionOverPermission:
+        chatViewSource.includes("effectiveQuestion ?") &&
+        chatViewSource.indexOf("effectiveQuestion ?") <
+          chatViewSource.indexOf("effectivePermission ?"),
       permissionReplyClearsPendingCard:
-        chatViewSource.includes("removePermissionAtom") &&
-        chatViewSource.includes(
-          "removePermission({ sessionId: permissionSessionId, permissionId })",
-        ),
-      noTurnPermissionFallbackUsesClearingHandlers:
+        eventProcessorSource.includes('case "permission.replied"') &&
+        eventProcessorSource.includes("removePermissionAtom"),
+      composerPermissionUsesClearingHandlers:
         chatViewSource.includes("onApprove={handleApprovePermission}") &&
         chatViewSource.includes("onDeny={handleDenyPermission}"),
-      chatToolCallKeepsUnusedPermissionProp:
-        chatToolCallSource.includes("permission?:"),
     }).toEqual({
-      chatTurnAcceptsPendingPermission: true,
-      chatTurnRendersPermissionItem: true,
-      chatViewPassesPermissionToLastTurn: true,
-      inputKeepsNoTurnPermissionFallback: true,
+      chatViewUsesComposerPermissionFlow: true,
+      permissionOptionsFollowTuiShape: true,
+      chatViewPrioritizesQuestionOverPermission: true,
       permissionReplyClearsPendingCard: true,
-      noTurnPermissionFallbackUsesClearingHandlers: true,
-      chatToolCallKeepsUnusedPermissionProp: false,
+      composerPermissionUsesClearingHandlers: true,
     });
   });
 
@@ -141,6 +142,9 @@ describe("ChatTurnComponent transcript controls", () => {
     expect({
       definesWorkingStrip: source.includes("function WorkingTurnStatusStrip"),
       usesWorkingForCopy: source.includes("Working for {display}"),
+      omitsTopRetryingLabel:
+        !source.includes("retryStatus ? <>Retrying") &&
+        !source.includes("if (retryStatus) return \"Retrying\""),
       reusesTurnDuration: source.includes(
         "computeTurnWorkTime(turn, { active: true })",
       ),
@@ -155,14 +159,35 @@ describe("ChatTurnComponent transcript controls", () => {
         workingStripIndex < processTimelineSectionIndex &&
         workingStripIndex < responseTextIndex,
       removesOldWorkingShimmer: !source.includes("Working shimmer"),
+      hidesRunningCommandStatus: !source.includes("Running command..."),
+      gatesActivityCueOnStatusText: source.includes(
+        "working && statusText",
+      ),
+      showsPlanningForTodoTools: source.includes('return "Planning next moves"'),
+      hidesPlanningDuringReasoning:
+        source.includes('if (part.type === "reasoning") return ""') &&
+        source.includes("Quiet while waiting") &&
+        source.includes('return ""'),
+      usesQuietActivityCue:
+        source.includes("<ActivityCue active") &&
+        !source.includes("Loader2Icon") &&
+        !source.includes("ai-elements/shimmer") &&
+        !source.includes("ActivityPulseDot") &&
+        !source.includes("animate-pulse"),
       keepsCompletedDurationAffordance: source.includes('Worked for "'),
     }).toEqual({
       definesWorkingStrip: true,
       usesWorkingForCopy: true,
+      omitsTopRetryingLabel: true,
       reusesTurnDuration: true,
       placesStripAfterUserMessage: true,
       placesStripBeforeProcessTimeline: true,
       removesOldWorkingShimmer: true,
+      hidesRunningCommandStatus: true,
+      gatesActivityCueOnStatusText: true,
+      showsPlanningForTodoTools: true,
+      hidesPlanningDuringReasoning: true,
+      usesQuietActivityCue: true,
       keepsCompletedDurationAffordance: true,
     });
   });
@@ -235,6 +260,9 @@ describe("ChatTurnComponent transcript controls", () => {
   test("uses transcript disclosure rows for thoughts and tools", () => {
     expect({
       definesThoughtRow: thoughtRowSource.includes("export const ThoughtRow"),
+      thoughtContentUsesRail: thoughtRowSource.includes(
+        "<TranscriptDisclosureContent rail>",
+      ),
       usesTranscriptDisclosureTrigger: transcriptDisclosureSource.includes(
         "export const TranscriptDisclosureTrigger",
       ),
@@ -248,10 +276,20 @@ describe("ChatTurnComponent transcript controls", () => {
       dropsVisibleThoughtCopyDependency: !source.includes(
         "Thought for a few seconds",
       ),
-      keepsActiveThinkingCue: thoughtRowSource.includes("Thinking..."),
-      switchesToThoughtWhenComplete: thoughtRowSource.includes(
-        "<span>Thought</span>",
-      ),
+      keepsActiveThinkingCue:
+        thoughtRowSource.includes("Thinking") &&
+        thoughtRowSource.includes("<ActivityCue active") &&
+        !thoughtRowSource.includes("ai-elements/shimmer") &&
+        !thoughtRowSource.includes("ActivityPulseDot") &&
+        !thoughtRowSource.includes("Thinking..."),
+      streamsThoughtAsPlainText:
+        thoughtRowSource.includes("isStreaming ?") &&
+        thoughtRowSource.includes("whitespace-pre-wrap") &&
+        thoughtRowSource.includes("<ReasoningText>"),
+      switchesToThoughtWhenComplete:
+        thoughtRowSource.includes('"Thought"') ||
+        thoughtRowSource.includes("Thought for "),
+      showsThoughtDurationHelper: thoughtRowSource.includes("computeThoughtWorkTime"),
       toolsUseTranscriptDisclosure: chatToolCallSource.includes(
         "<TranscriptDisclosure",
       ),
@@ -259,6 +297,15 @@ describe("ChatTurnComponent transcript controls", () => {
       timelineRendersSeparateThoughtRows: processTimelineViewSource.includes(
         'item.kind === "thought"',
       ),
+      toolGroupRowsHaveReadableSpacing: processTimelineViewSource.includes(
+        'rail className="space-y-0"',
+      ) && processTimelineViewSource.includes("compact"),
+      timelineUsesEvenRowGap: processTimelineViewSource.includes(
+        'className="flex flex-col gap-0.5"',
+      ),
+      disclosureContentUsesPaddingNotMargin:
+        transcriptDisclosureSource.includes('"pt-1"') &&
+        !transcriptDisclosureSource.includes("data-open:mt-"),
       disclosureDoesNotShiftLeft:
         !transcriptDisclosureSource.includes("-mx-1.5") &&
         transcriptDisclosureSource.includes("px-0 py-0.5"),
@@ -274,44 +321,73 @@ describe("ChatTurnComponent transcript controls", () => {
         transcriptDisclosureSource.includes("{chevron}") &&
         transcriptDisclosureSource.indexOf("{label}</span>") <
           transcriptDisclosureSource.indexOf("{chevron}"),
+      defersDiffMountUntilVisible: transcriptDisclosureSource.includes(
+        "export const MountWhenVisible",
+      ),
+      waitsForCollapsiblePanelNotPlaceholder:
+        transcriptDisclosureSource.includes("isCollapsiblePanelReady"),
+      usesLayoutEffectForPanelReady:
+        transcriptDisclosureSource.includes("useLayoutEffect"),
       toolsOmitLeadingIcons: !chatToolCallSource.includes("leading={"),
       completedWriteHidesSpinner: processTimelineViewSource.includes(
         "turnWorking={working}",
       ),
+      toolsUseQuietPulseCue:
+        !chatToolCallSource.includes("ActivityPulseDot") &&
+        !chatToolCallSource.includes("Loader2Icon") &&
+        !chatToolCallSource.includes("animate-spin"),
+      groupRowsUseQuietPulseCue:
+        !processTimelineViewSource.includes("ActivityPulseDot") &&
+        !processTimelineViewSource.includes("Loader2Icon"),
       gatesActionsUntilTurnFinishes: source.includes(
         "{!working && responseText && (",
       ),
     }).toEqual({
       definesThoughtRow: true,
+      thoughtContentUsesRail: true,
       usesTranscriptDisclosureTrigger: true,
       usesCollapsedThoughtChevron: true,
       removesBareReasoningTrigger: true,
       keepsSharedReasoningTriggerUnchanged: true,
       dropsVisibleThoughtCopyDependency: true,
       keepsActiveThinkingCue: true,
+      streamsThoughtAsPlainText: true,
       switchesToThoughtWhenComplete: true,
+      showsThoughtDurationHelper: true,
       toolsUseTranscriptDisclosure: true,
       toolsOmitDurationTrailing: true,
       timelineRendersSeparateThoughtRows: true,
+      toolGroupRowsHaveReadableSpacing: true,
+      timelineUsesEvenRowGap: true,
+      disclosureContentUsesPaddingNotMargin: true,
       disclosureDoesNotShiftLeft: true,
       thoughtHasNoLeadingSpacer: true,
       assistantColumnHasNoProcessIndent: true,
       hoverShowsExpandChevron: true,
       expandChevronFollowsLabel: true,
+      defersDiffMountUntilVisible: true,
+      waitsForCollapsiblePanelNotPlaceholder: true,
+      usesLayoutEffectForPanelReady: true,
       toolsOmitLeadingIcons: true,
       completedWriteHidesSpinner: true,
+      toolsUseQuietPulseCue: true,
+      groupRowsUseQuietPulseCue: true,
       gatesActionsUntilTurnFinishes: true,
     });
   });
 
-  test("renders compaction lifecycle as a transcript divider", () => {
+  test("renders compaction lifecycle inline in the process timeline", () => {
+    const timelineViewIndex = processTimelineViewSource.indexOf('item.kind === "compaction"')
     expect({
-      filtersStartedTextFromAssistantResponse:
-        source.includes("isCompactionStatusText(part.text)") &&
-        source.includes("continue"),
-      rendersDividerAfterResponse: source.includes(
-        "<CompactionStatusDivider status={displayedCompactionStatus} />",
-      ),
+      keepsCompactionInOrderedParts:
+        source.includes('ordered.push({ kind: "compaction"') &&
+        source.includes("compactionStatusFromPart"),
+      surfacesLiveStartedInline: source.includes("withLiveCompactionStatus"),
+      rendersInlineInProcessTimeline:
+        timelineViewIndex >= 0 &&
+        processTimelineViewSource.includes("<CompactionStatusDivider"),
+      doesNotPinDividersBelowActions: !source.includes("displayedCompactionStatuses.map"),
+      preservesTrailingAfterFinalReply: source.includes("trailingProcessParts"),
       updatesMemoWhenCompactionStatusChanges: source.includes(
         "prev.compactionStatus !== next.compactionStatus",
       ),
@@ -332,15 +408,16 @@ describe("ChatTurnComponent transcript controls", () => {
         eventProcessorSource.includes("session.compaction.completed") &&
         eventProcessorSource.includes("session.compaction.failed"),
       bridgesRuntimeCompactionEvents:
-        clientSource.includes("sessionCompactionFromOriginalEvent") &&
-        clientSource.includes("sessionIdFromCompactionPayload") &&
-        clientSource.includes("SessionCompactionCompleted") &&
-        clientSource.includes("session.compaction.${compaction.status}") &&
+        clientSource.includes("context/compactionStarted") &&
+        clientSource.includes("context/compactionCompleted") &&
         clientSource.includes("upsertCompaction") &&
-        clientSource.includes("contextCompaction"),
+        clientSource.includes("compaction-${update.itemId}-${update.status}"),
     }).toEqual({
-      filtersStartedTextFromAssistantResponse: true,
-      rendersDividerAfterResponse: true,
+      keepsCompactionInOrderedParts: true,
+      surfacesLiveStartedInline: true,
+      rendersInlineInProcessTimeline: true,
+      doesNotPinDividersBelowActions: true,
+      preservesTrailingAfterFinalReply: true,
       updatesMemoWhenCompactionStatusChanges: true,
       chatViewPassesSessionCompactionStatus: true,
       usesRequestedIcons: true,
@@ -369,6 +446,9 @@ describe("ChatTurnComponent transcript controls", () => {
       collapsesWorkWhenIdle: source.includes(
         "(!working && hasCompletedProcessDetails && completedProcessExpanded)",
       ),
+      keepsProcessOpenOnFailure:
+        source.includes("Failed turns keep the process timeline open") &&
+        source.includes('setCompletedProcessExpanded(true)'),
       keepsInnerRowsCollapsed:
         !source.includes("isProcessItemStreaming") &&
         source.includes("setExpandedRowIds(new Set())"),
@@ -381,6 +461,7 @@ describe("ChatTurnComponent transcript controls", () => {
       verboseUsesDisplayModeOnly: true,
       keepsWorkExpandedWhileRunning: true,
       collapsesWorkWhenIdle: true,
+      keepsProcessOpenOnFailure: true,
       keepsInnerRowsCollapsed: true,
     });
   });
@@ -392,16 +473,57 @@ describe("ChatTurnComponent transcript controls", () => {
     );
     expect({
       planBlock: planBlockSource.includes("Proposed Plan") && planBlockSource.includes("Implement Plan"),
+      checklistRow:
+        planBlockSource.includes("PlanChecklistRow") &&
+        planBlockSource.includes("Updated plan") &&
+        source.includes("PlanChecklistRow"),
       chatTurnUsesPlanBlock: source.includes("<PlanBlock") || source.includes("<AssistantTextBlock"),
       chatViewImplement: chatViewSource.includes('collaborationMode: "build"') && chatViewSource.includes("Implement Plan"),
-      modeToggle: chatViewSource.includes("Toggle plan mode"),
+      modeToggle: chipSource.includes("Shift + Tab to toggle"),
       skillsSlash: chatViewSource.includes('case "skills":'),
     }).toEqual({
       planBlock: true,
+      checklistRow: true,
       chatTurnUsesPlanBlock: true,
       chatViewImplement: true,
       modeToggle: true,
       skillsSlash: true,
+    });
+  });
+
+  test("copies user messages and edits the latest user message while working", () => {
+    const userMessageBlockSource = readFileSync(
+      new URL("./user-message-block.tsx", import.meta.url),
+      "utf8",
+    );
+    expect({
+      chatTurnUsesUserMessageBlock: source.includes("<UserMessageBlock"),
+      editOnLatestTurnNotGatedByIdle: source.includes(
+        "canEdit={!!onEditUserMessage}",
+      ),
+      chatViewPassesEditWhileWorking:
+        chatViewSource.includes("latestEditableUserTurnIndex") &&
+        chatViewSource.includes(
+          "onEditUserMessage(turn.userMessage.info.id, text)",
+        ) &&
+        !chatViewSource.includes(
+          "onEditUserMessage && !isWorking && index === latestEditableUserTurnIndex",
+        ),
+      copiesUserMessage: userMessageBlockSource.includes('tooltip={copied ? "Copied" : "Copy message"}'),
+      editsLatestUserMessage: userMessageBlockSource.includes('tooltip="Edit message"'),
+      resendsEditedMessage: userMessageBlockSource.includes("{saving ? \"Sending...\" : \"Send\"}"),
+      hoverRevealsActions:
+        userMessageBlockSource.includes("group-hover/user-msg:opacity-100") &&
+        userMessageBlockSource.includes("relative h-0 w-full") &&
+        userMessageBlockSource.includes("absolute top-0 right-0"),
+    }).toEqual({
+      chatTurnUsesUserMessageBlock: true,
+      editOnLatestTurnNotGatedByIdle: true,
+      chatViewPassesEditWhileWorking: true,
+      copiesUserMessage: true,
+      editsLatestUserMessage: true,
+      resendsEditedMessage: true,
+      hoverRevealsActions: true,
     });
   });
 });

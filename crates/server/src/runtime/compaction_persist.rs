@@ -200,7 +200,7 @@ pub(crate) fn append_compaction_summary_and_snapshot(
     rollout_store: &RolloutStore,
     record: &SessionRecord,
     persist: CompactionSummaryPersist,
-) {
+) -> anyhow::Result<()> {
     let CompactionSummaryPersist {
         session_id,
         turn_id,
@@ -217,21 +217,11 @@ pub(crate) fn append_compaction_summary_and_snapshot(
         summary_turn_item,
         None,
         None,
+        None,
     );
-    if let Err(error) = rollout_store.append_item(record, item_record) {
-        tracing::warn!(
-            session_id = %session_id,
-            error = %error,
-            "failed to persist compaction summary item"
-        );
-    }
-    if let Err(error) = rollout_store.append_compaction_snapshot(record, snapshot) {
-        tracing::warn!(
-            session_id = %session_id,
-            error = %error,
-            "failed to persist compaction snapshot"
-        );
-    }
+    rollout_store.append_item(record, item_record)?;
+    rollout_store.append_compaction_snapshot(record, snapshot)?;
+    Ok(())
 }
 
 /// Build the in-memory journal entry for a compaction summary item.
@@ -309,13 +299,6 @@ impl ServerRuntime {
                 .sum::<usize>();
             let conversation_tokens = approx_tokens_from_byte_count(prompt_bytes);
 
-            let global = self
-                .deps
-                .config_store
-                .lock()
-                .expect("app config store mutex should not be poisoned")
-                .effective_config()
-                .compaction_token_limit;
             let model = inline
                 .summary
                 .model
@@ -345,11 +328,7 @@ impl ServerRuntime {
             let window = inline
                 .summary
                 .effective_context_window
-                .or_else(|| {
-                    model.map(|model| {
-                        super::context_occupancy::resolved_compaction_limit(global, model)
-                    })
-                })
+                .or_else(|| model.map(super::context_occupancy::resolved_compaction_limit))
                 .unwrap_or(0);
             let previous_occupancy = inline.summary.last_context_occupancy.clone();
             let occupancy = super::context_occupancy::occupancy_after_compaction(
@@ -402,7 +381,11 @@ impl ServerRuntime {
                 summary_turn_item,
                 snapshot,
             },
-        );
+        )
+        .map_err(
+            |error| tracing::warn!(%session_id, %error, "compaction snapshot persistence failed"),
+        )
+        .ok()?;
         Some(item_seq)
     }
 }

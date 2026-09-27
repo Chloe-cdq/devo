@@ -12,13 +12,12 @@ use tokio::sync::watch;
 use super::approval_scope::{
     apply_approval_scope_to_state, apply_path_scope_to_permission_profile,
 };
-use super::commands::SessionCommand;
+use super::commands::{ApprovalCheckpointSnapshot, SessionCommand};
 use super::snapshots::{
     HookContextSnapshot, PendingQueueSnapshot, QueuedTurnInputData, ShellExecContextSnapshot,
     TitleGenerationContext, TurnPersistenceSnapshot, TurnReservationSnapshot,
 };
 use super::state::SessionActorState;
-use super::turn::execute_turn_in_actor;
 use crate::SessionRuntimeStatus;
 use crate::persistence::build_turn_record;
 use crate::runtime::protocol_preset_from_safety;
@@ -33,49 +32,20 @@ pub(super) async fn run_session_actor(
     while let Some(command) = mailbox.recv().await {
         synchronize_memory_settings(&mut state, *memory_settings.borrow_and_update());
         match command {
-            SessionCommand::ExecuteTurn {
-                runtime: turn_runtime,
-                request,
-                reply,
-            } => {
-                let session_id = request.session_id;
-                execute_turn_in_actor(&mut state, turn_runtime.clone(), request).await;
-                // Interrupted turns must not auto-start continuation here: that would
-                // re-block the actor mailbox before the interrupting handler finishes
-                // (goal replace/clear/cancel). Failed turns still enter maybe_start so
-                // `pause_goal_continuation_after_failed_turn` can suppress looping.
-                // Explicit restarts go through goal handlers' maybe_start calls.
-                let should_auto_continue_goal = state.latest_turn.as_ref().is_some_and(|turn| {
-                    matches!(turn.status, TurnStatus::Completed | TurnStatus::Failed)
-                });
+            SessionCommand::CheckoutTurnWorkingSet { turn, reply } => {
+                let working = state.checkout_turn_working_set(&turn);
+                {
+                    let mut stream = working.state.stream.lock().await;
+                    stream.turn_inline = Some(super::turn_inline::TurnInlineState::new(
+                        &working.state,
+                        &turn,
+                    ));
+                }
+                let _ = reply.send(working);
+            }
+            SessionCommand::MergeTurn { working, reply } => {
+                state.merge_turn_working_set(*working);
                 let _ = reply.send(());
-                tokio::spawn(async move {
-                    turn_runtime
-                        .maybe_schedule_final_title_generation(session_id, None)
-                        .await;
-                    if turn_runtime.chain_queued_followup_turn(session_id).await {
-                        return;
-                    }
-                    if turn_runtime.spawn_next_turn_from_queue(session_id).await {
-                        return;
-                    }
-                    if turn_runtime
-                        .child_parent_and_path(session_id)
-                        .await
-                        .is_some()
-                        && turn_runtime.child_can_accept_next_turn(session_id).await
-                    {
-                        let _ = turn_runtime
-                            .drain_child_mailbox_into_user_turns(session_id)
-                            .await;
-                        return;
-                    }
-                    if should_auto_continue_goal {
-                        turn_runtime
-                            .maybe_start_goal_continuation_turn(session_id)
-                            .await;
-                    }
-                });
             }
             SessionCommand::GetSummary { reply } => {
                 let _ = reply.send(state.summary.clone());
@@ -175,6 +145,55 @@ pub(super) async fn run_session_actor(
             SessionCommand::GetActiveTurnId { reply } => {
                 let _ = reply.send(state.active_turn.as_ref().map(|turn| turn.turn_id));
             }
+            SessionCommand::GetApprovalCheckpointSnapshot { reply } => {
+                let snapshot = if state.active_turn.is_some() {
+                    let stream = state.stream.lock().await;
+                    let turn_config = stream
+                        .turn_inline
+                        .as_ref()
+                        .and_then(|inline| {
+                            inline
+                                .live_turn_settings
+                                .lock()
+                                .ok()
+                                .and_then(|live| live.turn_config.clone())
+                        })
+                        .or_else(|| {
+                            Some(
+                                state.runtime_context.resolve_turn_config(
+                                    state
+                                        .summary
+                                        .model_binding_id
+                                        .as_deref()
+                                        .or(state.summary.model.as_deref()),
+                                    state.summary.reasoning_effort_selection.clone(),
+                                ),
+                            )
+                        });
+                    turn_config.map(|turn_config| ApprovalCheckpointSnapshot {
+                        messages: state.core.messages.clone(),
+                        turn_config,
+                        collaboration_mode: state.core.collaboration_mode,
+                    })
+                } else {
+                    None
+                };
+                let _ = reply.send(snapshot);
+            }
+            SessionCommand::MarkActiveTurnWaitingApproval { turn_id, reply } => {
+                let turn = state
+                    .active_turn
+                    .as_mut()
+                    .filter(|turn| turn.turn_id == turn_id)
+                    .map(|turn| {
+                        turn.status = TurnStatus::WaitingApproval;
+                        turn.clone()
+                    });
+                if let Some(turn) = &turn {
+                    state.latest_turn = Some(turn.clone());
+                }
+                let _ = reply.send(turn);
+            }
             SessionCommand::GetRecord { reply } => {
                 let _ = reply.send(state.record.clone());
             }
@@ -256,7 +275,15 @@ pub(super) async fn run_session_actor(
                 title_state,
                 reply,
             } => {
-                if matches!(state.summary.title_state, SessionTitleState::Final(_)) {
+                let allow = match (&state.summary.title_state, &title_state) {
+                    (
+                        SessionTitleState::Final(SessionTitleFinalSource::Heuristic),
+                        SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
+                    ) => true,
+                    (SessionTitleState::Final(_), _) => false,
+                    _ => true,
+                };
+                if !allow {
                     let _ = reply.send(None);
                     continue;
                 }
@@ -419,14 +446,14 @@ pub(super) async fn run_session_actor(
                 let _ = reply.send(());
             }
             SessionCommand::ApplyEffectiveContextWindow { limit, reply } => {
-                state.core.config.effective_context_window_override = Some(limit);
+                // Applied value is the model usable window; do not keep a
+                // sticky session override that could diverge from the model.
+                state.core.config.effective_context_window_override = None;
                 state.core.config.token_budget.context_window = limit;
                 state.core.config.token_budget.auto_compact_token_limit = Some(limit);
-                state.config.effective_context_window_override = Some(limit);
+                state.config.effective_context_window_override = None;
                 state.config.token_budget.context_window = limit;
                 state.config.token_budget.auto_compact_token_limit = Some(limit);
-                // Applied window is session-local runtime state derived from the
-                // global config preference; do not persist as a session override.
                 state.summary.effective_context_window = Some(limit as u64);
                 let _ = reply.send(Ok(()));
             }
@@ -576,8 +603,20 @@ fn apply_turn_config_to_session_summary(
     summary: &mut crate::session::SessionMetadata,
     turn_config: &TurnConfig,
 ) {
-    summary.model = Some(turn_config.model.slug.clone());
-    summary.model_binding_id = turn_config.model_binding_id.clone();
+    let model = match &turn_config.provider_route {
+        devo_provider::ProviderRoute::Connection { provider_id, .. } => {
+            format!("{provider_id}/{}", turn_config.request_model)
+        }
+        devo_provider::ProviderRoute::Default => turn_config.model.slug.clone(),
+    };
+    summary.model = Some(
+        turn_config
+            .variant
+            .as_deref()
+            .map(|variant| format!("{model}/{variant}"))
+            .unwrap_or(model),
+    );
+    summary.model_binding_id = None;
     summary.reasoning_effort_selection = turn_config.reasoning_effort_selection.clone();
 }
 

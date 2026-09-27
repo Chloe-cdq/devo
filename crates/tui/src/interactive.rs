@@ -32,9 +32,6 @@ use crate::chatwidget::TuiSessionState;
 use crate::chatwidget::UserMessage;
 use crate::events::WorkerEvent;
 use crate::host_overlay::OverlayState;
-use crate::onboarding::OnboardingModelBinding;
-use crate::onboarding::onboarding_provider_model_binding;
-use crate::onboarding::onboarding_provider_vendor;
 use crate::onboarding::save_default_collaboration_mode;
 use crate::onboarding::save_last_used_model;
 use crate::onboarding::save_project_permission_preset;
@@ -49,82 +46,25 @@ use crate::worker::QueryWorkerHandle;
 
 const APP_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
-#[derive(Debug, Clone)]
-struct PendingOnboarding {
-    binding: OnboardingModelBinding,
-    base_url: Option<String>,
-    api_key: Option<String>,
-    provider_credential_id: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct OnboardingCommandPayload {
-    model_slug: String,
-    request_model: String,
-    display_name: String,
-    provider_id: String,
-    provider_name: String,
-    provider_credential_id: Option<String>,
-    invocation_method: ProviderWireApi,
-    default_reasoning_effort: Option<String>,
-    base_url: Option<String>,
-    api_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OnboardingCommandAction {
-    Validate,
-    SkipValidation,
-}
-
-fn parse_onboarding_command(
-    command: &str,
-) -> Option<(OnboardingCommandAction, OnboardingCommandPayload)> {
-    let (action, payload) = if let Some(payload) = command.strip_prefix("onboard-skip-validation ")
-    {
-        (OnboardingCommandAction::SkipValidation, payload)
-    } else {
-        (
-            OnboardingCommandAction::Validate,
-            command.strip_prefix("onboard ")?,
-        )
-    };
-    serde_json::from_str(payload)
-        .ok()
-        .map(|payload| (action, payload))
-}
-
-fn normalized_display_name(
-    model_catalog: &impl ModelCatalog,
-    model_slug: &str,
-    selected_display_name: &str,
-) -> String {
-    let selected = selected_display_name.trim();
-    if !selected.is_empty() && selected != model_slug {
-        return selected.to_string();
-    }
-    model_catalog
-        .get(model_slug)
-        .map(|model| model.display_name.clone())
-        .unwrap_or_else(|| model_slug.to_string())
-}
-
 #[derive(Debug, Default)]
 struct InteractiveLoopState {
     session_id: Option<devo_core::SessionId>,
     onboarding_completed: bool,
+    onboarding_alt_screen: bool,
     turn_count: usize,
     total_input_tokens: usize,
     total_output_tokens: usize,
     total_tokens: usize,
     total_cache_read_tokens: usize,
-    pending_onboarding: Option<PendingOnboarding>,
     // indicate whther LLM worker is working, is started by TurnStarted,
     // it ended by TurnFailed/TurnFinished
     busy: bool,
     // True after clearing the inline UI for a session switch and before the
     // replacement session has been restored into widget state.
     session_switch_pending: bool,
+    // When the pending switch started; guards against a wiped screen staying
+    // blank forever if the switch flow never emits a terminal event.
+    session_switch_pending_since: Option<Instant>,
     pending_backtrack_restore: Option<UserMessage>,
     last_ctrl_c_at: Option<Instant>,
     esc_backtrack_primed: bool,
@@ -135,6 +75,33 @@ struct InteractiveLoopState {
 enum LoopAction {
     Continue,
     ClearAndExit,
+}
+
+/// How long a pending session switch may suppress draws before the loop
+/// force-resumes painting. The inline UI is wiped when the switch begins; if
+/// the worker never emits `SessionSwitched`/`TurnFinished`/`TurnFailed`
+/// (e.g. a failed goal-pause step), the screen would otherwise stay blank.
+const SESSION_SWITCH_PENDING_TIMEOUT: Duration = Duration::from_secs(2);
+
+impl InteractiveLoopState {
+    fn begin_session_switch(&mut self) {
+        self.session_switch_pending = true;
+        self.session_switch_pending_since = Some(Instant::now());
+    }
+
+    fn end_session_switch(&mut self) {
+        self.session_switch_pending = false;
+        self.session_switch_pending_since = None;
+    }
+
+    /// True when a pending switch has outlived its budget and draws must
+    /// resume regardless of the missing terminal event.
+    fn session_switch_pending_expired(&self) -> bool {
+        self.session_switch_pending
+            && self
+                .session_switch_pending_since
+                .is_some_and(|started| started.elapsed() > SESSION_SWITCH_PENDING_TIMEOUT)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,13 +240,7 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
     let request_model = initial_session
         .request_model
         .clone()
-        .and_then(|request_model| {
-            if request_model == model.slug {
-                None
-            } else {
-                Some(request_model)
-            }
-        });
+        .filter(|request_model| request_model != &model.slug);
     let initial_provider = model.provider_wire_api();
     let initial_reasoning_effort = model
         .resolve_reasoning_effort_selection(initial_session.reasoning_effort_selection.as_deref())
@@ -305,7 +266,6 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
         initial_reasoning_effort_selection: initial_session.reasoning_effort_selection.clone(),
         initial_permission_preset: initial_session.permission_preset,
         initial_sandbox_profile: initial_session.sandbox_profile.clone(),
-        initial_compaction_token_limit: initial_session.compaction_token_limit,
         initial_default_collaboration_mode: initial_session.default_collaboration_mode,
         initial_user_message: None,
         enhanced_keys_supported: tui.enhanced_keys_supported(),
@@ -318,6 +278,11 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
         initial_theme_name,
         initial_collapse_reasoning: crate::onboarding::load_collapse_reasoning(),
     });
+
+    if config.show_model_onboarding {
+        tui.enter_alt_screen()?;
+        loop_state.onboarding_alt_screen = true;
+    }
 
     if initial_session.session_id.is_some() && !config.show_model_onboarding {
         chat_widget.begin_session_resume();
@@ -333,23 +298,24 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
     loop {
         tokio::select! {
             tui_event = events.next() => {
-                match handle_tui_event(
+                let action = handle_tui_event(
                     tui_event,
                     &mut tui,
                     &worker,
                     &mut chat_widget,
                     &mut loop_state,
-                )? {
+                )?;
+                finish_onboarding_alt_screen(&mut tui, &mut chat_widget, &mut loop_state)?;
+                match action {
                     LoopAction::Continue => {}
                     LoopAction::ClearAndExit => {
                         tracing::info!("interactive loop exiting from tui event");
-                        clear_before_exit(&mut tui)?;
                         break;
                     }
                 }
             }
             app_event = app_event_rx.recv() => {
-                match handle_app_event(
+                let action = handle_app_event(
                     app_event,
                     &worker,
                     &mut chat_widget,
@@ -362,32 +328,36 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
                         project_config_key: &project_config_key,
                         app_event_tx: &host_app_event_sender,
                     },
-                )? {
+                )?;
+                finish_onboarding_alt_screen(&mut tui, &mut chat_widget, &mut loop_state)?;
+                match action {
                     LoopAction::Continue => {}
                     LoopAction::ClearAndExit => {
                         tracing::info!("interactive loop exiting from app event");
-                        clear_before_exit(&mut tui)?;
                         break;
                     }
                 }
             }
             worker_event = worker.event_rx.recv() => {
-                match handle_worker_event(
+                let action = handle_worker_event(
                     worker_event,
                     &worker,
                     &mut chat_widget,
                     &mut loop_state,
-                )? {
+                )?;
+                finish_onboarding_alt_screen(&mut tui, &mut chat_widget, &mut loop_state)?;
+                match action {
                     LoopAction::Continue => {}
                     LoopAction::ClearAndExit => {
                         tracing::info!("interactive loop exiting from worker event");
-                        clear_before_exit(&mut tui)?;
                         break;
                     }
                 }
             }
         }
     }
+
+    clear_before_exit(&mut tui, &mut chat_widget)?;
 
     // Tear down the terminal wrapper before awaiting worker shutdown.
     tracing::info!("dropping tui before terminal restore");
@@ -406,6 +376,18 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
         total_tokens: loop_state.total_tokens,
         total_cache_read_tokens: loop_state.total_cache_read_tokens,
     })
+}
+
+fn finish_onboarding_alt_screen(
+    tui: &mut Tui,
+    chat_widget: &mut ChatWidget,
+    loop_state: &mut InteractiveLoopState,
+) -> Result<()> {
+    if loop_state.onboarding_alt_screen && !chat_widget.is_onboarding_active() {
+        tui.leave_alt_screen()?;
+        loop_state.onboarding_alt_screen = false;
+    }
+    Ok(())
 }
 
 pub(crate) fn available_models_with_saved_metadata(config: &InteractiveTuiConfig) -> Vec<Model> {
@@ -458,9 +440,19 @@ fn resolve_initial_model(initial_session: &InitialTuiSession, available_models: 
         })
 }
 
-fn clear_before_exit(tui: &mut Tui) -> Result<()> {
+fn clear_before_exit(tui: &mut Tui, chat_widget: &mut ChatWidget) -> Result<()> {
     tracing::info!("clearing tui before exit");
-    let result = tui.shutdown_terminal_safe();
+    let size = tui.terminal.size()?;
+    let width = size.width.max(1);
+    let completed_history = chat_widget.drain_scrollback_lines(width);
+    if !completed_history.is_empty() {
+        tui.insert_history_lines(completed_history);
+    }
+    let final_live_height = chat_widget
+        .desired_height(width)
+        .min(size.height.saturating_sub(1))
+        .max(3);
+    let result = tui.shutdown_terminal_safe(final_live_height);
     tracing::info!(
         success = result.is_ok(),
         "finished clearing tui before exit"
@@ -532,7 +524,7 @@ fn handle_tui_event(
                     }
                     loop_state.pending_backtrack_restore = Some(user_message);
                     loop_state.overlay.close(tui)?;
-                    loop_state.session_switch_pending = true;
+                    loop_state.begin_session_switch();
                     tui.replace_inline_session_ui()?;
                     worker.rollback_before_user_turn(user_turn_index)?;
                     return Ok(LoopAction::Continue);
@@ -552,26 +544,40 @@ fn handle_tui_event(
     match tui_event {
         TuiEvent::Draw => {
             if loop_state.session_switch_pending {
-                return Ok(LoopAction::Continue);
+                if loop_state.session_switch_pending_expired() {
+                    // The switch flow died without a terminal event; the
+                    // screen was already wiped, so resume painting now
+                    // instead of leaving it blank.
+                    loop_state.end_session_switch();
+                    chat_widget.set_status_message("Session switch stalled; resuming display");
+                } else {
+                    return Ok(LoopAction::Continue);
+                }
             }
 
             // Update time-sensitive widget state before measuring or rendering.
             chat_widget.pre_draw_tick();
 
-            // Wrap pending scrollback using the current terminal width.
+            // Keep startup scrollback out of the dedicated onboarding screen. The
+            // startup logo belongs to the inline chat surface; flushing it here
+            // would leave logo fragments behind the full-screen onboarding view.
             let width = tui.terminal.size()?.width.max(1);
-            // Completed transcript lines are written directly above the live inline viewport.
-            let scrollback_lines = chat_widget.drain_scrollback_lines(width);
-
-            if !scrollback_lines.is_empty() {
-                tui.insert_history_lines(scrollback_lines);
+            if !loop_state.onboarding_alt_screen {
+                let scrollback_lines = chat_widget.drain_scrollback_lines(width);
+                if !scrollback_lines.is_empty() {
+                    tui.insert_history_lines(scrollback_lines);
+                }
             }
 
             // Size the chat area within the visible terminal and render the frame.
-            let height = chat_widget
-                .desired_height(width)
-                .min(tui.terminal.size()?.height.saturating_sub(1))
-                .max(3);
+            let height = if loop_state.onboarding_alt_screen {
+                tui.terminal.size()?.height.max(3)
+            } else {
+                chat_widget
+                    .desired_height(width)
+                    .min(tui.terminal.size()?.height.saturating_sub(1))
+                    .max(3)
+            };
 
             tui.draw(height, |frame| {
                 let area = frame.area();
@@ -589,6 +595,9 @@ fn handle_tui_event(
             );
         }
         TuiEvent::Key(key) => {
+            if key.code == KeyCode::Esc && chat_widget.is_onboarding_validating() {
+                worker.cancel_provider_validation();
+            }
             if chat_widget.handle_onboarding_key_event(key) {
                 return Ok(LoopAction::Continue);
             }
@@ -761,6 +770,14 @@ fn handle_app_event(
         return Ok(LoopAction::Continue);
     }
 
+    if let AppEvent::ContinueTurnRecovery { recovery } = &app_event {
+        worker.continue_turn_recovery(recovery.clone())?;
+        return Ok(LoopAction::Continue);
+    }
+    if matches!(&app_event, AppEvent::CancelTurnRecovery) {
+        worker.interrupt_active_work()?;
+        return Ok(LoopAction::Continue);
+    }
     if matches!(&app_event, AppEvent::Interrupt) {
         if loop_state.busy && chat_widget.request_interrupt() {
             worker.interrupt_active_work()?;
@@ -826,6 +843,12 @@ fn handle_worker_event(
     };
 
     match &worker_event {
+        WorkerEvent::TurnRecovery {
+            recovery: Some(_), ..
+        } => {
+            loop_state.busy = false;
+        }
+        WorkerEvent::TurnRecovery { recovery: None, .. } => {}
         WorkerEvent::TurnFinished {
             turn_count: next_turn_count,
             total_input_tokens: next_total_input_tokens,
@@ -848,7 +871,7 @@ fn handle_worker_event(
             loop_state.total_output_tokens = *next_total_output_tokens;
             loop_state.total_tokens = *next_total_tokens;
             loop_state.total_cache_read_tokens = *next_total_cache_read_tokens;
-            loop_state.session_switch_pending = false;
+            loop_state.end_session_switch();
         }
         WorkerEvent::InterruptFailed { .. } => {}
         WorkerEvent::TurnStarted { .. } => {
@@ -857,17 +880,13 @@ fn handle_worker_event(
         WorkerEvent::SessionActivated { session_id } => {
             loop_state.session_id = Some(*session_id);
         }
-        // Streaming deltas are handled entirely within the ChatWidget
-        WorkerEvent::ToolOutputDelta { .. } => {}
-        WorkerEvent::CommandExecutionStarted { source, .. }
-            if matches!(
-                source,
-                &devo_protocol::protocol::ExecCommandSource::UserShell
-            ) =>
-        {
+        WorkerEvent::Transcript(crate::transcript::lifecycle::ItemLifecycleEvent::ToolOpened {
+            command_source: Some(devo_protocol::protocol::ExecCommandSource::UserShell),
+            ..
+        }) => {
             loop_state.busy = true;
         }
-        WorkerEvent::CommandExecutionStarted { .. } => {}
+        WorkerEvent::Transcript(_) => {}
         WorkerEvent::ShellCommandFinished { .. } => {
             loop_state.busy = false;
         }
@@ -883,46 +902,32 @@ fn handle_worker_event(
             loop_state.total_tokens = *next_total_tokens;
             loop_state.total_cache_read_tokens = *next_total_cache_read_tokens;
         }
-        WorkerEvent::ProviderValidationSucceeded { .. } => {
-            if let Some(pending) = loop_state.pending_onboarding.as_ref() {
-                let mut provider_vendor = onboarding_provider_vendor(
-                    &pending.binding,
-                    pending.base_url.as_deref(),
-                    pending.api_key.as_deref(),
-                );
-                if pending.api_key.as_deref().is_none() {
-                    provider_vendor.credential = pending.provider_credential_id.clone();
-                }
-                let model_binding = onboarding_provider_model_binding(
-                    &pending.binding,
-                    pending.base_url.as_deref(),
-                );
-                worker.upsert_provider_vendor(
-                    provider_vendor,
-                    Some(model_binding.clone()),
-                    Some(model_binding.binding_id),
-                    pending.api_key.clone(),
-                )?;
-            }
-        }
-        WorkerEvent::ProviderVendorUpserted { model_binding, .. } => {
-            if let Some(pending) = loop_state.pending_onboarding.take() {
-                let request_model = model_binding
-                    .as_ref()
-                    .map(|binding| binding.request_model.clone())
-                    .unwrap_or_else(|| pending.binding.request_model.clone());
-                worker.reconfigure_provider(
-                    pending.binding.invocation_method,
-                    request_model,
-                    pending.base_url,
-                    pending.api_key,
-                )?;
+        WorkerEvent::ProviderValidationSucceeded { .. } => {}
+        WorkerEvent::ProviderUpserted {
+            provider,
+            default_model,
+        } => {
+            if let Some(wire_api) = provider.wire_apis.first().copied() {
+                let model = default_model
+                    .clone()
+                    .or_else(|| {
+                        provider
+                            .models
+                            .keys()
+                            .next()
+                            .map(|model_id| format!("{}/{}", provider.id, model_id))
+                    })
+                    .unwrap_or_else(|| provider.id.clone());
+                worker.reconfigure_provider(wire_api, model, provider.base_url.clone(), None)?;
             }
         }
         WorkerEvent::ProviderValidationFailed { .. }
-        | WorkerEvent::ProviderVendorUpsertFailed { .. } => {
-            loop_state.pending_onboarding = None;
-        }
+        | WorkerEvent::ProviderUpsertFailed { .. }
+        | WorkerEvent::ProviderDisconnected { .. }
+        | WorkerEvent::ProviderDisconnectFailed { .. }
+        | WorkerEvent::ProviderModelRemoved { .. }
+        | WorkerEvent::ProviderModelRemoveFailed { .. }
+        | WorkerEvent::ProvidersListed { .. } => {}
         WorkerEvent::SessionCompactionStarted => {
             loop_state.busy = true;
         }
@@ -950,7 +955,7 @@ fn handle_worker_event(
             total_cache_read_tokens,
             ..
         } => {
-            loop_state.session_switch_pending = false;
+            loop_state.end_session_switch();
             loop_state.session_id = devo_core::SessionId::try_from(session_id.as_str()).ok();
             loop_state.total_input_tokens = *total_input_tokens;
             loop_state.total_output_tokens = *total_output_tokens;
@@ -958,24 +963,13 @@ fn handle_worker_event(
             loop_state.total_cache_read_tokens = *total_cache_read_tokens;
         }
         WorkerEvent::TextDelta(_)
-        | WorkerEvent::TextItemStarted { .. }
-        | WorkerEvent::TextItemDelta { .. }
-        | WorkerEvent::TextItemCompleted { .. }
         | WorkerEvent::ProposedPlanStarted { .. }
         | WorkerEvent::ProposedPlanDelta { .. }
         | WorkerEvent::ProposedPlanCompleted { .. }
         | WorkerEvent::ReasoningDelta(_)
         | WorkerEvent::AssistantMessageCompleted(_)
         | WorkerEvent::ReasoningCompleted(_)
-        | WorkerEvent::ToolCall { .. }
-        | WorkerEvent::ToolCallDetails { .. }
-        | WorkerEvent::ToolCallUpdated { .. }
-        | WorkerEvent::ToolResult { .. }
-        | WorkerEvent::ToolResultIo { .. }
-        | WorkerEvent::PatchApplied { .. }
-        | WorkerEvent::PatchAppliedIo { .. }
         | WorkerEvent::PlanUpdated { .. }
-        | WorkerEvent::ProviderVendorsListed { .. }
         | WorkerEvent::SessionsListed { .. }
         | WorkerEvent::SessionsListFailed { .. }
         | WorkerEvent::SessionPreviewLoaded { .. }
@@ -1013,11 +1007,19 @@ fn handle_worker_event(
         | WorkerEvent::GoalReplaceConfirmationRequested { .. }
         | WorkerEvent::GoalEditLoaded { .. }
         | WorkerEvent::GoalCleared { .. }
-        | WorkerEvent::GoalOperationFailed { .. }
         | WorkerEvent::BtwStarted { .. }
         | WorkerEvent::BtwCompleted { .. }
         | WorkerEvent::BtwFailed { .. }
         | WorkerEvent::EffectiveContextWindowUpdated { .. } => {}
+        WorkerEvent::GoalOperationFailed { .. } => {
+            // The switch/rollback flow aborts its goal-pause step with this
+            // event and emits no SessionSwitched/TurnFinished afterwards.
+            // Without clearing the pending flag here the wiped screen would
+            // stay blank (the draw-suppression timeout is the backstop).
+            if loop_state.session_switch_pending {
+                loop_state.end_session_switch();
+            }
+        }
     }
     let session_switched = matches!(&worker_event, WorkerEvent::SessionSwitched { .. });
     let turn_failed = matches!(&worker_event, WorkerEvent::TurnFailed { .. });
@@ -1135,12 +1137,12 @@ fn handle_app_command(
             }
             chat_widget.note_permissions_updated(*preset);
         }
-        AppCommand::UpdateEffectiveContextWindow {
-            effective_context_window,
-        } => {
-            crate::onboarding::save_compaction_token_limit(*effective_context_window)?;
-            chat_widget.note_effective_context_window_updated(*effective_context_window);
-            worker.update_effective_context_window(*effective_context_window)?;
+        AppCommand::UpdateEffectiveContextWindow { .. } => {
+            // Global auto-compact threshold removed; model Context window (ratio)
+            // is the only user-facing limit. Ignore legacy commands.
+            chat_widget.set_status_message(
+                "Compaction threshold removed; edit the model Context window instead.".to_string(),
+            );
         }
         AppCommand::UpdateSandboxProfile { profile } => {
             worker.update_sandbox_profile(profile.clone())?;
@@ -1183,9 +1185,21 @@ fn handle_app_command(
             worker.set_collaboration_mode(*collaboration_mode, *persist_scope)?;
             chat_widget.apply_collaboration_mode(*collaboration_mode, *persist_scope);
         }
+        AppCommand::ProviderList => {
+            worker.list_providers()?;
+            chat_widget.set_status_message("Loading providers");
+        }
+        AppCommand::ProviderValidate { params } => {
+            worker.validate_provider(params.clone())?;
+            chat_widget.set_status_message("Validating provider");
+        }
+        AppCommand::ProviderUpsert { params } => {
+            worker.upsert_provider(params.clone())?;
+            chat_widget.set_status_message("Saving provider");
+        }
         AppCommand::RunUserShellCommand { command } => {
             if command == "provider list" {
-                worker.list_provider_vendors()?;
+                worker.list_providers()?;
             } else if command == "skills list" {
                 worker.list_skills()?;
                 chat_widget.set_status_message("Loading skills");
@@ -1215,70 +1229,20 @@ fn handle_app_command(
                 }
             } else if command == "session new" {
                 worker.start_new_session()?;
-            } else if let Some((onboarding_action, payload)) = parse_onboarding_command(command) {
-                if context.model_catalog.get(&payload.model_slug).is_none() {
-                    chat_widget.set_status_message(format!(
-                        "Unsupported model slug: {}",
-                        payload.model_slug
-                    ));
-                    return Ok(());
-                }
-                let display_name = normalized_display_name(
-                    context.model_catalog,
-                    &payload.model_slug,
-                    &payload.display_name,
-                );
-                let base_url = payload.base_url;
-                let api_key = payload.api_key;
-                let provider_credential_id = payload.provider_credential_id;
-                let binding = OnboardingModelBinding {
-                    model_slug: payload.model_slug,
-                    request_model: payload.request_model,
-                    display_name,
-                    provider_id: payload.provider_id,
-                    provider_name: payload.provider_name,
-                    invocation_method: payload.invocation_method,
-                    default_reasoning_effort: payload.default_reasoning_effort,
-                };
-                worker.list_provider_vendors()?;
-                let mut provider_vendor =
-                    onboarding_provider_vendor(&binding, base_url.as_deref(), api_key.as_deref());
-                if api_key.as_deref().is_none() {
-                    provider_vendor.credential = provider_credential_id.clone();
-                }
-                let model_binding =
-                    onboarding_provider_model_binding(&binding, base_url.as_deref());
-                let pending = PendingOnboarding {
-                    binding,
-                    base_url,
-                    api_key,
-                    provider_credential_id,
-                };
-                match onboarding_action {
-                    OnboardingCommandAction::Validate => {
-                        worker.validate_provider(
-                            provider_vendor,
-                            model_binding,
-                            pending.api_key.clone(),
-                        )?;
-                        loop_state.pending_onboarding = Some(pending);
-                        chat_widget.set_status_message("Validating provider");
-                    }
-                    OnboardingCommandAction::SkipValidation => {
-                        let default_model_binding = Some(model_binding.binding_id.clone());
-                        worker.upsert_provider_vendor(
-                            provider_vendor,
-                            Some(model_binding),
-                            default_model_binding,
-                            pending.api_key.clone(),
-                        )?;
-                        loop_state.pending_onboarding = Some(pending);
-                        chat_widget.set_status_message("Adding provider without validation");
-                    }
-                }
             } else {
                 chat_widget.set_status_message(format!("Unsupported command: {}", command));
             }
+        }
+        AppCommand::DisconnectProvider { provider_id } => {
+            worker.disconnect_provider(provider_id.clone())?;
+            chat_widget.set_status_message("Disconnecting provider");
+        }
+        AppCommand::RemoveProviderModel {
+            provider_id,
+            model_id,
+        } => {
+            worker.remove_provider_model(provider_id.clone(), model_id.clone())?;
+            chat_widget.set_status_message("Removing model");
         }
         AppCommand::Compact => {
             worker.compact_session()?;
@@ -1318,19 +1282,22 @@ fn handle_app_command(
         }
         AppCommand::SwitchSession { session_id } => {
             tracing::trace!(session_id = ?session_id, "switch session requested");
-            loop_state.session_switch_pending = true;
+            loop_state.begin_session_switch();
             tui.replace_inline_session_ui()?;
             worker.switch_session(*session_id)?;
         }
         AppCommand::RollbackToUserTurn { user_turn_index } => {
-            loop_state.session_switch_pending = true;
+            loop_state.begin_session_switch();
             tui.replace_inline_session_ui()?;
             worker.rollback_to_user_turn(*user_turn_index)?;
         }
-        AppCommand::ForkAtUserTurn { user_turn_index } => {
-            loop_state.session_switch_pending = true;
+        AppCommand::ForkAtUserTurn {
+            user_turn_index,
+            cut,
+        } => {
+            loop_state.begin_session_switch();
             tui.replace_inline_session_ui()?;
-            worker.fork_at_user_turn(*user_turn_index)?;
+            worker.fork_at_user_turn(*user_turn_index, *cut)?;
         }
         AppCommand::ListMcpServers => {
             worker.list_mcp_servers()?;

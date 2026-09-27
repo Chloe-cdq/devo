@@ -52,18 +52,21 @@ impl MemorySettingsPatchPlan {
     pub(super) async fn persist(
         &self,
         rollout_store: &RolloutStore,
-        session_handle: &SessionHandle,
+        session_handle: Option<&SessionHandle>,
         rollout_path: Option<&Path>,
         session_id: SessionId,
+        settings_changes: &[(SessionSettingsField, serde_json::Value)],
     ) -> Result<Option<SessionMemorySettingsSnapshot>, PersistMemorySettingsError> {
-        if self.updates.is_empty() {
-            return Ok(None);
-        }
         if let Some(path) = rollout_path {
+            let mut updates = settings_changes.to_vec();
+            updates.extend_from_slice(&self.updates);
             rollout_store
-                .append_session_settings_batch_at(path, session_id, &self.updates)
+                .append_session_settings_batch_at(path, session_id, &updates)
                 .map_err(PersistMemorySettingsError::Persistence)?;
-            if !session_handle.notify_memory_settings(self.recall, self.contribution) {
+            if !self.updates.is_empty()
+                && let Some(session_handle) = session_handle
+                && !session_handle.notify_memory_settings(self.recall, self.contribution)
+            {
                 tracing::warn!(
                     %session_id,
                     "failed to notify session actor of persisted memory settings"
@@ -71,7 +74,11 @@ impl MemorySettingsPatchPlan {
             }
             return Ok(None);
         }
+        if self.updates.is_empty() {
+            return Ok(None);
+        }
         session_handle
+            .ok_or(PersistMemorySettingsError::SessionUnavailable)?
             .update_memory_settings(self.recall, self.contribution)
             .await
             .map(Some)

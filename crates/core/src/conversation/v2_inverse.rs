@@ -208,15 +208,22 @@ impl V2InverseProjector {
     ) -> Result<Vec<RolloutLine>, V2InverseError> {
         let id = legacy_session_id(&session.id)?;
 
-        let (parent_session_id, agent_role) = match &session.parent {
-            Some(SessionParent::Fork { session_id, .. }) => {
-                (Some(legacy_session_id(session_id)?), None)
-            }
-            Some(SessionParent::Agent { session_id, role }) => {
-                (Some(legacy_session_id(session_id)?), role.clone())
-            }
-            None => (None, None),
-        };
+        let (parent_session_id, agent_role, fork_from_id, fork_at_turn_id) =
+            match (&session.parent, &session.fork_from_id, &session.at_turn_id) {
+                (Some(SessionParent::Agent { session_id, role }), _, _) => (
+                    Some(legacy_session_id(session_id)?),
+                    role.clone(),
+                    None,
+                    None,
+                ),
+                (None, Some(fork_from), at_turn) => (
+                    None,
+                    None,
+                    Some(legacy_session_id(fork_from)?),
+                    at_turn.as_ref().map(legacy_turn_id).transpose()?,
+                ),
+                (None, None, _) => (None, None, None, None),
+            };
 
         // Lossy: the legacy approval mode was a free-form string
         // ("on-request", "untrusted", "never", ...); only the mapped profile
@@ -253,10 +260,15 @@ impl V2InverseProjector {
             model: (!session.model.model.is_empty()).then(|| session.model.model.clone()),
             // Not modeled canonically; only the provider string survives.
             model_binding_id: None,
-            reasoning_effort_selection: session
-                .model
-                .reasoning_effort
-                .map(|effort| effort.to_string()),
+            // The settings snapshot carries the raw selection literal
+            // (toggle keywords included); the `ModelBinding` enum only holds
+            // the request-parameter subset, so prefer settings when present.
+            reasoning_effort_selection: session.settings.reasoning_effort.clone().or_else(|| {
+                session
+                    .model
+                    .reasoning_effort
+                    .map(|effort| effort.to_string())
+            }),
             cwd: session.cwd.clone(),
             additional_directories: session.additional_directories.clone(),
             cli_version: extras
@@ -286,6 +298,8 @@ impl V2InverseProjector {
             git_branch,
             git_origin_url,
             parent_session_id,
+            fork_from_id,
+            fork_at_turn_id,
             session_context: extras.and_then(|extras| extras.session_context.clone()),
             // Internal prefix-cache cache, not carried even in the extras.
             latest_turn_context: None,
@@ -514,7 +528,7 @@ impl V2InverseProjector {
                                 .then_some(decision.decision_source),
                         }),
                     )?;
-                    return Ok(Some(RolloutLine::Item(record)));
+                    return Ok(Some(RolloutLine::Item(Box::new(record))));
                 }
                 let (path, host, target) =
                     target.as_ref().map_or((None, None, None), |t| match t {
@@ -546,7 +560,7 @@ impl V2InverseProjector {
         };
 
         let record = self.item_record(legacy_item_id(&envelope.id)?, envelope, payload)?;
-        Ok(Some(RolloutLine::Item(record)))
+        Ok(Some(RolloutLine::Item(Box::new(record))))
     }
 
     /// Builds one legacy `ItemRecord` mirroring the live write path
@@ -567,6 +581,8 @@ impl V2InverseProjector {
                 turn_id: legacy_turn_id(&envelope.turn_id)?,
                 seq: envelope.seq,
                 timestamp: envelope.updated_at,
+                started_at: (envelope.created_at != envelope.updated_at)
+                    .then_some(envelope.created_at),
                 // Not modeled on the canonical envelope: orchestration
                 // placement, the turn status at append time, sibling turns,
                 // worklog and per-item errors.
@@ -609,7 +625,7 @@ impl V2InverseProjector {
                 // Identity and position travel on the line (exact); only the
                 // record id is synthesized, since internal entries have no
                 // item id of their own (replay only needs uniqueness).
-                Ok(vec![RolloutLine::Item(ItemLine {
+                Ok(vec![RolloutLine::Item(Box::new(ItemLine {
                     timestamp,
                     item: ItemRecord {
                         id: ItemId::new(),
@@ -617,6 +633,7 @@ impl V2InverseProjector {
                         turn_id: legacy_turn_id(turn_id.ok_or(V2InverseError::MissingTurnId)?)?,
                         seq,
                         timestamp,
+                        started_at: None,
                         attempt_placement: None,
                         turn_status: None,
                         sibling_turn_ids: Vec::new(),
@@ -626,7 +643,7 @@ impl V2InverseProjector {
                         error: None,
                         schema_version: CURRENT_ITEM_SCHEMA_VERSION,
                     },
-                })])
+                }))])
             }
             InternalRecordV2::SessionContext(context) => {
                 Ok(vec![RolloutLine::SessionContextUpdated(Box::new(
@@ -667,9 +684,10 @@ impl V2InverseProjector {
             // There is no legacy session-rollout representation for Goal
             // snapshots; old builds continue to use the read-only
             // goal-records compatibility store.
-            InternalRecordV2::GoalState { .. } | InternalRecordV2::UsageRecord { .. } => {
-                Ok(Vec::new())
-            }
+            InternalRecordV2::Execution { .. }
+            | InternalRecordV2::GoalState { .. }
+            | InternalRecordV2::UsageRecord { .. }
+            | InternalRecordV2::TurnApprovalCheckpoint(_) => Ok(Vec::new()),
         }
     }
 }

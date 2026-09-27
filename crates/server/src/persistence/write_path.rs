@@ -136,11 +136,10 @@ mod tests {
             std::thread::spawn(move || {
                 start.wait();
                 store
-                    .append_session_settings_at(
+                    .append_session_settings_batch_at(
                         &rollout_path,
                         session_id,
-                        SessionSettingsField::MemoryRecall,
-                        on,
+                        &[(SessionSettingsField::MemoryRecall, on)],
                     )
                     .expect("append single setting");
             })

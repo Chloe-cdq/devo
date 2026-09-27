@@ -321,6 +321,7 @@ impl ChatWidget {
 
     pub(crate) fn handle_app_event(&mut self, event: AppEvent) {
         match event {
+            AppEvent::ContinueTurnRecovery { .. } | AppEvent::CancelTurnRecovery => {}
             AppEvent::Redraw => self.frame_requester.schedule_frame(),
             AppEvent::SubmitUserInput { text } => self.submit_text(text),
             AppEvent::ModelSelected { model } => {
@@ -343,7 +344,10 @@ impl ChatWidget {
                 self.open_reasoning_view_picker();
             }
             AppEvent::SettingsOpenCompaction => {
-                self.open_compaction_threshold_picker();
+                self.set_status_message(
+                    "Context limit is set per model (usable window). No separate compaction threshold."
+                        .to_string(),
+                );
             }
             AppEvent::SettingsCycleMode => {
                 self.bottom_pane.cycle_build_plan_mode();
@@ -756,6 +760,12 @@ impl ChatWidget {
 
     pub(crate) fn is_onboarding_active(&self) -> bool {
         self.onboarding.is_some()
+    }
+
+    pub(crate) fn is_onboarding_validating(&self) -> bool {
+        self.onboarding
+            .as_ref()
+            .is_some_and(crate::onboarding_widget::OnboardingWidget::is_validating)
     }
 }
 

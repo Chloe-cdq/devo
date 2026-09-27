@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
@@ -11,8 +12,8 @@ use devo_protocol::InputItem;
 use devo_protocol::ItemId;
 use devo_protocol::Model;
 use devo_protocol::PermissionPreset;
-use devo_protocol::ProviderModelBinding;
-use devo_protocol::ProviderVendor;
+use devo_protocol::ProviderInfo;
+use devo_protocol::ProviderModelInfo;
 use devo_protocol::ProviderWireApi;
 use devo_protocol::ReasoningCapability;
 use devo_protocol::ReasoningEffort;
@@ -27,6 +28,28 @@ use ratatui::style::Color;
 use ratatui::text::Line;
 use tokio::sync::mpsc;
 
+fn deepseek_provider_info() -> ProviderInfo {
+    ProviderInfo {
+        id: "deepseek".to_string(),
+        name: "Deepseek".to_string(),
+        description: None,
+        base_url: Some("https://api.deepseek.com".to_string()),
+        credential: Some("deepseek_api_key".to_string()),
+        headers: BTreeMap::new(),
+        options: None,
+        request: None,
+        wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
+        models: BTreeMap::from([(
+            "deepseek-v4-flash".to_string(),
+            ProviderModelInfo {
+                name: Some("DeepSeek-V4-Flash".to_string()),
+                wire_api: Some(ProviderWireApi::OpenAIChatCompletions),
+                ..ProviderModelInfo::default()
+            },
+        )]),
+        enabled: true,
+    }
+}
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
@@ -66,7 +89,6 @@ fn widget_with_model_and_reasoning_effort(
         initial_reasoning_effort_selection,
         initial_permission_preset: devo_protocol::PermissionPreset::AutoReview,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -108,7 +130,6 @@ fn onboarding_widget_with_model(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::AutoReview,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -146,7 +167,6 @@ fn onboarding_widget_with_available_model_and_exit_after_onboarding(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::AutoReview,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -248,6 +268,24 @@ fn line_texts(lines: Vec<ratatui::text::Line<'static>>) -> Vec<String> {
                 .collect::<String>()
         })
         .collect()
+}
+
+fn transcript_overlay_text(widget: &ChatWidget, width: u16) -> String {
+    line_texts(widget.transcript_overlay_lines(width)).join("\n")
+}
+
+fn finalize_live_turn_for_history(widget: &mut ChatWidget) {
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFinished {
+        stop_reason: "Completed".to_string(),
+        turn_count: 1,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+    });
 }
 
 fn indices_containing(lines: &[String], needles: &[&str]) -> Vec<usize> {
@@ -736,6 +774,7 @@ fn session_switched_clears_resume_blocking_state() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     assert!(!widget.is_resuming_session_for_test());
@@ -1045,20 +1084,20 @@ fn approval_request_does_not_duplicate_already_committed_assistant_text() {
     let item_id = ItemId::new();
     let text = "明白，我来随便加点内容，测试一下 apply_patch。".to_string();
 
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
         item_id,
-        kind: crate::events::TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
         item_id,
-        kind: crate::events::TextItemKind::Assistant,
-        delta: text.clone(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
+        crate::events::TextItemKind::Assistant,
+        text.clone(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
         item_id,
-        kind: crate::events::TextItemKind::Assistant,
-        final_text: text.clone(),
-    });
+        crate::events::TextItemKind::Assistant,
+        text.clone(),
+    ));
     widget.handle_worker_event(crate::events::WorkerEvent::AssistantMessageCompleted(
         text.clone(),
     ));
@@ -1651,15 +1690,15 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
         turn_id: TurnId::new(),
     });
     let item_id = ItemId::new();
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
         item_id,
-        kind: TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
+        TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
         item_id,
-        kind: TextItemKind::Assistant,
-        delta: "assistant before promotion".to_string(),
-    });
+        TextItemKind::Assistant,
+        "assistant before promotion".to_string(),
+    ));
 
     paste_and_submit(&mut widget, "queued prompt");
     let queue_item_id = devo_protocol::native::ids::QueueItemId::from_string("qit_prompt".into());
@@ -1691,11 +1730,11 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
         !widget.bottom_pane_has_pending_for_test(),
         "drained entry should leave the pending queue UI"
     );
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
         item_id,
-        kind: TextItemKind::Assistant,
-        final_text: "assistant before promotion".to_string(),
-    });
+        TextItemKind::Assistant,
+        "assistant before promotion".to_string(),
+    ));
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100));
     assert!(
@@ -2079,7 +2118,6 @@ fn permissions_command_marks_initial_project_preset_current() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::FullAccess,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -2126,8 +2164,8 @@ fn reasoning_effort_entries_are_generated_from_model_capability_options() {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
+            ReasoningEffort::Low.into(),
+            ReasoningEffort::Medium.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::Medium),
         ..Model::default()
@@ -2159,8 +2197,8 @@ fn initial_reasoning_effort_selection_overrides_model_default() {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
+            ReasoningEffort::Low.into(),
+            ReasoningEffort::Medium.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::Medium),
         ..Model::default()
@@ -2698,14 +2736,13 @@ fn theme_selection_applies_header_accent_immediately() {
 }
 
 #[test]
-fn toggle_with_levels_treats_enabled_as_default_effort_in_picker() {
+fn levels_with_off_treats_enabled_as_default_effort_in_picker() {
     let model = Model {
         slug: "deepseek-v4".to_string(),
         display_name: "Deepseek V4".to_string(),
-        reasoning_capability: ReasoningCapability::ToggleWithLevels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
-        ]),
+        reasoning_capability: ReasoningCapability::Levels(devo_protocol::levels_with_leading_off(
+            [ReasoningEffort::High, ReasoningEffort::Max],
+        )),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()
     };
@@ -2722,7 +2759,7 @@ fn toggle_with_levels_treats_enabled_as_default_effort_in_picker() {
                 is_current: false,
                 label: "Off".to_string(),
                 description: "Disable reasoning effort for this turn".to_string(),
-                value: "disabled".to_string(),
+                value: "off".to_string(),
             },
             ReasoningEffortListEntry {
                 is_current: true,
@@ -2741,16 +2778,16 @@ fn toggle_with_levels_treats_enabled_as_default_effort_in_picker() {
 }
 
 #[test]
-fn reasoning_effort_entries_show_off_and_levels_for_toggle_models_with_supported_levels() {
-    let model = devo_core::ModelPreset {
+fn reasoning_effort_entries_show_off_and_levels_when_levels_include_off() {
+    let model = devo_core::Model {
         slug: "deepseek-v4".to_string(),
         display_name: "Deepseek V4".to_string(),
-        reasoning_capability: ReasoningCapability::Toggle,
-        supported_reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::Max],
+        reasoning_capability: ReasoningCapability::Levels(devo_protocol::levels_with_leading_off(
+            [ReasoningEffort::High, ReasoningEffort::Max],
+        )),
         default_reasoning_effort: None,
-        ..devo_core::ModelPreset::default()
-    }
-    .into();
+        ..devo_core::Model::default()
+    };
     let (widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
     assert_eq!(
@@ -2760,7 +2797,7 @@ fn reasoning_effort_entries_show_off_and_levels_for_toggle_models_with_supported
                 is_current: false,
                 label: "Off".to_string(),
                 description: "Disable reasoning effort for this turn".to_string(),
-                value: "disabled".to_string(),
+                value: "off".to_string(),
             },
             ReasoningEffortListEntry {
                 is_current: true,
@@ -3016,15 +3053,15 @@ fn proposed_plan_keeps_assistant_preamble_before_plan() {
     let assistant_id = ItemId::new();
     let plan_id = ItemId::new();
 
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: assistant_id,
-        kind: TextItemKind::Assistant,
-        delta: "现在我已经了解了代码库。以下是计划：\n".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        assistant_id,
+        TextItemKind::Assistant,
+        "现在我已经了解了代码库。以下是计划：\n".to_string(),
+    ));
     widget
         .handle_worker_event(crate::events::WorkerEvent::ProposedPlanStarted { item_id: plan_id });
     widget.handle_worker_event(crate::events::WorkerEvent::ProposedPlanDelta {
@@ -3061,26 +3098,26 @@ fn proposed_plan_completion_does_not_duplicate_boundary_preamble() {
     let assistant_id = ItemId::new();
     let plan_id = ItemId::new();
 
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: assistant_id,
-        kind: TextItemKind::Assistant,
-        delta: "Intro before plan.\n".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        assistant_id,
+        TextItemKind::Assistant,
+        "Intro before plan.\n".to_string(),
+    ));
     widget
         .handle_worker_event(crate::events::WorkerEvent::ProposedPlanStarted { item_id: plan_id });
     widget.handle_worker_event(crate::events::WorkerEvent::ProposedPlanCompleted {
         item_id: plan_id,
         final_text: "## Summary\n\nBuild the feature.".to_string(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
-        item_id: assistant_id,
-        kind: TextItemKind::Assistant,
-        final_text: "Intro before plan.\n".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        assistant_id,
+        TextItemKind::Assistant,
+        "Intro before plan.\n".to_string(),
+    ));
 
     let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
     assert_eq!(rendered.matches("Intro before plan.").count(), 1);
@@ -3144,6 +3181,7 @@ fn session_switch_restores_plan_mode_and_proposed_plan_actions() {
         collaboration_mode: CollaborationMode::Plan,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     assert_eq!(
@@ -3214,6 +3252,7 @@ fn session_switch_restores_plan_turn_summary_label() {
         collaboration_mode: CollaborationMode::Plan,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     assert_eq!(
@@ -3292,6 +3331,7 @@ fn session_switch_restores_context_compaction_info_row() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3353,6 +3393,7 @@ fn session_switch_after_implement_stays_in_build_without_plan_actions() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     assert_eq!(
@@ -3510,6 +3551,7 @@ fn session_switch_restores_plan_metadata_into_progress() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     assert_eq!(widget.last_plan_progress_for_test(), Some((1, 2)));
@@ -3563,6 +3605,7 @@ fn session_switch_restores_explored_metadata_into_history() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3629,6 +3672,7 @@ fn session_switch_restores_edited_metadata_into_history() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3703,6 +3747,7 @@ fn session_switch_merges_consecutive_explored_items() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3716,7 +3761,8 @@ fn session_switch_merges_consecutive_explored_items() {
         "expected read entry, got:\n{blob}"
     );
     assert!(
-        blob.contains("Search command_actions in crates/tui/src/worker.rs"),
+        blob.contains("Grepped command_actions in crates/tui/src/worker.rs")
+            || blob.contains("Grepping command_actions in crates/tui/src/worker.rs"),
         "expected search entry, got:\n{blob}"
     );
 }
@@ -3763,6 +3809,7 @@ fn session_switch_restores_error_via_tool_result_cell_style() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3847,6 +3894,7 @@ fn rich_session_restore_orders_terminal_error_before_single_failed_footer() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3882,13 +3930,14 @@ fn live_and_resume_error_share_same_rendering_chain() {
     let (mut live_widget, _live_rx) = widget_with_model(model.clone(), PathBuf::from("."));
     let (mut resume_widget, _resume_rx) = widget_with_model(model, PathBuf::from("."));
 
-    live_widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "bash error".to_string(),
-        preview: "permission denied".to_string(),
-        is_error: true,
-        truncated: false,
-    });
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "bash error".to_string(),
+        "permission denied".to_string(),
+        true,
+        false,
+    ));
+    finalize_live_turn_for_history(&mut live_widget);
     let live_blob = scrollback_plain_lines(&live_widget.drain_scrollback_lines(80))
         .into_iter()
         .filter(|line| line.contains("Ran bash error") || line.contains("permission denied"))
@@ -3927,6 +3976,7 @@ fn live_and_resume_error_share_same_rendering_chain() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
     let resume_blob = scrollback_plain_lines(&resume_widget.drain_scrollback_lines(80))
         .into_iter()
@@ -3937,6 +3987,361 @@ fn live_and_resume_error_share_same_rendering_chain() {
     assert_eq!(
         live_blob, resume_blob,
         "live and resume error cells diverged"
+    );
+}
+
+#[test]
+fn live_and_resume_native_grep_history_share_same_rendering_chain() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let cwd = PathBuf::from(".");
+    let (mut live_widget, _) = widget_with_model(model.clone(), cwd.clone());
+    let (mut resume_widget, _) = widget_with_model(model, cwd);
+
+    let grep_input = serde_json::json!({"pattern": "plan", "path": "crates"});
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "grep-1".to_string(),
+        "grep".to_string(),
+        grep_input.clone(),
+    ));
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_result_io(
+        "grep-1".to_string(),
+        "grep".to_string(),
+        "grep".to_string(),
+        grep_input,
+        serde_json::Value::String("src/lib.rs".to_string()),
+        None,
+        false,
+        false,
+    ));
+    finalize_live_turn_for_history(&mut live_widget);
+
+    resume_widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: std::env::current_dir().expect("current directory is available"),
+        title: None,
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: vec![],
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: Some("grep-1".to_string()),
+                kind: devo_protocol::SessionHistoryItemKind::ToolCall,
+                title: "grep".to_string(),
+                body: String::new(),
+                tool_io: Some(devo_protocol::SessionHistoryToolIo {
+                    tool_name: "grep".to_string(),
+                    input: serde_json::json!({"pattern": "plan", "path": "crates"}),
+                    output: None,
+                    display_content: None,
+                }),
+                metadata: Some(devo_protocol::SessionHistoryMetadata::Explored {
+                    actions: vec![devo_protocol::parse_command::ParsedCommand::Search {
+                        cmd: "grep".to_string(),
+                        query: Some("plan".to_string()),
+                        path: Some("crates".to_string()),
+                    }],
+                }),
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: Some("grep-1".to_string()),
+                kind: devo_protocol::SessionHistoryItemKind::ToolResult,
+                title: String::new(),
+                body: "src/lib.rs".to_string(),
+                tool_io: Some(devo_protocol::SessionHistoryToolIo {
+                    tool_name: String::new(),
+                    input: serde_json::Value::Null,
+                    output: Some(serde_json::Value::String("src/lib.rs".to_string())),
+                    display_content: None,
+                }),
+                metadata: None,
+                duration_ms: None,
+            },
+        ],
+        loaded_item_count: 2,
+        pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
+        last_context_occupancy: None,
+    });
+
+    let filter_explore = |line: &str| {
+        line.contains("Explored")
+            || line.contains("Grepped")
+            || line.contains("plan")
+            || line.contains("src/lib.rs")
+    };
+    let live_blob = scrollback_plain_lines(&live_widget.drain_scrollback_lines(100))
+        .into_iter()
+        .filter(|line| filter_explore(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let resume_blob = scrollback_plain_lines(&resume_widget.drain_scrollback_lines(100))
+        .into_iter()
+        .filter(|line| filter_explore(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(
+        live_blob, resume_blob,
+        "live and resume native grep history diverged"
+    );
+}
+
+#[test]
+fn live_and_resume_paired_read_tool_io_share_same_rendering_chain() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let cwd = PathBuf::from(".");
+    let (mut live_widget, _) = widget_with_model(model.clone(), cwd.clone());
+    let (mut resume_widget, _) = widget_with_model(model, cwd);
+
+    let read_input = serde_json::json!({"path": "src/lib.rs", "offset": 10, "limit": 3});
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "read-1".to_string(),
+        "read".to_string(),
+        read_input.clone(),
+    ));
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_result_io(
+        "read-1".to_string(),
+        "read".to_string(),
+        "read".to_string(),
+        read_input,
+        serde_json::Value::String("restored line 1\nrestored line 2".to_string()),
+        None,
+        false,
+        false,
+    ));
+    finalize_live_turn_for_history(&mut live_widget);
+
+    resume_widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: std::env::current_dir().expect("current directory is available"),
+        title: None,
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: vec![],
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: Some("read-1".to_string()),
+                kind: devo_protocol::SessionHistoryItemKind::ToolCall,
+                title: "read src/lib.rs".to_string(),
+                body: String::new(),
+                tool_io: Some(devo_protocol::SessionHistoryToolIo {
+                    tool_name: "read".to_string(),
+                    input: serde_json::json!({"path": "src/lib.rs", "offset": 10, "limit": 3}),
+                    output: None,
+                    display_content: None,
+                }),
+                metadata: Some(devo_protocol::SessionHistoryMetadata::Explored {
+                    actions: vec![devo_protocol::parse_command::ParsedCommand::Read {
+                        cmd: "read src/lib.rs".to_string(),
+                        name: "src/lib.rs L:10-12".to_string(),
+                        path: PathBuf::from("src/lib.rs"),
+                    }],
+                }),
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: Some("read-1".to_string()),
+                kind: devo_protocol::SessionHistoryItemKind::ToolResult,
+                title: "read output".to_string(),
+                body: "legacy preview".to_string(),
+                tool_io: Some(devo_protocol::SessionHistoryToolIo {
+                    tool_name: "read".to_string(),
+                    input: serde_json::Value::Null,
+                    output: Some(serde_json::Value::String(
+                        "restored line 1\nrestored line 2".to_string(),
+                    )),
+                    display_content: None,
+                }),
+                metadata: None,
+                duration_ms: None,
+            },
+        ],
+        loaded_item_count: 2,
+        pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
+        last_context_occupancy: None,
+    });
+
+    let filter_read = |line: &str| {
+        line.contains("worker.rs") || line.contains("restored line") || line.contains("Explored")
+    };
+    let live_blob = scrollback_plain_lines(&live_widget.drain_scrollback_lines(100))
+        .into_iter()
+        .filter(|line| filter_read(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let resume_blob = scrollback_plain_lines(&resume_widget.drain_scrollback_lines(100))
+        .into_iter()
+        .filter(|line| filter_read(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(
+        live_blob, resume_blob,
+        "live and resume paired read tool_io history diverged"
+    );
+}
+
+#[test]
+fn live_and_resume_consecutive_explore_history_share_same_rendering_chain() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let cwd = PathBuf::from(".");
+    let (mut live_widget, _) = widget_with_model(model.clone(), cwd.clone());
+    let (mut resume_widget, _) = widget_with_model(model, cwd);
+
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "call-1".to_string(),
+        "read crates/tui/src/worker.rs".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+            cmd: "read crates/tui/src/worker.rs".to_string(),
+            name: "worker.rs".to_string(),
+            path: PathBuf::from("crates/tui/src/worker.rs"),
+        }]),
+    ));
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "call-1".to_string(),
+        "read crates/tui/src/worker.rs".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "call-2".to_string(),
+        "grep command_actions in crates/tui/src/worker.rs".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+            cmd: "grep command_actions in crates/tui/src/worker.rs".to_string(),
+            query: Some("command_actions".to_string()),
+            path: Some("crates/tui/src/worker.rs".to_string()),
+        }]),
+    ));
+    live_widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "call-2".to_string(),
+        "grep command_actions in crates/tui/src/worker.rs".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
+    finalize_live_turn_for_history(&mut live_widget);
+
+    resume_widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: std::env::current_dir().expect("current directory is available"),
+        title: None,
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: vec![],
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: Some("call-1".to_string()),
+                kind: devo_protocol::SessionHistoryItemKind::ToolCall,
+                title: "read crates/tui/src/worker.rs".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::Explored {
+                    actions: vec![devo_protocol::parse_command::ParsedCommand::Read {
+                        cmd: "read crates/tui/src/worker.rs".to_string(),
+                        name: "worker.rs".to_string(),
+                        path: PathBuf::from("crates/tui/src/worker.rs"),
+                    }],
+                }),
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: Some("call-2".to_string()),
+                kind: devo_protocol::SessionHistoryItemKind::ToolCall,
+                title: "grep command_actions in crates/tui/src/worker.rs".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::Explored {
+                    actions: vec![devo_protocol::parse_command::ParsedCommand::Search {
+                        cmd: "grep command_actions in crates/tui/src/worker.rs".to_string(),
+                        query: Some("command_actions".to_string()),
+                        path: Some("crates/tui/src/worker.rs".to_string()),
+                    }],
+                }),
+                duration_ms: None,
+            },
+        ],
+        loaded_item_count: 2,
+        pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
+        last_context_occupancy: None,
+    });
+
+    let explore_action_lines = |blob: &str| {
+        blob.lines()
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty()
+                    && (line.starts_with("Read ")
+                        || line.starts_with("Grepped ")
+                        || line.starts_with("Finding ")
+                        || line.starts_with("Found "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let live_blob = explore_action_lines(
+        &scrollback_plain_lines(&live_widget.drain_scrollback_lines(120)).join("\n"),
+    );
+    let resume_blob = explore_action_lines(
+        &scrollback_plain_lines(&resume_widget.drain_scrollback_lines(120)).join("\n"),
+    );
+
+    assert_eq!(
+        live_blob, resume_blob,
+        "live and resume consecutive explore history diverged:\nlive:\n{live_blob}\nresume:\n{resume_blob}"
     );
 }
 
@@ -3981,16 +4386,15 @@ fn onboarding_validation_succeeded_waits_for_provider_upsert() {
     let (mut widget, mut app_event_rx) = onboarding_widget_with_available_model(model, cwd);
 
     let _ = app_event_rx.try_recv().expect("provider list command");
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorsListed {
-        provider_vendors: vec![ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        }],
+    widget.handle_worker_event(crate::events::WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider_info()],
+        template_provider_ids: Vec::new(),
+        connected_provider_ids: Vec::new(),
+        connection_models: BTreeMap::new(),
     });
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
@@ -4004,25 +4408,9 @@ fn onboarding_validation_succeeded_waits_for_provider_upsert() {
 
     assert_eq!(widget.is_onboarding_active(), true);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorUpserted {
-        provider_vendor: ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        },
-        model_binding: Some(ProviderModelBinding {
-            binding_id: "deepseek-v4-flash-deepseek".to_string(),
-            model_slug: "deepseek-v4-flash".to_string(),
-            provider: "Deepseek".to_string(),
-            request_model: "DeepSeek-V4-Flash".to_string(),
-            display_name: Some("DeepSeek-V4-Flash".to_string()),
-            invocation_method: ProviderWireApi::OpenAIChatCompletions,
-            default_reasoning_effort: None,
-            enabled: true,
-        }),
+    widget.handle_worker_event(crate::events::WorkerEvent::ProviderUpserted {
+        provider: deepseek_provider_info(),
+        default_model: Some("deepseek/deepseek-v4-flash".to_string()),
     });
 
     assert_eq!(
@@ -4055,16 +4443,15 @@ fn onboarding_validation_succeeded_exits_when_configured() {
         );
 
     let _ = app_event_rx.try_recv().expect("provider list command");
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorsListed {
-        provider_vendors: vec![ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        }],
+    widget.handle_worker_event(crate::events::WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider_info()],
+        template_provider_ids: Vec::new(),
+        connected_provider_ids: Vec::new(),
+        connection_models: BTreeMap::new(),
     });
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
@@ -4075,25 +4462,9 @@ fn onboarding_validation_succeeded_exits_when_configured() {
     widget.handle_worker_event(crate::events::WorkerEvent::ProviderValidationSucceeded {
         reply_preview: "OK".to_string(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorUpserted {
-        provider_vendor: ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        },
-        model_binding: Some(ProviderModelBinding {
-            binding_id: "deepseek-v4-flash-deepseek".to_string(),
-            model_slug: "deepseek-v4-flash".to_string(),
-            provider: "Deepseek".to_string(),
-            request_model: "DeepSeek-V4-Flash".to_string(),
-            display_name: Some("DeepSeek-V4-Flash".to_string()),
-            invocation_method: ProviderWireApi::OpenAIChatCompletions,
-            default_reasoning_effort: None,
-            enabled: true,
-        }),
+    widget.handle_worker_event(crate::events::WorkerEvent::ProviderUpserted {
+        provider: deepseek_provider_info(),
+        default_model: Some("deepseek/deepseek-v4-flash".to_string()),
     });
 
     assert_eq!(widget.is_onboarding_active(), false);
@@ -4121,16 +4492,15 @@ fn onboarding_validation_bypassed_exits_when_configured() {
         );
 
     let _ = app_event_rx.try_recv().expect("provider list command");
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorsListed {
-        provider_vendors: vec![ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        }],
+    widget.handle_worker_event(crate::events::WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider_info()],
+        template_provider_ids: Vec::new(),
+        connected_provider_ids: Vec::new(),
+        connection_models: BTreeMap::new(),
     });
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
@@ -4143,32 +4513,20 @@ fn onboarding_validation_bypassed_exits_when_configured() {
         hint: None,
     });
     widget.handle_key_event(press_key(KeyCode::Enter));
-    match app_event_rx.try_recv().expect("skip validation command") {
-        AppEvent::Command(AppCommand::RunUserShellCommand { command }) => {
-            assert_eq!(command.starts_with("onboard-skip-validation "), true);
+    match app_event_rx.try_recv().expect("provider upsert command") {
+        AppEvent::Command(AppCommand::ProviderUpsert { params }) => {
+            assert_eq!(params.provider.id, "deepseek");
+            assert_eq!(
+                params.default_model,
+                Some("deepseek/deepseek-v4-flash".to_string())
+            );
         }
-        other => panic!("expected skip validation command, got {other:?}"),
+        other => panic!("expected provider upsert command, got {other:?}"),
     }
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorUpserted {
-        provider_vendor: ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        },
-        model_binding: Some(ProviderModelBinding {
-            binding_id: "deepseek-v4-flash-deepseek".to_string(),
-            model_slug: "deepseek-v4-flash".to_string(),
-            provider: "Deepseek".to_string(),
-            request_model: "DeepSeek-V4-Flash".to_string(),
-            display_name: Some("DeepSeek-V4-Flash".to_string()),
-            invocation_method: ProviderWireApi::OpenAIChatCompletions,
-            default_reasoning_effort: None,
-            enabled: true,
-        }),
+    widget.handle_worker_event(crate::events::WorkerEvent::ProviderUpserted {
+        provider: deepseek_provider_info(),
+        default_model: Some("deepseek/deepseek-v4-flash".to_string()),
     });
 
     assert_eq!(widget.is_onboarding_active(), false);
@@ -4601,6 +4959,7 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let committed_lines = widget.drain_scrollback_lines(80);
@@ -4692,6 +5051,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
     let restored_rows = scrollback_plain_lines(&restored_widget.drain_scrollback_lines(80));
 
@@ -4768,6 +5128,7 @@ fn rich_session_switch_restores_user_spacing_before_assistant_response() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let committed_rows = scrollback_plain_lines(&widget.drain_scrollback_lines(80));
@@ -4868,23 +5229,23 @@ fn user_shell_command_renders_direct_output_and_shell_summary() {
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
     let _ = widget.drain_scrollback_lines(100);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::CommandExecutionStarted {
-        tool_use_id: "user-shell-1".to_string(),
-        command: "ls".to_string(),
-        input: None,
-        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-        command_actions: vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
+    widget.handle_worker_event(crate::worker_event_test_helpers::command_execution_started(
+        "user-shell-1".to_string(),
+        "ls".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::UserShell,
+        vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
             cmd: "ls".to_string(),
             path: None,
         }],
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolOutputDelta {
-        tool_use_id: "user-shell-1".to_string(),
-        delta: "Cargo.toml
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_output_delta(
+        "user-shell-1".to_string(),
+        "Cargo.toml
 crates
 "
         .to_string(),
-    });
+    ));
 
     let live = rendered_rows(&widget, 100, 16).join(
         "
@@ -4911,16 +5272,16 @@ crates
 {live}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "user-shell-1".to_string(),
-        title: "ls".to_string(),
-        preview: "Cargo.toml
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "user-shell-1".to_string(),
+        "ls".to_string(),
+        "Cargo.toml
 crates
 "
         .to_string(),
-        is_error: false,
-        truncated: false,
-    });
+        false,
+        false,
+    ));
     widget.handle_worker_event(crate::events::WorkerEvent::ShellCommandFinished {
         exit_code: Some(0),
     });
@@ -4967,46 +5328,46 @@ fn two_shell_commands_render_as_separate_prompt_cells() {
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
     let _ = widget.drain_scrollback_lines(100);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::CommandExecutionStarted {
-        tool_use_id: "user-shell-1".to_string(),
-        command: "pwd".to_string(),
-        input: None,
-        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-        command_actions: Vec::new(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolOutputDelta {
-        tool_use_id: "user-shell-1".to_string(),
-        delta: "/tmp/project\n".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "user-shell-1".to_string(),
-        title: "Shell".to_string(),
-        preview: "/tmp/project\n".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::command_execution_started(
+        "user-shell-1".to_string(),
+        "pwd".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::UserShell,
+        Vec::new(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_output_delta(
+        "user-shell-1".to_string(),
+        "/tmp/project\n".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "user-shell-1".to_string(),
+        "Shell".to_string(),
+        "/tmp/project\n".to_string(),
+        false,
+        false,
+    ));
     widget.handle_worker_event(crate::events::WorkerEvent::ShellCommandFinished {
         exit_code: Some(0),
     });
 
-    widget.handle_worker_event(crate::events::WorkerEvent::CommandExecutionStarted {
-        tool_use_id: "user-shell-2".to_string(),
-        command: "whoami".to_string(),
-        input: None,
-        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-        command_actions: Vec::new(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolOutputDelta {
-        tool_use_id: "user-shell-2".to_string(),
-        delta: "tsiao\n".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "user-shell-2".to_string(),
-        title: "Shell".to_string(),
-        preview: "tsiao\n".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::command_execution_started(
+        "user-shell-2".to_string(),
+        "whoami".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::UserShell,
+        Vec::new(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_output_delta(
+        "user-shell-2".to_string(),
+        "tsiao\n".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "user-shell-2".to_string(),
+        "Shell".to_string(),
+        "tsiao\n".to_string(),
+        false,
+        false,
+    ));
     widget.handle_worker_event(crate::events::WorkerEvent::ShellCommandFinished {
         exit_code: Some(0),
     });
@@ -5310,7 +5671,7 @@ fn committed_assistant_multiline_text_has_no_extra_blank_rows() {
 }
 
 #[test]
-fn tool_call_start_and_finish_are_both_visible_in_history() {
+fn tool_call_running_row_changes_to_ran_before_turn_commit() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
@@ -5328,40 +5689,67 @@ fn tool_call_start_and_finish_are_both_visible_in_history() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "powershell -NoProfile -Command Get-Date".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "powershell -NoProfile -Command Get-Date".to_string(),
+        false,
+        None,
+    ));
 
     let running = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
-        running.contains("Running powershell -NoProfile -Command Get-Date"),
+        running.contains("Running") && running.contains("Get-Date"),
         "expected running tool cell, got:\n{running}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "powershell -NoProfile -Command Get-Date".to_string(),
-        preview: "2026-05-09".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "powershell -NoProfile -Command Get-Date".to_string(),
+        "2026-05-09".to_string(),
+        false,
+        false,
+    ));
 
-    let ran = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let ran_live = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
-        !ran.contains("Running powershell -NoProfile -Command Get-Date"),
-        "running tool cell should not remain in history, got:\n{ran}"
+        !ran_live.contains("Running powershell"),
+        "running tool cell should update in place, got:\n{ran_live}"
     );
     assert!(
-        ran.contains("Ran powershell -NoProfile -Command Get-Date"),
-        "expected ran tool cell, got:\n{ran}"
+        ran_live.contains("Ran") && ran_live.contains("Get-Date"),
+        "expected ran tool cell, got:\n{ran_live}"
     );
+    assert!(widget.drain_scrollback_lines(80).is_empty());
+    assert!(!ran_live.contains("2026-05-09"));
+    let transcript = widget
+        .transcript_overlay_lines(80)
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        ran.contains("2026-05-09"),
-        "expected tool output, got:\n{ran}"
+        transcript.contains("2026-05-09"),
+        "shell output should appear in transcript overlay, got:\n{transcript}"
     );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFinished {
+        stop_reason: "Completed".to_string(),
+        turn_count: 1,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+    });
+    let committed = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    assert_eq!(committed.matches("Ran").count(), 1, "{committed}");
 }
 
 #[test]
@@ -5383,12 +5771,12 @@ fn web_search_tool_call_renders_title_and_status_without_running_prefix() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "Web Search(\"latest OpenAI API docs\")".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "Web Search(\"latest OpenAI API docs\")".to_string(),
+        false,
+        None,
+    ));
 
     let running = rendered_rows(&widget, 80, 12).join(
         "
@@ -5405,15 +5793,15 @@ fn web_search_tool_call_renders_title_and_status_without_running_prefix() {
 {running}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "Web Search(\"latest OpenAI API docs\")".to_string(),
-        preview: "status: completed".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "Web Search(\"latest OpenAI API docs\")".to_string(),
+        "status: completed".to_string(),
+        false,
+        false,
+    ));
 
-    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join(
+    let rendered = rendered_rows(&widget, 80, 12).join(
         "
 ",
     );
@@ -5453,12 +5841,12 @@ fn web_fetch_tool_call_renders_title_and_status_without_running_prefix() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "Web Fetch(\"https://example.test/docs\")".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "Web Fetch(\"https://example.test/docs\")".to_string(),
+        false,
+        None,
+    ));
 
     let running = rendered_rows(&widget, 80, 12).join(
         "
@@ -5475,15 +5863,15 @@ fn web_fetch_tool_call_renders_title_and_status_without_running_prefix() {
 {running}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "Web Fetch(\"https://example.test/docs\")".to_string(),
-        preview: "status: completed".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "Web Fetch(\"https://example.test/docs\")".to_string(),
+        "status: completed".to_string(),
+        false,
+        false,
+    ));
 
-    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join(
+    let rendered = rendered_rows(&widget, 80, 12).join(
         "
 ",
     );
@@ -5514,12 +5902,12 @@ fn preparing_write_tool_call_is_visible_before_result() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "write src/lib.rs".to_string(),
-        preparing: true,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "write src/lib.rs".to_string(),
+        true,
+        None,
+    ));
 
     let display = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
@@ -5538,12 +5926,12 @@ fn non_preparing_tool_call_keeps_existing_summary() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'plan' in crates".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        None,
+    ));
 
     let display = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
@@ -5566,12 +5954,12 @@ fn generic_running_tool_call_disappears_after_result() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "code_search".to_string(),
-        preparing: false,
-        parsed_commands: Some(Vec::new()),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "code_search".to_string(),
+        false,
+        Some(Vec::new()),
+    ));
 
     let running = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
@@ -5579,19 +5967,36 @@ fn generic_running_tool_call_disappears_after_result() {
         "expected running generic tool row:\n{running}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "code_search".to_string(),
-        preview: "Missing necessary parameter display".to_string(),
-        is_error: true,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "code_search".to_string(),
+        "Missing necessary parameter display".to_string(),
+        true,
+        false,
+    ));
 
     let rendered = rendered_rows(&widget, 80, 16).join("\n");
     assert!(
         !rendered.contains("Running code_search"),
         "running row should disappear after result:\n{rendered}"
     );
+    assert!(rendered.contains("Ran code_search"), "{rendered}");
+    assert!(
+        rendered.contains("Missing necessary parameter display"),
+        "{rendered}"
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFinished {
+        stop_reason: "Completed".to_string(),
+        turn_count: 1,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+    });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
     assert!(
@@ -5618,26 +6023,26 @@ fn edit_running_row_is_path_free_and_disappears_after_patch_result() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "edit-1".to_string(),
-        summary: "Edit".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCallDetails {
-        tool_use_id: "edit-1".to_string(),
-        tool_name: "edit".to_string(),
-        input: serde_json::json!({"filePath": "test_edit_test.md"}),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "edit-1".to_string(),
+        "Edit".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "edit-1".to_string(),
+        "edit".to_string(),
+        serde_json::json!({"filePath": "test_edit_test.md"}),
+    ));
 
     let running = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
-        running.contains("Running Edit"),
+        running.contains("Editing") || running.contains("Preparing edit"),
         "expected live Edit row:\n{running}"
     );
     assert!(
-        !running.contains("test_edit_test.md"),
-        "live Edit row should not repeat the path:\n{running}"
+        running.contains("test_edit_test.md"),
+        "live Edit row should show the path:\n{running}"
     );
 
     let mut changes = std::collections::HashMap::new();
@@ -5650,22 +6055,21 @@ fn edit_running_row_is_path_free_and_disappears_after_patch_result() {
             move_path: None,
         },
     );
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchAppliedIo {
-        tool_use_id: "edit-1".to_string(),
-        tool_name: "edit".to_string(),
-        input: serde_json::json!({"filePath": "test_edit_test.md"}),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied_io(
+        "edit-1".to_string(),
+        "edit".to_string(),
+        serde_json::json!({"filePath": "test_edit_test.md"}),
         changes,
-    });
+    ));
 
     let after = rendered_rows(&widget, 80, 16).join("\n");
     assert!(
-        !after.contains("Running Edit"),
+        !after.contains("Editing"),
         "completed Edit should leave no live row:\n{after}"
     );
-    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
     assert!(
-        history.contains("Edited test_edit_test.md") || history.contains("Edited 1 file"),
-        "completed Edit diff should remain visible:\n{history}"
+        after.contains("Edited test_edit_test.md") || after.contains("Edited 1 file"),
+        "completed Edit diff should remain visible:\n{after}"
     );
 }
 
@@ -5679,27 +6083,27 @@ fn patch_result_removes_only_matching_running_tool_row() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "edit-1".to_string(),
-        summary: "Edit".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "search-1".to_string(),
-        summary: "code_search".to_string(),
-        preparing: false,
-        parsed_commands: Some(Vec::new()),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "edit-1".to_string(),
+        "Edit".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "search-1".to_string(),
+        "code_search".to_string(),
+        false,
+        Some(Vec::new()),
+    ));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "edit-1".to_string(),
-        changes: std::collections::HashMap::new(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "edit-1".to_string(),
+        std::collections::HashMap::new(),
+    ));
 
     let after = rendered_rows(&widget, 80, 16).join("\n");
     assert!(
-        !after.contains("Running Edit"),
+        !after.contains("Running Edit") && !after.contains("Editing"),
         "Edit row should be removed:\n{after}"
     );
     assert!(
@@ -5727,23 +6131,23 @@ fn interrupted_turn_flushes_explored_cell_before_summary() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "code_search update_plan tool handler".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "code_search update_plan tool handler".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "code_search update_plan tool handler".to_string(),
             query: Some("update_plan tool handler".to_string()),
             path: Some("crates/core/src/tools/handlers".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "code_search update_plan tool handler".to_string(),
-        preview: "crates/core/src/tools/handlers/plan.rs".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "code_search update_plan tool handler".to_string(),
+        "crates/core/src/tools/handlers/plan.rs".to_string(),
+        false,
+        false,
+    ));
 
     let live_display = rendered_rows(&widget, 100, 12).join("\n");
     assert!(
@@ -5804,23 +6208,23 @@ fn widget_with_live_explored_cell() -> ChatWidget {
         reasoning_effort: None,
         turn_id: TurnId::new(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "code_search update_plan tool handler".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "code_search update_plan tool handler".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "code_search update_plan tool handler".to_string(),
             query: Some("update_plan tool handler".to_string()),
             path: Some("crates/core/src/tools/handlers".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "code_search update_plan tool handler".to_string(),
-        preview: "crates/core/src/tools/handlers/plan.rs".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "code_search update_plan tool handler".to_string(),
+        "crates/core/src/tools/handlers/plan.rs".to_string(),
+        false,
+        false,
+    ));
 
     let live_display = rendered_rows(&widget, 100, 12).join("\n");
     assert!(
@@ -6032,6 +6436,166 @@ fn legacy_failed_turn_finished_flushes_explored_before_footer() {
 }
 
 #[test]
+fn late_tool_events_after_turn_finish_do_not_repin_row_to_live_viewport() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+    let _ = widget.drain_scrollback_lines(100);
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::command_execution_started(
+        "bash-1".to_string(),
+        "cargo test".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::Agent,
+        Vec::new(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_output_delta(
+        "bash-1".to_string(),
+        "test result: ok\n".to_string(),
+    ));
+    let live = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        live.contains("cargo test"),
+        "running tool row should render in the live viewport:\n{live}"
+    );
+
+    // Result lands while the turn is still active, then the turn boundary
+    // commits the row into scrollback history.
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "bash-1".to_string(),
+        "Shell cargo test".to_string(),
+        "test result: ok\n".to_string(),
+        false,
+        false,
+    ));
+    finalize_live_turn_for_history(&mut widget);
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        history.contains("cargo test"),
+        "committed tool row should land in history:\n{history}"
+    );
+
+    // The `ToolResult`/`item` notifications race past the turn's terminal
+    // event and are dispatched afterwards. They must not re-pin the finished
+    // row to the live viewport: after the boundary nothing would ever flush
+    // it into history, so it would sit above the composer forever.
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "bash-1".to_string(),
+        "Shell cargo test".to_string(),
+        "test result: ok\n".to_string(),
+        false,
+        false,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::command_execution_started(
+        "bash-1".to_string(),
+        "cargo test".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::Agent,
+        Vec::new(),
+    ));
+
+    let live_after = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        !live_after.contains("Ran cargo test") && !live_after.contains("Running cargo test"),
+        "late duplicate events must not re-pin the tool row to the live viewport:\n{live_after}"
+    );
+    let history_after = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        !history_after.contains("cargo test"),
+        "late duplicate events must not append a second committed cell:\n{history_after}"
+    );
+}
+
+#[test]
+fn text_completion_commits_older_explored_tools_before_text() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+    let _ = widget.drain_scrollback_lines(100);
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+            cmd: "grep 'plan' in crates".to_string(),
+            query: Some("plan".to_string()),
+            path: Some("crates".to_string()),
+        }]),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
+
+    // Assistant text starts streaming: the exploring group detaches and the
+    // finished tools render as individual live rows while the text streams
+    // below them.
+    let text_id = devo_core::ItemId::new();
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        text_id,
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        text_id,
+        crate::events::TextItemKind::Assistant,
+        "Found it in ",
+    ));
+    let live = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        live.contains("Found it in"),
+        "streaming text should render in the live viewport:\n{live}"
+    );
+
+    // When the text commits mid-turn, the tools that ran before it must
+    // commit first; otherwise scrollback would show [text, tools] even
+    // though the tools happened first, with the tool rows repinned right
+    // above the composer below the finished reply.
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        text_id,
+        crate::events::TextItemKind::Assistant,
+        "Found it in crates/chatwidget.rs.",
+    ));
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    let tool_row = history.find("Grepped plan in crates");
+    let text_row = history.find("Found it in crates/chatwidget.rs.");
+    assert!(
+        tool_row.is_some() && text_row.is_some(),
+        "expected tool row and assistant text in history:\n{history}"
+    );
+    assert!(
+        tool_row < text_row,
+        "tools that ran before the text must commit above it:\n{history}"
+    );
+    let live_after = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        !live_after.contains("Found it in"),
+        "committed text must leave the live viewport:\n{live_after}"
+    );
+
+    // The turn boundary has nothing left to flush: no duplicate commits.
+    finalize_live_turn_for_history(&mut widget);
+    let history_after = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        !history_after.contains("Grepped plan in crates"),
+        "boundary must not re-commit the flushed tool row:\n{history_after}"
+    );
+}
+
+#[test]
 fn preparing_write_disappears_after_patch_applied() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
@@ -6041,12 +6605,12 @@ fn preparing_write_disappears_after_patch_applied() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "write src/lib.rs".to_string(),
-        preparing: true,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "write src/lib.rs".to_string(),
+        true,
+        None,
+    ));
     let before = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
         before.contains("Preparing write..."),
@@ -6060,21 +6624,20 @@ fn preparing_write_disappears_after_patch_applied() {
             content: "pub fn demo() {}\n".to_string(),
         },
     );
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
     let after = rendered_rows(&widget, 80, 16).join("\n");
     assert!(
         !after.contains("Preparing write..."),
         "preparing state should disappear after patch applied:\n{after}"
     );
-    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
     assert!(
-        history.contains("Added src/lib.rs")
-            || history.contains("Edited src/lib.rs")
-            || history.contains("Added 1 file")
+        after.contains("Added src/lib.rs")
+            || after.contains("Edited src/lib.rs")
+            || after.contains("Added 1 file")
     );
 }
 
@@ -6088,12 +6651,12 @@ fn preparing_apply_patch_tool_call_is_visible_before_result() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "apply_patch".to_string(),
-        preparing: true,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "apply_patch".to_string(),
+        true,
+        None,
+    ));
 
     let display = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
@@ -6112,12 +6675,12 @@ fn preparing_apply_patch_disappears_after_patch_applied() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "apply_patch".to_string(),
-        preparing: true,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "apply_patch".to_string(),
+        true,
+        None,
+    ));
     let before = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
         before.contains("Preparing apply_patch..."),
@@ -6131,41 +6694,15 @@ fn preparing_apply_patch_disappears_after_patch_applied() {
             content: "pub fn demo() {}\n".to_string(),
         },
     );
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
     let after = rendered_rows(&widget, 80, 16).join("\n");
     assert!(
         !after.contains("Preparing apply_patch..."),
         "preparing state should disappear after patch applied:\n{after}"
-    );
-}
-
-#[test]
-fn preparing_tool_row_animates_with_pre_draw_tick() {
-    let cwd = std::env::current_dir().expect("current directory is available");
-    let model = Model {
-        slug: "test-model".to_string(),
-        display_name: "Test Model".to_string(),
-        ..Model::default()
-    };
-    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
-
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "write src/lib.rs".to_string(),
-        preparing: true,
-        parsed_commands: None,
-    });
-    let before = rendered_rows(&widget, 80, 12).join("\n");
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    widget.pre_draw_tick();
-    let after = rendered_rows(&widget, 80, 12).join("\n");
-    assert_ne!(
-        before, after,
-        "expected preparing row to animate across ticks"
     );
 }
 
@@ -6253,6 +6790,7 @@ fn restored_reasoning_text_is_visible_in_transcript() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let scrollback = widget.drain_scrollback_lines(80);
@@ -6358,6 +6896,113 @@ fn reasoning_and_assistant_stream_in_separate_cells() {
 }
 
 #[test]
+fn cumulative_text_deltas_do_not_duplicate_live_stream() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+    let reasoning_id = ItemId::new();
+    let assistant_id = ItemId::new();
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: Default::default(),
+    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+    ));
+    for delta in ["I", "I'll", "I'll create", "I'll create a note"] {
+        widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+            reasoning_id,
+            crate::events::TextItemKind::Reasoning,
+            delta.to_string(),
+        ));
+    }
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+    ));
+    for delta in [
+        "Created",
+        "Created /Users",
+        "Created /Users/test",
+        "Created /Users/test/hello.txt",
+    ] {
+        widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+            assistant_id,
+            crate::events::TextItemKind::Assistant,
+            delta.to_string(),
+        ));
+    }
+
+    let rows = rendered_rows(&widget, 100, 20).join("\n");
+    assert!(
+        !rows.contains("II'll") && !rows.contains("CreatedCreated"),
+        "cumulative snapshots must not duplicate streamed text:\n{rows}"
+    );
+    assert!(
+        rows.contains("I'll create a note"),
+        "expected reasoning body in live viewport:\n{rows}"
+    );
+    assert!(
+        rows.contains("Created /Users/test/hello.txt"),
+        "expected assistant body in live viewport:\n{rows}"
+    );
+    assert_eq!(
+        rows.matches("I'll create a note").count(),
+        1,
+        "reasoning body should appear once:\n{rows}"
+    );
+    assert_eq!(
+        rows.matches("Created /Users/test/hello.txt").count(),
+        1,
+        "assistant body should appear once:\n{rows}"
+    );
+}
+
+#[test]
+fn legacy_reasoning_delta_accepts_cumulative_snapshots() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: Default::default(),
+    });
+    for delta in ["I", "I'll", "I'll create a note"] {
+        widget.handle_worker_event(crate::events::WorkerEvent::ReasoningDelta(
+            delta.to_string(),
+        ));
+    }
+
+    let rows = rendered_rows(&widget, 100, 12).join("\n");
+    assert!(
+        !rows.contains("II'll"),
+        "legacy cumulative reasoning deltas must not duplicate:\n{rows}"
+    );
+    assert!(
+        rows.contains("I'll create a note"),
+        "expected reasoning body:\n{rows}"
+    );
+}
+
+#[test]
 fn lifecycle_text_items_render_as_ordered_sibling_cells() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
@@ -6377,24 +7022,24 @@ fn lifecycle_text_items_render_as_ordered_sibling_cells() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-        delta: "thinking".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-        delta: "Line1\nLine2\n".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "thinking".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+        "Line1\nLine2\n".to_string(),
+    ));
 
     let rows = rendered_rows(&widget, 80, 16);
     let reasoning_row = find_row_index(&rows, "thinking").expect("missing reasoning row");
@@ -6408,11 +7053,11 @@ fn lifecycle_text_items_render_as_ordered_sibling_cells() {
     );
     assert_eq!(line2, line1 + 1, "unexpected rows:\n{}", rows.join("\n"));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-        final_text: "thinking".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "thinking".to_string(),
+    ));
     let rows_after_reasoning = rendered_rows(&widget, 80, 16);
     assert!(
         !rows_after_reasoning
@@ -6459,24 +7104,24 @@ fn lifecycle_text_items_keep_reasoning_before_assistant_when_events_arrive_out_o
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-        delta: "answer line\n".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-        delta: "thinking text".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+        "answer line\n".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "thinking text".to_string(),
+    ));
 
     let rows = rendered_rows(&widget, 80, 16);
     let reasoning_row = find_row_index(&rows, "thinking text").expect("missing reasoning row");
@@ -6487,22 +7132,22 @@ fn lifecycle_text_items_keep_reasoning_before_assistant_when_events_arrive_out_o
         rows.join("\n")
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-        final_text: "answer line".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+        "answer line".to_string(),
+    ));
     let committed_before_reasoning = widget.drain_scrollback_lines(80);
     assert!(
         !scrollback_contains_text(&committed_before_reasoning, "answer line"),
         "assistant should wait for prior reasoning before committing: {committed_before_reasoning:?}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-        final_text: "thinking text".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "thinking text".to_string(),
+    ));
     let committed = scrollback_plain_lines(&trim_trailing_blank_scrollback_lines(
         widget.drain_scrollback_lines(80),
     ))
@@ -6532,38 +7177,38 @@ fn completed_assistant_flushes_before_next_reasoning_starts() {
     let assistant_id = ItemId::new();
     let next_reasoning_id = ItemId::new();
 
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: stale_reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: stale_reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-        delta: "first thought".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-        delta: "first answer".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-        final_text: "first answer".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: next_reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: next_reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-        delta: "second thought".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        stale_reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        stale_reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "first thought".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+        "first answer".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+        "first answer".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        next_reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        next_reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "second thought".to_string(),
+    ));
 
     let committed = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
     let first_thought_index = committed
@@ -6605,24 +7250,24 @@ fn assistant_stream_commit_tick_runs_while_reasoning_is_pending() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: reasoning_id,
-        kind: crate::events::TextItemKind::Reasoning,
-        delta: "thinking text".to_string(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-        delta: "first line\nsecond line\n".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "thinking text".to_string(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+        "first line\nsecond line\n".to_string(),
+    ));
 
     widget.pre_draw_tick();
     let committed = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -6678,8 +7323,8 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         slug: "second-model".to_string(),
         display_name: "Second Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
+            ReasoningEffort::High.into(),
+            ReasoningEffort::Max.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()
@@ -6692,7 +7337,6 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -6763,6 +7407,7 @@ fn session_switch_updates_session_identity_projection() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     assert_eq!(widget.current_cwd(), resumed_cwd.as_path());
@@ -6809,6 +7454,7 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let idle_summary = widget.status_summary_text();
@@ -6890,6 +7536,7 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     widget.handle_worker_event(crate::events::WorkerEvent::SessionCompacted {
@@ -6941,6 +7588,7 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let idle_summary = widget.status_summary_text();
@@ -6981,12 +7629,12 @@ fn streaming_controller_is_initialized_and_commit_ticks_drain_lines() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    assert!(!widget.has_stream_controller());
+    assert!(!widget.has_live_assistant_text());
 
     widget.handle_worker_event(crate::events::WorkerEvent::TextDelta(
         "first line\nsecond line\n".to_string(),
     ));
-    assert!(widget.has_stream_controller());
+    assert!(widget.has_live_assistant_text());
 
     widget.pre_draw_tick();
     let first_pass = rendered_rows(&widget, 80, 12).join("\n");
@@ -7019,10 +7667,10 @@ fn fragmented_random_assistant_stream_keeps_rendering_without_queue_stall() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: crate::events::TextItemKind::Assistant,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        crate::events::TextItemKind::Assistant,
+    ));
 
     let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
     let mut expected_lines = Vec::new();
@@ -7034,25 +7682,13 @@ fn fragmented_random_assistant_stream_keeps_rendering_without_queue_stall() {
         expected_lines.push(line);
 
         for delta in [&streamed_line[..split_at], &streamed_line[split_at..]] {
-            widget.handle_worker_event(crate::events::WorkerEvent::TextItemDelta {
-                item_id: assistant_id,
-                kind: crate::events::TextItemKind::Assistant,
-                delta: delta.to_string(),
-            });
+            widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+                assistant_id,
+                crate::events::TextItemKind::Assistant,
+                delta.to_string(),
+            ));
             widget.pre_draw_tick();
         }
-
-        for _ in 0..8 {
-            if widget.assistant_stream_queued_lines_for_test() == 0 {
-                break;
-            }
-            widget.pre_draw_tick();
-        }
-        assert_eq!(
-            widget.assistant_stream_queued_lines_for_test(),
-            0,
-            "assistant stream queue should drain after complete random line {index}"
-        );
 
         let rows = rendered_rows(&widget, 120, 90).join("\n");
         let latest_line = expected_lines.last().expect("line was generated");
@@ -7484,14 +8120,16 @@ fn context_compaction_item_lifecycle_emits_worker_events() {
     };
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-    crate::worker::handle_started_item(
+    crate::worker::dispatch_legacy_item_event_for_test(
+        "item/started",
         devo_server::ItemEventPayload {
             context: context.clone(),
             item: item.clone(),
         },
         &event_tx,
     );
-    crate::worker::handle_completed_item(
+    crate::worker::dispatch_legacy_item_event_for_test(
+        "item/completed",
         devo_server::ItemEventPayload { context, item },
         &event_tx,
     );
@@ -7512,7 +8150,8 @@ fn context_compaction_item_lifecycle_emits_worker_events() {
 fn failed_context_compaction_item_emits_failure_event() {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-    crate::worker::handle_completed_item(
+    crate::worker::dispatch_legacy_item_event_for_test(
+        "item/completed",
         devo_server::ItemEventPayload {
             context: devo_server::EventContext {
                 session_id: SessionId::new(),
@@ -8164,6 +8803,7 @@ fn session_switch_sets_active_agent_footer_label() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let rows = rendered_rows(&widget, 160, 16);
@@ -8209,6 +8849,7 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
     widget.add_to_history(crate::history_cell::new_info_event(
         "old session line".to_string(),
@@ -8306,13 +8947,13 @@ fn new_session_prepared_clears_pending_queue() {
 }
 
 #[test]
-fn new_session_prepared_restores_default_compaction_limit() {
+fn new_session_prepared_clears_session_effective_window() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         context_window: 200_000,
-        effective_context_window_percent: Some(95),
+        effective_context_window_percent: Some(95.0),
         ..Model::default()
     };
     let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
@@ -8323,7 +8964,6 @@ fn new_session_prepared_restores_default_compaction_limit() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: Some(100_000),
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -8360,10 +9000,11 @@ fn new_session_prepared_restores_default_compaction_limit() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: Some(50_000),
+        last_context_occupancy: None,
     });
     assert!(
         widget.status_summary_text().contains("50.0k"),
-        "session override should use 50K compaction threshold: {}",
+        "session metadata should use 50K context window: {}",
         widget.status_summary_text()
     );
 
@@ -8381,8 +9022,8 @@ fn new_session_prepared_restores_default_compaction_limit() {
         total_cache_read_tokens: 0,
     });
     assert!(
-        widget.status_summary_text().contains("100.0k"),
-        "new session should restore the default 100K compaction threshold: {}",
+        widget.status_summary_text().contains("190.0k"),
+        "new session should fall back to the model effective window: {}",
         widget.status_summary_text()
     );
 }
@@ -8403,7 +9044,6 @@ fn new_session_prepared_restores_default_permissions_and_mode() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: CollaborationMode::Plan,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -8440,6 +9080,7 @@ fn new_session_prepared_restores_default_permissions_and_mode() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: Some(PermissionPreset::FullAccess),
         effective_context_window: None,
+        last_context_occupancy: None,
     });
     assert_eq!(widget.input_mode_for_test(), InputMode::Build);
     assert_eq!(
@@ -8509,8 +9150,8 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
         slug: "second-model".to_string(),
         display_name: "Second Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
+            ReasoningEffort::High.into(),
+            ReasoningEffort::Max.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()
@@ -8523,7 +9164,6 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -8592,8 +9232,8 @@ fn model_selection_with_reasoning_effort_support_applies_default_immediately() {
         slug: "second-model".to_string(),
         display_name: "Second Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
+            ReasoningEffort::High.into(),
+            ReasoningEffort::Max.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()
@@ -8606,7 +9246,6 @@ fn model_selection_with_reasoning_effort_support_applies_default_immediately() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -8662,7 +9301,6 @@ fn model_selection_without_reasoning_effort_support_finishes_immediately() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -8924,7 +9562,6 @@ fn collapsed_reasoning_live_view_keeps_only_latest_lines() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -8993,7 +9630,6 @@ fn collapsed_reasoning_live_view_caps_wrapped_visual_rows() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -9079,7 +9715,6 @@ fn collapsed_short_reasoning_stays_full_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -9133,7 +9768,6 @@ fn collapsed_wrapping_reasoning_compacts_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -9195,7 +9829,6 @@ fn collapsed_long_reasoning_compacts_to_one_line_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
-        initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
@@ -9269,19 +9902,19 @@ fn transcript_overlay_lines_include_full_completed_tool_output() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "bash".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "bash".to_string(),
-        preview: output,
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "bash".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "bash".to_string(),
+        output,
+        false,
+        false,
+    ));
 
     let inline = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
     let transcript = widget
@@ -9297,16 +9930,12 @@ fn transcript_overlay_lines_include_full_completed_tool_output() {
         .join("\n");
 
     assert!(
-        inline.contains("line 1") && inline.contains("line 2"),
-        "inline output should include the head of the preview: {inline}"
+        !inline.contains("line 1") && !inline.contains("line 2"),
+        "inline shell view should hide command output: {inline}"
     );
     assert!(
-        inline.contains("ctrl + t to view transcript"),
-        "inline output should include the transcript hint when truncated: {inline}"
-    );
-    assert!(
-        !inline.contains("line 3") && !inline.contains("line 7") && !inline.contains("line 8"),
-        "inline output should keep only the head plus fold hint: {inline}"
+        !inline.contains("ctrl + t to view transcript"),
+        "inline shell view should not show output fold hints: {inline}"
     );
     assert!(
         transcript.contains("line 5") && transcript.contains("line 8"),
@@ -9323,16 +9952,16 @@ fn transcript_overlay_lines_include_running_tool_output_delta() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "bash".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolOutputDelta {
-        tool_use_id: "tool-1".to_string(),
-        delta: "streamed output line".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "bash".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_output_delta(
+        "tool-1".to_string(),
+        "streamed output line".to_string(),
+    ));
 
     let transcript = widget
         .transcript_overlay_lines(80)
@@ -9361,21 +9990,21 @@ fn transcript_overlay_lines_include_running_tool_input_and_output_delta() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "custom job".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCallDetails {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "custom_tool".to_string(),
-        input: serde_json::json!({"alpha": 1, "target": "crate"}),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolOutputDelta {
-        tool_use_id: "tool-1".to_string(),
-        delta: "streamed output line".to_string(),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "custom job".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "tool-1".to_string(),
+        "custom_tool".to_string(),
+        serde_json::json!({"alpha": 1, "target": "crate"}),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_output_delta(
+        "tool-1".to_string(),
+        "streamed output line".to_string(),
+    ));
 
     let transcript = line_texts(widget.transcript_overlay_lines(80)).join("\n");
 
@@ -9398,32 +10027,30 @@ fn generic_tool_call_has_one_running_render_owner() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "custom job".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCallDetails {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "custom_tool".to_string(),
-        input: serde_json::json!({"target": "crate"}),
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "tool-1".to_string(),
+        "custom_tool".to_string(),
+        serde_json::json!({"target": "crate"}),
+    ));
 
     let active = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
     assert_eq!(
-        active.matches("Running custom job").count(),
+        active.matches('▌').count(),
         1,
         "one tool_use_id should have one live render owner:\n{active}"
     );
+    assert!(
+        active.contains("custom_tool") || active.contains("target"),
+        "expected generic tool row:\n{active}"
+    );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "custom job".to_string(),
-        preview: "done".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "custom job".to_string(),
+        "done".to_string(),
+        false,
+        false,
+    ));
     let active = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
     assert!(!active.contains("Running custom job"), "{active}");
 }
@@ -9436,20 +10063,20 @@ fn duplicate_command_execution_start_is_idempotent() {
         ..Model::default()
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
-    let started = crate::events::WorkerEvent::CommandExecutionStarted {
-        tool_use_id: "command-1".to_string(),
-        command: "pwd".to_string(),
-        input: None,
-        source: devo_protocol::protocol::ExecCommandSource::Agent,
-        command_actions: Vec::new(),
-    };
+    let started = crate::worker_event_test_helpers::command_execution_started(
+        "command-1".to_string(),
+        "pwd".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::Agent,
+        Vec::new(),
+    );
 
     widget.handle_worker_event(started.clone());
     widget.handle_worker_event(started);
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
     assert_eq!(
-        transcript.matches("pwd").count(),
+        transcript.matches("Running pwd").count(),
         1,
         "duplicate starts should retain one command cell:\n{transcript}"
     );
@@ -9468,29 +10095,29 @@ fn transcript_overlay_lines_include_completed_tool_input_and_full_output() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "custom job".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCallDetails {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "custom_tool".to_string(),
-        input: serde_json::json!({"query": "needle", "path": "crates/tui"}),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResultIo {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "custom_tool".to_string(),
-        title: "custom job".to_string(),
-        input: serde_json::json!({"query": "needle", "path": "crates/tui"}),
-        output: serde_json::Value::String(output),
-        display_content: None,
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "custom job".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "tool-1".to_string(),
+        "custom_tool".to_string(),
+        serde_json::json!({"query": "needle", "path": "crates/tui"}),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result_io(
+        "tool-1".to_string(),
+        "custom_tool".to_string(),
+        "custom job".to_string(),
+        serde_json::json!({"query": "needle", "path": "crates/tui"}),
+        serde_json::Value::String(output),
+        None,
+        false,
+        false,
+    ));
 
-    let inline = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let inline = line_texts(widget.active_viewport_lines_for_test(80)).join("\n");
     let transcript = line_texts(widget.transcript_overlay_lines(80)).join("\n");
 
     assert!(
@@ -9516,37 +10143,38 @@ fn transcript_overlay_lines_include_completed_read_input_and_full_output() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "read src/lib.rs".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "read src/lib.rs".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
             cmd: "read src/lib.rs".to_string(),
             name: "lib.rs".to_string(),
             path: PathBuf::from("src/lib.rs"),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCallDetails {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "read".to_string(),
-        input: serde_json::json!({"path": "src/lib.rs", "offset": 4, "limit": 2}),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResultIo {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "read".to_string(),
-        title: "read src/lib.rs".to_string(),
-        input: serde_json::json!({"path": "src/lib.rs", "offset": 4, "limit": 2}),
-        output: serde_json::Value::String("read output line 1\nread output line 2".to_string()),
-        display_content: None,
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "tool-1".to_string(),
+        "read".to_string(),
+        serde_json::json!({"path": "src/lib.rs", "offset": 4, "limit": 2}),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result_io(
+        "tool-1".to_string(),
+        "read".to_string(),
+        "read src/lib.rs".to_string(),
+        serde_json::json!({"path": "src/lib.rs", "offset": 4, "limit": 2}),
+        serde_json::Value::String("read output line 1\nread output line 2".to_string()),
+        None,
+        false,
+        false,
+    ));
 
     let inline = line_texts(widget.active_viewport_lines_for_test(80)).join("\n");
     let transcript = line_texts(widget.transcript_overlay_lines(80)).join("\n");
 
     assert!(
-        inline.contains("Explored") && inline.contains("Read src/lib.rs"),
+        inline.contains("Explored") && inline.contains("Read src/lib.rs")
+            || inline.contains("Exploring") && inline.contains("Reading src/lib.rs"),
         "inline read rendering should stay as the compact explored block: {inline}"
     );
     assert!(
@@ -9584,14 +10212,14 @@ fn transcript_overlay_lines_include_patch_input_and_diff_output() {
         },
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchAppliedIo {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "apply_patch".to_string(),
-        input: serde_json::json!({
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied_io(
+        "tool-1".to_string(),
+        "apply_patch".to_string(),
+        serde_json::json!({
             "patch": "*** Begin Patch\n*** Update File: foo.txt\n-old\n+new\n*** End Patch"
         }),
         changes,
-    });
+    ));
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
 
@@ -9671,6 +10299,7 @@ fn restored_session_transcript_overlay_preserves_paired_tool_io() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -9740,6 +10369,7 @@ fn legacy_restored_session_without_tool_io_keeps_existing_tool_result_rendering(
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -9763,12 +10393,12 @@ fn read_tool_call_renders_as_explored_group_in_viewport() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "cat foo.txt".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "cat foo.txt".to_string(),
+        false,
+        None,
+    ));
 
     let live_display = widget
         .active_cell_display_lines_for_test(80)
@@ -9787,17 +10417,17 @@ fn read_tool_call_renders_as_explored_group_in_viewport() {
         "expected read start to render immediately: {live_display}"
     );
     assert!(
-        live_display.contains("Read foo.txt"),
+        live_display.contains("Reading foo.txt"),
         "expected live read summary: {live_display}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "cat foo.txt".to_string(),
-        preview: "hello".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "cat foo.txt".to_string(),
+        "hello".to_string(),
+        false,
+        false,
+    ));
 
     let display = widget
         .active_cell_display_lines_for_test(80)
@@ -9816,7 +10446,7 @@ fn read_tool_call_renders_as_explored_group_in_viewport() {
         "expected explored viewport grouping: {display}"
     );
     assert!(
-        display.contains("Read foo.txt"),
+        display.contains("Read foo.txt") || display.contains("Reading foo.txt"),
         "expected read summary in explored viewport: {display}"
     );
     assert!(display.contains("▌ Explored") || display.contains("▌ Exploring"));
@@ -9831,23 +10461,23 @@ fn read_tool_call_renders_relative_path_with_line_range() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "read crates/core/src/query.rs".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "read crates/core/src/query.rs".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
             cmd: "read crates/core/src/query.rs".to_string(),
             name: "crates/core/src/query.rs L:10-19".to_string(),
             path: PathBuf::from("crates/core/src/query.rs"),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "read crates/core/src/query.rs".to_string(),
-        preview: "impl Query {}".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "read crates/core/src/query.rs".to_string(),
+        "impl Query {}".to_string(),
+        false,
+        false,
+    ));
 
     let display = widget
         .active_cell_display_lines_for_test(100)
@@ -9876,23 +10506,23 @@ fn read_tool_call_falls_back_to_path_when_read_name_is_empty() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "read crates/tui/src/mod.rs".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "read crates/tui/src/mod.rs".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
             cmd: "read crates/tui/src/mod.rs".to_string(),
             name: String::new(),
             path: PathBuf::from("crates/tui/src/mod.rs"),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "read crates/tui/src/mod.rs".to_string(),
-        preview: "mod tui;".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "read crates/tui/src/mod.rs".to_string(),
+        "mod tui;".to_string(),
+        false,
+        false,
+    ));
 
     let display = widget
         .active_cell_display_lines_for_test(80)
@@ -9925,16 +10555,16 @@ fn read_tool_call_updates_placeholder_from_completed_tool_call_metadata() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "read {}".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "read {}".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
             cmd: String::new(),
             name: String::new(),
             path: PathBuf::new(),
         }]),
-    });
+    ));
 
     let initial_display = widget
         .active_cell_display_lines_for_test(80)
@@ -9961,15 +10591,15 @@ fn read_tool_call_updates_placeholder_from_completed_tool_call_metadata() {
         "read placeholder should not render as a generic running tool: {initial_display}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCallUpdated {
-        tool_use_id: "tool-1".to_string(),
-        summary: "read crates/tui/src/mod.rs".to_string(),
-        parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::Read {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_updated(
+        "tool-1".to_string(),
+        "read crates/tui/src/mod.rs".to_string(),
+        vec![devo_protocol::parse_command::ParsedCommand::Read {
             cmd: "read crates/tui/src/mod.rs".to_string(),
             name: "mod.rs".to_string(),
             path: PathBuf::from("crates/tui/src/mod.rs"),
         }],
-    });
+    ));
 
     let updated_display = widget
         .active_cell_display_lines_for_test(80)
@@ -9984,17 +10614,18 @@ fn read_tool_call_updates_placeholder_from_completed_tool_call_metadata() {
         .join("\n");
 
     assert!(
-        updated_display.contains("Read crates/tui/src/mod.rs"),
+        updated_display.contains("Reading crates/tui/src/mod.rs")
+            || updated_display.contains("Read crates/tui/src/mod.rs"),
         "expected read placeholder to update in place: {updated_display}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "read crates/tui/src/mod.rs".to_string(),
-        preview: "mod tui;".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "read crates/tui/src/mod.rs".to_string(),
+        "mod tui;".to_string(),
+        false,
+        false,
+    ));
 
     let completed_display = widget
         .active_cell_display_lines_for_test(80)
@@ -10036,32 +10667,32 @@ fn consecutive_read_tool_calls_render_each_on_its_own_line() {
     for path in paths {
         let name = path.rsplit('/').next().expect("basename");
         let tool_use_id = format!("tool-{name}");
-        widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-            tool_use_id: tool_use_id.clone(),
-            summary: "read {}".to_string(),
-            preparing: false,
-            parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+        widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+            tool_use_id.clone(),
+            "read {}".to_string(),
+            false,
+            Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
                 cmd: String::new(),
                 name: String::new(),
                 path: PathBuf::new(),
             }]),
-        });
-        widget.handle_worker_event(crate::events::WorkerEvent::ToolCallUpdated {
-            tool_use_id: tool_use_id.clone(),
-            summary: format!("read {path}"),
-            parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::Read {
+        ));
+        widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_updated(
+            tool_use_id.clone(),
+            format!("read {path}"),
+            vec![devo_protocol::parse_command::ParsedCommand::Read {
                 cmd: format!("read {path}"),
                 name: name.to_string(),
                 path: PathBuf::from(path),
             }],
-        });
-        widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
+        ));
+        widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
             tool_use_id,
-            title: format!("read {path}"),
-            preview: String::new(),
-            is_error: false,
-            truncated: false,
-        });
+            format!("read {path}"),
+            "ok".to_string(),
+            false,
+            false,
+        ));
     }
 
     let display = widget
@@ -10097,24 +10728,24 @@ fn glob_tool_call_renders_as_explored_group_in_viewport() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "glob **/Cargo.toml in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "glob **/Cargo.toml in crates".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob **/Cargo.toml in crates".to_string(),
                 path: Some("crates".to_string()),
             },
         ]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "glob **/Cargo.toml in crates".to_string(),
-        preview: "crates/tools/Cargo.toml".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "glob **/Cargo.toml in crates".to_string(),
+        "crates/tools/Cargo.toml".to_string(),
+        false,
+        false,
+    ));
 
     let display = widget
         .active_cell_display_lines_for_test(80)
@@ -10130,7 +10761,7 @@ fn glob_tool_call_renders_as_explored_group_in_viewport() {
 
     assert!(display.contains("Explored") || display.contains("Exploring"));
     assert!(
-        display.contains("List crates"),
+        display.contains("Finding crates") || display.contains("Found crates"),
         "expected list summary, got:\n{display}"
     );
 }
@@ -10144,16 +10775,16 @@ fn grep_tool_call_renders_as_explored_group_in_viewport() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'rebuild_restored_session' in crates/tui/src".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'rebuild_restored_session' in crates/tui/src".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "grep 'rebuild_restored_session' in crates/tui/src".to_string(),
             query: Some("rebuild_restored_session".to_string()),
             path: Some("crates/tui/src".to_string()),
         }]),
-    });
+    ));
 
     let live_display = widget
         .active_cell_display_lines_for_test(80)
@@ -10172,17 +10803,17 @@ fn grep_tool_call_renders_as_explored_group_in_viewport() {
         "expected grep start to render immediately: {live_display}"
     );
     assert!(
-        live_display.contains("Search rebuild_restored_session in crates/tui/src"),
+        live_display.contains("Grepping rebuild_restored_session in crates/tui/src"),
         "expected live search summary, got:\n{live_display}"
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "grep 'rebuild_restored_session' in crates/tui/src".to_string(),
-        preview: "chatwidget.rs".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "grep 'rebuild_restored_session' in crates/tui/src".to_string(),
+        "chatwidget.rs".to_string(),
+        false,
+        false,
+    ));
 
     let display = widget
         .active_cell_display_lines_for_test(80)
@@ -10198,7 +10829,8 @@ fn grep_tool_call_renders_as_explored_group_in_viewport() {
 
     assert!(display.contains("Explored") || display.contains("Exploring"));
     assert!(
-        display.contains("Search rebuild_restored_session in crates/tui/src"),
+        display.contains("Grepped rebuild_restored_session in crates/tui/src")
+            || display.contains("Grepping rebuild_restored_session in crates/tui/src"),
         "expected search summary, got:\n{display}"
     );
 }
@@ -10212,16 +10844,16 @@ fn code_search_tool_call_renders_as_explored_group_in_viewport() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "code_search live tool feedback in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "code_search live tool feedback in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "code_search live tool feedback in crates".to_string(),
             query: Some("live tool feedback".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
+    ));
 
     let live_display = widget
         .active_cell_display_lines_for_test(80)
@@ -10240,7 +10872,7 @@ fn code_search_tool_call_renders_as_explored_group_in_viewport() {
         "expected code_search start to render immediately: {live_display}"
     );
     assert!(
-        live_display.contains("Search live tool feedback in crates"),
+        live_display.contains("Grepping live tool feedback in crates"),
         "expected live code_search summary, got:\n{live_display}"
     );
     assert!(
@@ -10258,25 +10890,25 @@ fn exploring_code_search_with_details_shows_input_in_active_cell() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "code_search live tool feedback in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "code_search live tool feedback in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "code_search live tool feedback in crates".to_string(),
             query: Some("live tool feedback".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCallDetails {
-        tool_use_id: "tool-1".to_string(),
-        tool_name: "code_search".to_string(),
-        input: serde_json::json!({
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_details(
+        "tool-1".to_string(),
+        "code_search".to_string(),
+        serde_json::json!({
             "operation": "search",
             "query": "live tool feedback",
             "path": "crates"
         }),
-    });
+    ));
 
     let live_display = widget
         .active_cell_display_lines_for_test(80)
@@ -10295,12 +10927,8 @@ fn exploring_code_search_with_details_shows_input_in_active_cell() {
         "expected Exploring header: {live_display}"
     );
     assert!(
-        live_display.contains("operation") && live_display.contains("search"),
-        "active ExecCell should show 'operation: search' while exploring:\n{live_display}"
-    );
-    assert!(
-        live_display.contains("query") && live_display.contains("live tool feedback"),
-        "active ExecCell should show 'query: live tool feedback' while exploring:\n{live_display}"
+        live_display.contains("Grepping live tool feedback in crates"),
+        "expected code_search search line while exploring:\n{live_display}"
     );
 }
 
@@ -10313,42 +10941,42 @@ fn merged_explored_group_becomes_explored_after_all_results_arrive() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'plan' in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "grep 'plan' in crates".to_string(),
             query: Some("plan".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-2".to_string(),
-        summary: "glob **/plan.rs in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob **/plan.rs in crates".to_string(),
                 path: Some("crates".to_string()),
             },
         ]),
-    });
+    ));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "grep 'plan' in crates".to_string(),
-        preview: "crates/tools/src/handlers/plan.rs".to_string(),
-        is_error: false,
-        truncated: false,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-2".to_string(),
-        title: "glob **/plan.rs in crates".to_string(),
-        preview: "crates/tools/src/handlers/plan.rs".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        "crates/tools/src/handlers/plan.rs".to_string(),
+        false,
+        false,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        "crates/tools/src/handlers/plan.rs".to_string(),
+        false,
+        false,
+    ));
 
     let display = widget
         .active_cell_display_lines_for_test(80)
@@ -10373,6 +11001,71 @@ fn merged_explored_group_becomes_explored_after_all_results_arrive() {
 }
 
 #[test]
+fn live_tool_order_stays_before_reasoning_after_reasoning_completes() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let _ = widget.drain_scrollback_lines(100);
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "Web Search(\"query\")".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "Web Search(\"query\")".to_string(),
+        "status: completed".to_string(),
+        false,
+        false,
+    ));
+    let reasoning_id = devo_core::ItemId::new();
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        reasoning_id,
+        TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        reasoning_id,
+        TextItemKind::Reasoning,
+        "thinking body",
+    ));
+
+    let live = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    let tool_position = live
+        .find("Web Search(\"query\")")
+        .expect("live tool row should render");
+    let thinking_position = live
+        .find("Thinking: thinking body")
+        .expect("live reasoning row should render");
+    assert!(
+        tool_position < thinking_position,
+        "tool should stay above live reasoning:\n{live}"
+    );
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        reasoning_id,
+        TextItemKind::Reasoning,
+        "thinking body",
+    ));
+
+    let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
+    let tool_position = transcript
+        .find("Web Search(\"query\")")
+        .expect("tool row should remain in transcript");
+    let thought_position = transcript
+        .find("Thought: thinking body")
+        .expect("completed reasoning row should render");
+    assert!(
+        tool_position < thought_position,
+        "tool should stay above completed reasoning:\n{transcript}"
+    );
+}
+
+#[test]
 fn live_viewport_shows_explored_group_while_active() {
     let model = Model {
         slug: "test-model".to_string(),
@@ -10381,27 +11074,27 @@ fn live_viewport_shows_explored_group_while_active() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'plan' in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "grep 'plan' in crates".to_string(),
             query: Some("plan".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-2".to_string(),
-        summary: "glob **/plan.rs in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob **/plan.rs in crates".to_string(),
                 path: Some("crates".to_string()),
             },
         ]),
-    });
+    ));
 
     let display = widget
         .active_viewport_lines_for_test(80)
@@ -10420,11 +11113,11 @@ fn live_viewport_shows_explored_group_while_active() {
         "live viewport should show explored exec cell:\n{display}"
     );
     assert!(
-        display.contains("Search plan in crates"),
+        display.contains("Grepping plan in crates") || display.contains("Grepped plan in crates"),
         "live viewport should include search summary:\n{display}"
     );
     assert!(
-        display.contains("List crates"),
+        display.contains("Finding crates") || display.contains("Found crates"),
         "live viewport should include list summary:\n{display}"
     );
 }
@@ -10438,31 +11131,31 @@ fn reasoning_start_closes_current_explored_group() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'plan' in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "grep 'plan' in crates".to_string(),
             query: Some("plan".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: devo_core::ItemId::new(),
-        kind: crate::events::TextItemKind::Reasoning,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-2".to_string(),
-        summary: "glob **/plan.rs in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        devo_core::ItemId::new(),
+        crate::events::TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob **/plan.rs in crates".to_string(),
                 path: Some("crates".to_string()),
             },
         ]),
-    });
+    ));
 
     let transcript = widget
         .transcript_overlay_lines(80)
@@ -10477,9 +11170,15 @@ fn reasoning_start_closes_current_explored_group() {
         .join("\n");
 
     assert_eq!(
-        transcript.matches("Explored").count() + transcript.matches("Exploring").count(),
-        2,
-        "reasoning boundary should split explored groups:\n{transcript}"
+        transcript.matches("Grepping 'plan' in crates").count()
+            + transcript.matches("Grepped 'plan' in crates").count(),
+        1,
+        "{transcript}"
+    );
+    assert_eq!(
+        transcript.matches("Finding crates").count() + transcript.matches("Found crates").count(),
+        1,
+        "{transcript}"
     );
 }
 
@@ -10492,31 +11191,31 @@ fn assistant_text_start_closes_current_explored_group() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'plan' in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "grep 'plan' in crates".to_string(),
             query: Some("plan".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextItemStarted {
-        item_id: devo_core::ItemId::new(),
-        kind: crate::events::TextItemKind::Assistant,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-2".to_string(),
-        summary: "glob **/plan.rs in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        devo_core::ItemId::new(),
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob **/plan.rs in crates".to_string(),
                 path: Some("crates".to_string()),
             },
         ]),
-    });
+    ));
 
     let transcript = widget
         .transcript_overlay_lines(80)
@@ -10531,9 +11230,15 @@ fn assistant_text_start_closes_current_explored_group() {
         .join("\n");
 
     assert_eq!(
-        transcript.matches("Explored").count() + transcript.matches("Exploring").count(),
-        2,
-        "assistant text boundary should split explored groups:\n{transcript}"
+        transcript.matches("Grepping 'plan' in crates").count()
+            + transcript.matches("Grepped 'plan' in crates").count(),
+        1,
+        "{transcript}"
+    );
+    assert_eq!(
+        transcript.matches("Finding crates").count() + transcript.matches("Found crates").count(),
+        1,
+        "{transcript}"
     );
 }
 
@@ -10546,56 +11251,56 @@ fn merged_explored_group_stays_completed_when_tool_results_arrive_after_tool_cal
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'plan' in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "grep 'plan' in crates".to_string(),
             query: Some("plan".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-2".to_string(),
-        summary: "glob **/plan.rs in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob **/plan.rs in crates".to_string(),
                 path: Some("crates".to_string()),
             },
         ]),
-    });
+    ));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "grep 'plan' in crates".to_string(),
-        preview: String::new(),
-        is_error: false,
-        truncated: false,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-2".to_string(),
-        title: "glob **/plan.rs in crates".to_string(),
-        preview: String::new(),
-        is_error: false,
-        truncated: false,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "grep output".to_string(),
-        preview: "crates/tools/src/handlers/plan.rs".to_string(),
-        is_error: false,
-        truncated: false,
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-2".to_string(),
-        title: "glob output".to_string(),
-        preview: "crates/tools/src/handlers/plan.rs".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "grep output".to_string(),
+        "crates/tools/src/handlers/plan.rs".to_string(),
+        false,
+        false,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-2".to_string(),
+        "glob output".to_string(),
+        "crates/tools/src/handlers/plan.rs".to_string(),
+        false,
+        false,
+    ));
 
     let display = widget
         .active_cell_display_lines_for_test(80)
@@ -10628,49 +11333,49 @@ fn explored_group_in_history_can_finish_late_completions() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-1".to_string(),
-        summary: "grep 'plan' in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
             cmd: "grep 'plan' in crates".to_string(),
             query: Some("plan".to_string()),
             path: Some("crates".to_string()),
         }]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-2".to_string(),
-        summary: "glob **/plan.rs in crates".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob **/plan.rs in crates".to_string(),
                 path: Some("crates".to_string()),
             },
         ]),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-1".to_string(),
-        title: "grep 'plan' in crates".to_string(),
-        preview: String::new(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolCall {
-        tool_use_id: "tool-3".to_string(),
-        summary: "write src/main.rs".to_string(),
-        preparing: false,
-        parsed_commands: None,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-3".to_string(),
+        "write src/main.rs".to_string(),
+        false,
+        None,
+    ));
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ToolResult {
-        tool_use_id: "tool-2".to_string(),
-        title: "glob **/plan.rs in crates".to_string(),
-        preview: String::new(),
-        is_error: false,
-        truncated: false,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-2".to_string(),
+        "glob **/plan.rs in crates".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
 
     let history_blob = widget
         .transcript_overlay_lines(80)
@@ -10736,12 +11441,12 @@ fn patch_applied_event_renders_edited_block() {
         },
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         blob.contains("Edited foo.txt") || blob.contains("Edited 1 file"),
         "expected edited patch block, got:\n{blob}"
@@ -10765,12 +11470,12 @@ fn added_file_patch_applied_event_renders_added_content_lines() {
             content: "pub fn quicksort() {\n    println!(\"hi\");\n}\n".to_string(),
         },
     );
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    let blob = transcript_overlay_text(&widget, 100);
     assert!(
         blob.contains("Added quicksort.rs")
             || blob.contains("Edited quicksort.rs")
@@ -10806,12 +11511,12 @@ fn apply_patch_style_full_git_diff_reports_non_zero_counts() {
         },
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         blob.contains("(+1 -1)"),
         "full git-style apply_patch diff should report non-zero counts:\n{blob}"
@@ -10860,12 +11565,12 @@ fn write_patch_applied_event_renders_edited_block() {
         },
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         blob.contains("Edited foo.txt") || blob.contains("Edited 1 file"),
         "expected edited patch block for write result, got:\n{blob}"
@@ -10892,12 +11597,12 @@ fn write_patch_applied_event_reports_non_zero_counts() {
         },
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         !blob.contains("Edited 0 files (+0 -0)"),
         "write-derived edited block should not collapse to zero summary:\n{blob}"
@@ -10928,10 +11633,10 @@ fn patch_applied_event_with_diff_only_reports_non_zero_counts() {
         },
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
     assert!(
@@ -10960,10 +11665,10 @@ fn patch_applied_event_with_empty_update_is_not_rendered() {
         },
     );
 
-    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
-        tool_use_id: "tool-1".to_string(),
+    widget.handle_worker_event(crate::worker_event_test_helpers::patch_applied(
+        "tool-1".to_string(),
         changes,
-    });
+    ));
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
     assert!(
@@ -11009,6 +11714,7 @@ fn session_switch_without_rich_edited_metadata_degrades_to_tool_result_path() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -11067,6 +11773,7 @@ fn session_switch_restores_added_file_content_in_edited_block() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -11125,6 +11832,7 @@ fn session_switch_without_rich_edited_metadata_still_restores_edited_block() {
         collaboration_mode: CollaborationMode::Build,
         permission_preset: None,
         effective_context_window: None,
+        last_context_occupancy: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");

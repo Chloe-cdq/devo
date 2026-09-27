@@ -17,7 +17,6 @@ use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::MemoryConfig;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
@@ -148,7 +147,6 @@ fn build_memory_test_runtime_with_provider(
                 display_name: "test-model".into(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -206,26 +204,26 @@ async fn start_native_session_after_initialize(
             connection_id,
             serde_json::json!({
                 "id": request_id,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": "memory selector test",
-                    "model": "test-model"
+                    "idempotencyKey": uuid::Uuid::new_v4().to_string()
                 }
             }),
         )
         .await
-        .expect("Native session/start response");
-    Ok(
-        serde_json::from_value::<devo_server::SuccessResponse<devo_server::SessionStartResult>>(
-            response,
-        )?
-        .result
-        .session
-        .session_id
-        .to_string(),
-    )
+        .expect("Native session/new response");
+    anyhow::ensure!(
+        response.get("result").is_some(),
+        "session/new failed: {response}"
+    );
+    Ok(serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+    >(response)?
+    .result
+    .session
+    .id
+    .to_string())
 }
 
 async fn create_native_session_subscription(
@@ -558,23 +556,25 @@ async fn native_memory_remember_and_list_support_user_and_project_scopes() -> Re
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "memory test",
-                    "model": "test-model"
+                    "idempotencyKey": uuid::Uuid::new_v4().to_string()
                 }
             }),
         )
         .await
-        .expect("Native session/start response");
+        .expect("Native session/new response");
+    anyhow::ensure!(
+        session_started.get("result").is_some(),
+        "session/new failed: {session_started}"
+    );
     let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
     >(session_started)?
     .result
     .session
-    .session_id
+    .id
     .to_string();
     let _subscription = create_native_session_subscription(
         &runtime,
@@ -964,7 +964,8 @@ async fn native_project_memory_follows_native_subscription_selector() -> Result<
         .await
         .expect("Project B memory/remember response");
     let project_b_entry: devo_protocol::native::rpc_memory::MemoryEntry =
-        serde_json::from_value(project_b_entry["result"].clone())?;
+        serde_json::from_value(project_b_entry["result"].clone())
+            .with_context(|| format!("Project B remember failed: {project_b_entry}"))?;
 
     let listed_from_b = runtime
         .handle_incoming(
@@ -1092,7 +1093,8 @@ async fn native_project_memory_follows_native_subscription_selector() -> Result<
         .await
         .expect("Project C memory/remember response");
     let project_c_entry: devo_protocol::native::rpc_memory::MemoryEntry =
-        serde_json::from_value(project_c_entry["result"].clone())?;
+        serde_json::from_value(project_c_entry["result"].clone())
+            .with_context(|| format!("Project C remember failed: {project_c_entry}"))?;
     assert_ne!(project_c_entry.scope_id, project_b_entry.scope_id);
 
     let listed_after_update = runtime

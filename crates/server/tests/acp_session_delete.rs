@@ -9,7 +9,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
@@ -129,7 +128,6 @@ async fn acp_session_delete_removes_session_from_history_and_is_idempotent() -> 
                 display_name: "test-model".to_string(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -281,7 +279,7 @@ async fn acp_session_delete_cancels_running_session_before_removal() -> Result<(
 }
 
 #[tokio::test]
-async fn acp_session_delete_cascades_to_forked_children() -> Result<()> {
+async fn acp_session_delete_keeps_user_fork_children() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
     let (acp_connection_id, mut notifications_rx) = initialize_acp_connection(&runtime).await?;
@@ -309,16 +307,32 @@ async fn acp_session_delete_cascades_to_forked_children() -> Result<()> {
 
     delete_acp_session(&runtime, acp_connection_id, 12, &root.session_id).await?;
 
-    assert_eq!(
-        list_acp_sessions(&runtime, acp_connection_id, 13, data_root.path()).await?,
-        AcpListSessionsResult {
-            sessions: Vec::new(),
-            next_cursor: None,
-            meta: None,
-        }
-    );
+    let listed = list_acp_sessions(&runtime, acp_connection_id, 13, data_root.path()).await?;
+    assert_eq!(listed.sessions.len(), 1);
+    assert_eq!(listed.sessions[0].session_id, child_session_id);
     assert!(!session_rollout_exists(data_root.path(), root.session_id)?);
-    assert!(!session_rollout_exists(data_root.path(), child_session_id)?);
+    assert!(session_rollout_exists(data_root.path(), child_session_id)?);
+
+    let rebuilt = build_runtime(data_root.path())?;
+    rebuilt.load_persisted_sessions().await?;
+    let (rebuilt_connection_id, _) = initialize_native_connection(&rebuilt).await?;
+    let resume_response = rebuilt
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 14,
+                "method": "session/resume",
+                "params": {
+                    "sessionId": child_session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume forked child after parent delete")?;
+    assert!(
+        resume_response.get("result").is_some(),
+        "forked child must remain resumable after parent delete: {resume_response}"
+    );
     Ok(())
 }
 
@@ -420,7 +434,6 @@ fn build_runtime_with_provider(
                 display_name: "test-model".to_string(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -673,4 +686,75 @@ fn session_rollout_exists(data_root: &Path, session_id: SessionId) -> Result<boo
         Ok(false)
     }
     visit(&data_root.join("sessions"), session_id)
+}
+
+#[tokio::test]
+async fn delete_session_with_active_turn_and_pending_queue() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let (started_tx, started_rx) = oneshot::channel();
+    let provider: Arc<dyn ModelProviderSDK> = Arc::new(BlockingProvider::new(started_tx));
+    let runtime = build_runtime_with_provider(data_root.path(), provider)?;
+    let (acp_connection_id, _notifications_rx) = initialize_acp_connection(&runtime).await?;
+    let (native_connection_id, _native_notifications_rx) =
+        initialize_native_connection(&runtime).await?;
+    let session = create_acp_session(&runtime, acp_connection_id, 40, data_root.path()).await?;
+    let session_id = session.session_id;
+
+    start_turn(&runtime, native_connection_id, 41, session_id).await?;
+    timeout(Duration::from_secs(5), started_rx)
+        .await
+        .context("timed out waiting for blocking provider to start")?
+        .context("blocking provider start signal dropped")?;
+
+    for (request_id, text) in [(42, "queued one"), (43, "queued two")] {
+        let response = runtime
+            .handle_incoming(
+                native_connection_id,
+                serde_json::json!({
+                    "id": request_id,
+                    "method": "session/queue/push",
+                    "params": {
+                        "sessionId": session_id.to_string(),
+                        "input": [{ "type": "text", "text": text }],
+                        "idempotencyKey": format!("queue-{request_id}"),
+                    }
+                }),
+            )
+            .await
+            .with_context(|| format!("session/queue/push {text} response"))?;
+        anyhow::ensure!(
+            response.get("error").is_none(),
+            "session/queue/push failed: {response}"
+        );
+    }
+
+    delete_acp_session(&runtime, acp_connection_id, 44, &session_id).await?;
+
+    let queue_list_response = runtime
+        .handle_incoming(
+            native_connection_id,
+            serde_json::json!({
+                "id": 45,
+                "method": "session/queue/list",
+                "params": { "sessionId": session_id.to_string() },
+            }),
+        )
+        .await
+        .context("session/queue/list response")?;
+    assert_eq!(
+        queue_list_response["error"]["code"],
+        serde_json::json!("SessionNotFound")
+    );
+    let db = devo_server::db::Database::open(data_root.path().join("acp_session_delete.db"))?;
+    assert!(
+        db.list_pending(&session_id, devo_server::db::QueueType::Turn)?
+            .is_empty()
+    );
+    assert!(
+        db.list_pending(&session_id, devo_server::db::QueueType::Steer)?
+            .is_empty()
+    );
+    assert!(!session_rollout_exists(data_root.path(), session_id)?);
+
+    Ok(())
 }

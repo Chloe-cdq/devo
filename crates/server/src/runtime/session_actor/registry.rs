@@ -35,6 +35,11 @@ impl ServerRuntime {
             return existing;
         }
         sessions.insert(session_id, handle.clone());
+        drop(sessions);
+        let runtime = self.runtime_arc();
+        tokio::spawn(async move {
+            runtime.rearm_title_polish_if_needed(session_id).await;
+        });
         handle
     }
 
@@ -43,23 +48,11 @@ impl ServerRuntime {
         session_id: SessionId,
     ) -> Option<super::SessionHandle> {
         let handle = self.sessions.lock().await.remove(&session_id)?;
-        let pending_user_inputs = self
-            .session_interactive
+        // Drop in-memory waiters without rewriting Waiting items to Interrupted.
+        // App restart must still be able to restore unanswered questions.
+        self.session_interactive
             .drain_pending_user_inputs_for_session(session_id)
             .await;
-        for (request_id, pending) in pending_user_inputs {
-            if let Some(persisted) = &pending.persisted {
-                self.persist_terminal_user_input_item(
-                    pending.owner_session_id,
-                    pending.turn_id,
-                    request_id,
-                    &pending.questions,
-                    devo_protocol::native::item::ItemState::Interrupted,
-                    persisted,
-                )
-                .await;
-            }
-        }
         self.session_interactive.clear_session(session_id).await;
         self.active_turns.remove_session(session_id).await;
         Some(handle)
@@ -89,21 +82,15 @@ impl ServerRuntime {
         summaries
     }
 
-    /// Reads turn reservation state, preferring runtime caches while the session
-    /// actor is blocked in `ExecuteTurn`.
+    /// Reads turn reservation state, preferring runtime caches while a turn
+    /// task holds the working copy (shared queue Arcs stay usable without a
+    /// mailbox hop). Callers may mutate `pending_turn_queue` and
+    /// `steer_input_queue` through the returned shared mutexes.
     ///
-    /// `execute_turn_in_actor` runs inline, so its actor does not poll mailbox
-    /// commands until the turn finishes. This is the only synchronous fast path
-    /// for work that must remain responsive during an active turn. Callers may
-    /// mutate `pending_turn_queue` and `steer_input_queue` through the returned
-    /// shared mutexes; those mutexes are the per-session serialization point.
-    /// Do not replace this with a mailbox round-trip for queue, steer, or other
-    /// active-turn control paths.
-    ///
-    /// Stream presence **or** runtime turn metadata means the actor is blocked
-    /// (or about to be). Finalization clears `runtime_active_turn_id` before
-    /// `ExecuteTurn` returns; falling through to the mailbox in that window
-    /// hangs the next `turn/start`.
+    /// Stream presence **or** runtime turn metadata means a turn is admitted.
+    /// Finalization clears `runtime_active_turn_id` before `MergeTurn`
+    /// returns; falling through to the mailbox in that window is safe because
+    /// the actor no longer runs unbounded turn I/O.
     pub(crate) async fn session_turn_reservation_snapshot(
         &self,
         session_id: SessionId,
@@ -113,15 +100,10 @@ impl ServerRuntime {
         if stream_busy || runtime_turn.is_some() {
             let handle = self.session(session_id).await?;
             let Some(spawn) = self.active_spawn_snapshot_for_session(session_id).await else {
-                // Actor is blocked (`ExecuteTurn` in flight or stream still
-                // registered) but the spawn snapshot is not available yet.
-                // Falling through to the mailbox hangs until the turn ends.
+                // Turn is admitted but the spawn snapshot is not available yet.
+                // Prefer None over a stale mailbox read of pre-admission state.
                 return None;
             };
-            // Only live runtime metadata means a turn is still admitted.
-            // After finalize clears it, synthesizing a placeholder made the
-            // next `turn/start` queue instead of starting once the actor
-            // finished merging.
             return Some(super::snapshots::TurnReservationSnapshot {
                 max_turns: handle.max_turns(),
                 active_turn: runtime_turn,
@@ -155,7 +137,7 @@ impl ServerRuntime {
             .await;
     }
 
-    /// Snapshot registered at turn start while the session actor is busy executing.
+    /// Snapshot registered at turn start for zero-hop control-plane access.
     pub(crate) async fn active_spawn_snapshot_for_session(
         &self,
         session_id: SessionId,
@@ -237,6 +219,7 @@ impl ServerRuntime {
 
     /// Reads a session's parent id, preferring the in-flight turn inline snapshot
     /// and agent-registry hierarchy over a mailbox round-trip.
+    #[allow(dead_code)]
     pub(crate) async fn session_parent_id_snapshot(
         &self,
         session_id: SessionId,
