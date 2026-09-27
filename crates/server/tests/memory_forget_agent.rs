@@ -21,6 +21,8 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
+#[path = "support/memory_forget_agent_cases/fork.rs"]
+mod fork;
 #[path = "support/memory_forget_runtime.rs"]
 #[allow(dead_code)]
 mod memory_forget_runtime_support;

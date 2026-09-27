@@ -22,7 +22,7 @@ impl MemoryMutationContext {
             .session_summary_snapshot(invocation.session_id)
             .await
             .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
-        if summary.parent_session_id.is_some() {
+        if summary.is_subagent() {
             return Err(ToolCallError::Denied(
                 "sub-agents cannot mutate user memory".to_string(),
             ));

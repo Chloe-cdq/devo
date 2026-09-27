@@ -56,7 +56,11 @@ pub(super) async fn execute_turn_in_actor(
 
     let (event_tx, event_rx) = mpsc::channel(QUERY_EVENT_CHANNEL_CAPACITY);
     let event_tool_registry = runtime.tool_registry_for_actor_state(state);
-    let usage_parent_session_id = state.parent_session_id();
+    let usage_parent_session_id = if state.summary.is_subagent() {
+        state.parent_session_id()
+    } else {
+        None
+    };
     let usage_context_window = Some(turn_config.model.context_window as u64);
     // Only root sessions own a parent-turn usage ledger. Child turns publish
     // through `publish_subagent_turn_usage` into their parent's ledger; starting

@@ -44,7 +44,7 @@ impl ServerRuntime {
             event_tx,
         } = params;
         let session_id = state.session_id();
-        let agent_scope = if state.summary.parent_session_id.is_some() {
+        let agent_scope = if state.summary.is_subagent() {
             ToolAgentScope::Subagent
         } else {
             ToolAgentScope::Parent
