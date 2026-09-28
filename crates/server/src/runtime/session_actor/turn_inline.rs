@@ -27,6 +27,9 @@ pub(crate) struct TurnInlineState {
     pub(crate) next_item_seq: u64,
     pub(crate) loaded_item_count: u64,
     pub(crate) persisted_turn_items: Vec<PersistedTurnItem>,
+    /// Read-only source binding for a resumed turn. Kept outside the append
+    /// buffer so merging a continuation cannot duplicate the original message.
+    pub(crate) restored_user_item: Option<PersistedTurnItem>,
     pub(crate) history_items: Vec<SessionHistoryItem>,
     pub(crate) record: Option<SessionRecord>,
     pub(crate) session_approval_cache: ApprovalGrantCache,
@@ -61,6 +64,7 @@ impl TurnInlineState {
             next_item_seq: state.next_item_seq,
             loaded_item_count: state.loaded_item_count,
             persisted_turn_items: Vec::new(),
+            restored_user_item: state.current_user_item(turn.turn_id).cloned(),
             history_items: Vec::new(),
             record: state.record.clone(),
             session_approval_cache: state.session_approval_cache.clone(),

@@ -62,14 +62,23 @@ impl MemoryRuntime {
     ) -> Result<(devo_protocol::SessionId, String), MemoryError> {
         match scope {
             MemoryScope::User => {
-                let session_id = source
-                    .bound_session_id
-                    .or(source.user_session_id)
-                    .ok_or_else(|| {
-                        MemoryError::InvalidRequest(
-                            "memory/forget requires a session-bound connection".to_string(),
-                        )
-                    })?;
+                let session_id = match source.bound_session_id {
+                    Some(session_id) => session_id,
+                    None => match source.user_session {
+                        super::MemoryUserSessionSelection::Selected(session_id) => session_id,
+                        super::MemoryUserSessionSelection::Unbound => {
+                            return Err(MemoryError::InvalidRequest(
+                                "memory/forget requires a session-bound connection".to_string(),
+                            ));
+                        }
+                        super::MemoryUserSessionSelection::Ambiguous => {
+                            return Err(MemoryError::InvalidRequest(
+                                "memory/forget User scope has ambiguous Native Session selectors"
+                                    .to_string(),
+                            ));
+                        }
+                    },
+                };
                 let session = source
                     .sessions
                     .into_iter()

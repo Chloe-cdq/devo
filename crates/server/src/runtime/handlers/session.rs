@@ -468,11 +468,13 @@ impl ServerRuntime {
         // Metadata updates target the durable session record: the live actor
         // is an implementation detail, not a precondition. Keep the actor
         // optional so a cold session can be updated before `session/resume`.
-        let session_handle = self.session(legacy_session_id).await;
         let _metadata_write_permit = self
             .session_metadata_write_gate
             .acquire(legacy_session_id)
             .await;
+        // Resume can install an actor while this request waits for the gate.
+        // Resolve it only after hydration and this write are serialized.
+        let session_handle = self.session(legacy_session_id).await;
         // Persist-first: never wait on the session actor, and never take
         // the state-change gate for a settings patch. The metadata gate only
         // serializes concurrent read/modify/write patches for this session;
@@ -656,6 +658,7 @@ impl ServerRuntime {
                     settings,
                 )
             };
+        let mut applied_permission_preset: Option<devo_protocol::PermissionPreset> = None;
         let mut overlay_profile: Option<devo_safety::RuntimePermissionProfile> = None;
         let mut overlay_sandbox: Option<String> = None;
         let mut overlay_effort: Option<String> = None;
@@ -666,23 +669,16 @@ impl ServerRuntime {
             MemorySettingsPatchPlan::new(&current, params.settings.as_ref());
         let mut applied_window: Option<u64> = None;
         let mut settings_changes = Vec::new();
-        let live_permission_profile = if let Some(handle) = session_handle.as_ref() {
-            native_permission_profile(
-                handle
-                    .summary()
-                    .await
-                    .and_then(|summary| summary.permission_preset),
-            )
-        } else {
-            native_permission_profile(
-                index_metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.permission_preset),
-            )
-        };
+        let live_permission_profile = session_handle
+            .as_ref()
+            .map(|handle| native_permission_profile(handle.permission_preset()))
+            .unwrap_or(current.permission_profile);
         if let Some(settings) = &params.settings {
+            let durable_permission_changed = settings
+                .permission_profile
+                .is_some_and(|profile| profile != current.permission_profile);
             if let Some(profile) = settings.permission_profile
-                && profile != live_permission_profile
+                && (durable_permission_changed || profile != live_permission_profile)
             {
                 let preset = match profile {
                     devo_protocol::native::model::PermissionProfile::Default => {
@@ -695,21 +691,27 @@ impl ServerRuntime {
                         devo_protocol::PermissionPreset::FullAccess
                     }
                 };
-                if rollout_path.is_some() {
+                applied_permission_preset = Some(preset);
+                if durable_permission_changed && rollout_path.is_some() {
                     settings_changes.push((
                         SessionSettingsField::PermissionPreset,
                         serde_json::to_value(preset).expect("serialize permission preset setting"),
                     ));
                 }
-                let profile = safety_profile_from_protocol(
+                overlay_profile = Some(safety_profile_from_protocol(
                     preset,
                     session_cwd.clone(),
                     session_additional_dirs.clone(),
-                );
-                overlay_profile = Some(profile);
+                ));
+                // Repair a rejected notification without re-implying the
+                // sandbox of an unchanged durable permission target.
+                if !durable_permission_changed {
+                    overlay_sandbox = current.sandbox_profile.clone();
+                }
             }
-            if settings.sandbox_profile != current.sandbox_profile
-                && let Some(name) = &settings.sandbox_profile
+            if let Some(name) = &settings.sandbox_profile
+                && (durable_permission_changed
+                    || settings.sandbox_profile != current.sandbox_profile)
             {
                 let native_name = match crate::sandbox_profile::normalize_sandbox_profile_name(
                     name,
@@ -868,9 +870,11 @@ impl ServerRuntime {
         };
         if let Some(handle) = session_handle.as_ref() {
             if let Some(profile) = &overlay_profile {
-                handle.notify_permission_profile(profile.clone());
-            }
-            if let Some(name) = &overlay_sandbox {
+                let sandbox = overlay_sandbox
+                    .clone()
+                    .unwrap_or_else(|| profile.implied_sandbox_profile().to_string());
+                handle.notify_permission_profile(profile.clone(), sandbox);
+            } else if let Some(name) = &overlay_sandbox {
                 handle.notify_sandbox_profile(name.clone());
             }
         }
@@ -986,9 +990,10 @@ impl ServerRuntime {
         // (no actor round-trip).
         if let Some(index_metadata) = index_metadata.as_mut() {
             let mut touched = false;
-            if let Some(profile) = &overlay_profile {
-                index_metadata.permission_preset =
-                    Some(protocol_preset_from_safety(profile.preset));
+            if let Some(preset) = applied_permission_preset
+                && index_metadata.permission_preset != Some(preset)
+            {
+                index_metadata.permission_preset = Some(preset);
                 touched = true;
             }
             if let Some(model) = &overlay_model {

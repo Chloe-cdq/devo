@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anyhow::{Context, bail, ensure};
 use devo_core::durable_execution::{
     ExecutionRecord, ExecutionReplay, RecoveryDisposition, RecoveryState, ToolIntentJournal,
-    read_execution_replay,
 };
 use devo_core::{SessionId, TurnId, TurnStatus};
 use devo_protocol::native::rpc_turn::{
@@ -60,8 +59,10 @@ impl ServerRuntime {
         };
         let path = record.rollout_path.clone();
         let turn_id = turn.turn_id;
+        let store = self.rollout_store.clone();
         let execution =
-            tokio::task::spawn_blocking(move || read_execution_replay(&path, turn_id)).await??;
+            tokio::task::spawn_blocking(move || store.read_execution_replay(&path, turn_id))
+                .await??;
         if execution
             .recovery
             .as_ref()
@@ -206,8 +207,10 @@ impl ServerRuntime {
             return Ok(());
         };
         let path = record.rollout_path.clone();
+        let store = self.rollout_store.clone();
         let replay =
-            tokio::task::spawn_blocking(move || read_execution_replay(&path, turn_id)).await??;
+            tokio::task::spawn_blocking(move || store.read_execution_replay(&path, turn_id))
+                .await??;
         let previous = replay.recovery;
         if previous
             .as_ref()
@@ -432,7 +435,10 @@ impl ServerRuntime {
             None,
             event_rx,
         );
-        let current_user_item_id = working.state.current_user_item_id(turn.turn_id);
+        let current_user_item_id = working
+            .state
+            .current_user_item(turn.turn_id)
+            .map(|item| item.item_id);
         let query_outcome = self
             .run_turn_model_query(super::TurnModelQueryParams {
                 state: &mut working.state,

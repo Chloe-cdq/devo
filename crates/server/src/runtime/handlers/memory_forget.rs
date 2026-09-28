@@ -52,17 +52,17 @@ impl ServerRuntime {
             Ok(source) => source,
             Err(response) => return response,
         };
-        let user_session_id = match active_source
+        let session_context = self
+            .memory_command_sessions(connection_id, &active_source.active_session_ids)
+            .await;
+        let user_session = match active_source
             .source
             .as_ref()
             .and_then(|source| source.session_id)
         {
-            Some(session_id) => Some(session_id),
-            None => self.subscribed_session_for_connection(connection_id).await,
+            Some(session_id) => crate::memory::MemoryUserSessionSelection::Selected(session_id),
+            None => session_context.user_session,
         };
-        let sessions = self
-            .project_memory_sessions(connection_id, &active_source.active_session_ids)
-            .await;
         let entry_id = match &selector {
             MemoryForgetSelector::EntryId(entry_id) => Some(entry_id.clone()),
             MemoryForgetSelector::Text(_) => None,
@@ -75,8 +75,8 @@ impl ServerRuntime {
                 scope: params.scope,
                 source: MemoryForgetSource {
                     bound_session_id: active_source.source.and_then(|source| source.session_id),
-                    user_session_id,
-                    sessions,
+                    user_session,
+                    sessions: session_context.sessions,
                 },
             },
         )

@@ -425,8 +425,12 @@ pub(super) async fn run_session_actor(
                 }
                 let _ = reply.send(state.summary.clone());
             }
-            SessionCommand::ApplyPermissionProfile { profile, reply } => {
-                let sandbox = Some(profile.implied_sandbox_profile().to_string());
+            SessionCommand::ApplyPermissionProfile {
+                profile,
+                sandbox_profile,
+                reply,
+            } => {
+                let sandbox = Some(sandbox_profile);
                 state.core.config.permission_mode = profile.permission_mode();
                 state.core.config.permission_profile = profile.clone();
                 state.core.config.sandbox_profile = sandbox.clone();

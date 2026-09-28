@@ -41,6 +41,11 @@ pub(crate) struct SessionHandle {
     max_turns: Option<u32>,
     state_change_gate: Arc<tokio::sync::Mutex<()>>,
     memory_settings_tx: watch::Sender<crate::memory::SessionMemorySettingsSnapshot>,
+    // Keep permission publication beside every mailbox producer in this handle:
+    // reserve/send and try_send must share one lock and ordering contract. A
+    // separate snapshot module would split this invariant across send paths.
+    // Latest accepted mailbox target, including permission changes not yet applied.
+    permission_preset: Arc<std::sync::Mutex<Option<devo_protocol::PermissionPreset>>>,
 }
 
 impl SessionHandle {
@@ -76,6 +81,7 @@ impl SessionHandle {
             max_turns,
             state_change_gate: Arc::new(tokio::sync::Mutex::new(())),
             memory_settings_tx,
+            permission_preset: Arc::new(std::sync::Mutex::new(state.summary.permission_preset)),
         };
         tokio::spawn(super::actor_loop::run_session_actor(
             state,
@@ -88,6 +94,33 @@ impl SessionHandle {
 
     async fn send(&self, command: SessionCommand) -> bool {
         self.tx.send(command).await.is_ok()
+    }
+
+    /// Reads the latest accepted permission target without an actor round-trip.
+    pub(crate) fn permission_preset(&self) -> Option<devo_protocol::PermissionPreset> {
+        *self
+            .permission_preset
+            .lock()
+            .expect("permission snapshot lock")
+    }
+
+    // Reserve capacity before locking; publishing the command and its target
+    // under one short lock keeps concurrent senders in mailbox order.
+    async fn send_with_permission_preset(
+        &self,
+        command: SessionCommand,
+        preset: Option<devo_protocol::PermissionPreset>,
+    ) -> bool {
+        let Ok(permit) = self.tx.reserve().await else {
+            return false;
+        };
+        let mut snapshot = self
+            .permission_preset
+            .lock()
+            .expect("permission snapshot lock");
+        permit.send(command);
+        *snapshot = preset;
+        true
     }
 
     /// Serializes idle-session state changes that must not overlap turn
@@ -502,12 +535,16 @@ impl SessionHandle {
     }
 
     pub(crate) async fn replace_state(&self, state: SessionActorState) {
+        let preset = state.summary.permission_preset;
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
-            .send(SessionCommand::ReplaceState {
-                state: Box::new(state),
-                reply: reply_tx,
-            })
+            .send_with_permission_preset(
+                SessionCommand::ReplaceState {
+                    state: Box::new(state),
+                    reply: reply_tx,
+                },
+                preset,
+            )
             .await
         {
             let _ = reply_rx.await;
@@ -515,7 +552,10 @@ impl SessionHandle {
     }
 
     pub(crate) async fn update_summary(&self, summary: SessionMetadata) {
-        let _ = self.send(SessionCommand::UpdateSummary { summary }).await;
+        let preset = summary.permission_preset;
+        let _ = self
+            .send_with_permission_preset(SessionCommand::UpdateSummary { summary }, preset)
+            .await;
     }
 
     pub(crate) async fn set_first_user_input_if_unset(
@@ -678,12 +718,17 @@ impl SessionHandle {
         &self,
         profile: devo_safety::RuntimePermissionProfile,
     ) -> bool {
+        let preset = crate::runtime::protocol_preset_from_safety(profile.preset);
         let (reply_tx, reply_rx) = oneshot::channel();
         if !self
-            .send(SessionCommand::ApplyPermissionProfile {
-                profile,
-                reply: reply_tx,
-            })
+            .send_with_permission_preset(
+                SessionCommand::ApplyPermissionProfile {
+                    sandbox_profile: profile.implied_sandbox_profile().to_string(),
+                    profile,
+                    reply: reply_tx,
+                },
+                Some(preset),
+            )
             .await
         {
             return false;
@@ -691,17 +736,28 @@ impl SessionHandle {
         reply_rx.await.is_ok()
     }
 
-    /// Best-effort permission-profile notification for the persist-first
-    /// settings write path (L2-DES-CONV-002 Phase 2): the change is already
-    /// durable, so the actor must not be waited on. Mailbox FIFO still
-    /// guarantees the actor applies it before the next turn checkout, so the
-    /// next turn always sees the new profile.
-    pub(crate) fn notify_permission_profile(&self, profile: devo_safety::RuntimePermissionProfile) {
+    /// Best-effort permission and resolved sandbox notification for the
+    /// persist-first path. Both settings occupy one mailbox slot, so an
+    /// accepted update cannot apply only half of the patch. Rejected sends
+    /// leave the accepted permission snapshot unchanged.
+    pub(crate) fn notify_permission_profile(
+        &self,
+        profile: devo_safety::RuntimePermissionProfile,
+        sandbox_profile: String,
+    ) {
         let (reply_tx, _reply_rx) = oneshot::channel();
-        let _ = self.try_send(SessionCommand::ApplyPermissionProfile {
+        let preset = crate::runtime::protocol_preset_from_safety(profile.preset);
+        let mut snapshot = self
+            .permission_preset
+            .lock()
+            .expect("permission snapshot lock");
+        if self.try_send(SessionCommand::ApplyPermissionProfile {
             profile,
+            sandbox_profile,
             reply: reply_tx,
-        });
+        }) {
+            *snapshot = Some(preset);
+        }
     }
 
     /// Best-effort sandbox-profile notification; same ordering argument as

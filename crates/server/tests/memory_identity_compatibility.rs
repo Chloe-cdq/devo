@@ -540,7 +540,9 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
             scope: MemoryScope::User,
             source: MemoryForgetSource {
                 bound_session_id: Some(source.session_id),
-                user_session_id: Some(source.session_id),
+                user_session: devo_server::memory::MemoryUserSessionSelection::Selected(
+                    source.session_id,
+                ),
                 sessions: vec![ProjectMemorySession {
                     session_id: source.session_id,
                     workspace_root: Some(source.workspace_root),

@@ -9,6 +9,9 @@ use devo_server::memory::MemorySourceContext;
 #[path = "../src/memory/test_support.rs"]
 mod test_support;
 
+#[path = "support/memory_user_selectors.rs"]
+mod memory_user_selectors;
+
 use anyhow::Context;
 use anyhow::Result;
 use devo_core::AgentsMdConfig;

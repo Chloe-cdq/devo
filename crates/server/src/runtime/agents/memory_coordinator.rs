@@ -121,7 +121,9 @@ pub(super) async fn forget(
             scope: params.scope,
             source: crate::memory::MemoryForgetSource {
                 bound_session_id: Some(source_session_id),
-                user_session_id: Some(source_session_id),
+                user_session: crate::memory::MemoryUserSessionSelection::Selected(
+                    source_session_id,
+                ),
                 sessions: vec![crate::memory::ProjectMemorySession {
                     session_id: source_session_id,
                     workspace_root: Some(context.source.workspace_root),

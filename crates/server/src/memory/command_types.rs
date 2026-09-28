@@ -159,13 +159,22 @@ pub struct MemoryForgetRequest {
     pub source: MemoryForgetSource,
 }
 
+/// Server-resolved User context. Ambiguity is deferred until the target's
+/// actual scope is known, so Project exact-ID deletion can resolve independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryUserSessionSelection {
+    Selected(SessionId),
+    Unbound,
+    Ambiguous,
+}
+
 /// Server-verified Session facts used to bind a forget request to one scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryForgetSource {
     /// Session already bound to the current user item, when Agent provenance exists.
     pub bound_session_id: Option<SessionId>,
     /// Native Session used for User scope when no Agent binding exists.
-    pub user_session_id: Option<SessionId>,
+    pub user_session: MemoryUserSessionSelection,
     /// Runtime-owned Session/workspace facts available for Project resolution.
     pub sessions: Vec<ProjectMemorySession>,
 }

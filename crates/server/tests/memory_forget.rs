@@ -13,8 +13,8 @@ use devo_protocol::native::rpc_memory::{
 use devo_server::memory::{
     MemoryCommand, MemoryCommandResult, MemoryError, MemoryForgetRequest, MemoryForgetSelector,
     MemoryForgetSource, MemoryRememberRequest, MemoryRuntime, MemorySourceContext,
-    PrepareMemoryRequest, PreparedMemoryForgetRequest, ProjectMemorySession,
-    ProjectMemorySessionActivity,
+    MemoryUserSessionSelection, PrepareMemoryRequest, PreparedMemoryForgetRequest,
+    ProjectMemorySession, ProjectMemorySessionActivity,
 };
 use pretty_assertions::assert_eq;
 use runtime_support::{forget_request, open_runtime, prepare_forget, remember_request};

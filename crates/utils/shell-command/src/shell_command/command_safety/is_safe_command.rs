@@ -490,15 +490,20 @@ mod tests {
         }
     }
 
+    /// Trace: L1-REQ-APP-003, L2-DES-SAFETY-002 Rev 1
+    /// Verifies: installed PowerShell absolute paths are classified using the real safety parser.
+    #[cfg(windows)]
     #[test]
     fn windows_powershell_full_path_is_safe() {
-        if !cfg!(windows) {
-            // Windows only because on Linux path splitting doesn't handle `/` separators properly
-            return;
-        }
+        // The safety parser invokes this executable; exercise an installed
+        // PowerShell rather than assuming one particular installation directory.
+        let powershell =
+            crate::shell_command::powershell::try_find_powershell_executable_blocking()
+                .expect("installed PowerShell executable");
+        assert!(powershell.as_path().is_absolute());
 
         assert!(is_known_safe_command(&vec_str(&[
-            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            powershell.as_path().to_str().expect("PowerShell path"),
             "-Command",
             "Get-Location",
         ])));

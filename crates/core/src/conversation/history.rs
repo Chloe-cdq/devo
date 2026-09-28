@@ -196,6 +196,9 @@ fn apply_settings_to_canonical_session(
             // The persisted value uses the legacy `PermissionPreset` wire
             // shape (kebab-case); map it onto the canonical profile enum.
             if let Ok(preset) = serde_json::from_value::<devo_protocol::PermissionPreset>(value) {
+                // A preset field re-implies sandbox unless a later field in
+                // the same patch explicitly overrides it, matching runtime replay.
+                session.settings.sandbox_profile = None;
                 session.settings.permission_profile = match preset {
                     devo_protocol::PermissionPreset::Default => {
                         devo_protocol::native::model::PermissionProfile::Default

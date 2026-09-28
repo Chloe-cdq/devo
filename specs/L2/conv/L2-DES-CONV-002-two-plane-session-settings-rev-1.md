@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-CONV-002
-revision: 2
+revision: 1
 status: Approved
 active_baseline: no
 supersedes:
 superseded_by: revision 2
 owner: Assistant
-last_updated: 2026-09-08
+last_updated: 2026-08-02
 ---
 
 # L2-DES-CONV-002 — Two-Plane Session Settings
@@ -33,24 +33,16 @@ This document does **not** cover:
 
 ## Current State (Audit Summary)
 
-**Historical (pre L2-DES-SERVER-002):** settings writes and many reads flowed through the session actor mailbox while `ExecuteTurn` ran unbounded model/tool I/O inline on that same task. Mid-turn RPCs that awaited the mailbox appeared to hang for the turn duration.
-
-**Current (after L2-DES-SERVER-002):** turns check out a `TurnWorkingSet` and run on a spawned task; the actor mailbox stays short-command only. Settings writes use the persist-first path below. Remaining risks are incomplete control-plane coverage and merge races—not a blocked mailbox.
+Settings writes today flow through the session actor mailbox, which is blocked for the entire duration of an active turn (`crates/server/src/runtime/session_actor/actor_loop.rs`, `ExecuteTurn` awaits `execute_turn_in_actor` inline). Consequences:
 
 - `session/metadata/update` is the unified settings write. It persists first,
   notifies the actor best-effort, and returns without waiting for an active turn
   to finish.
-- The settings-only path resolves durable sessions from the rollout/index even
-  when no session actor has been resumed. Actor hydration is not a precondition
-  for persistence; an actor is required only for live notification or for
-  ephemeral sessions that have no durable record.
-- Persistence uses field-level `InternalRecordV2::SessionSettings` lines (plus
-  legacy dual-write where still present); crash loss is bounded by the sync
-  append, not the turn duration.
-- Live mid-turn effect rides `TurnInlineState` overlays (`sandbox_profile_live`,
-  `live_turn_settings`) per DD-5/DD-6.
-- Queue (session plane, durable) vs steer (turn plane, ephemeral channel);
-  two-level session/turn approval caches; per-turn cancellation tokens.
+- Persistence is record-level and actor-dependent: the handler waits for the actor, then appends a full-record `SessionMeta` rollout line (`crates/server/src/runtime/handlers/session.rs:391`). The crash-loss window equals the turn duration.
+- The same setting has up to five independently captured copies with no synchronization discipline: actor `state.config` / `state.core.config`, `TurnInlineState.hook_context.config` (turn-start snapshot; updated by approval grants but not by preset changes), the by-value `permission_mode` captured in `build_permission_checker` (`crates/server/src/runtime/turn_exec/query.rs:98`), the by-value `TurnConfig` in the core query loop, and `ToolRuntimeContext.sandbox_profile` (consumed per tool call at `crates/core/src/tools/router.rs:277`).
+- The implicit, undocumented promise for every setting is: *blocks until turn end; effective next turn; persisted after actor processing.*
+
+Already aligned with the target model: queue (session plane, durable) vs steer (turn plane, ephemeral channel); the two-level session/turn approval caches; mid-turn approval grants applied directly to `TurnInlineState` (`crates/server/src/runtime/approval.rs:512`); per-turn cancellation tokens.
 
 ## Design Decisions
 
@@ -74,9 +66,9 @@ Promises of the call:
 
 ### DD-3: Persist-first write path
 
-**Decision**: the handler holds a short per-session metadata-write gate and performs: (1) synchronous append of field-level settings lines to the rollout store; (2) best-effort mailbox notification to the actor (epoch-tagged) to refresh its cached copies, update summary/record, clear caches, and broadcast; (3) when a turn is active, delivery of the override to the turn control plane (DD-5). Success is returned after durable append, without hydrating or waiting for an actor. Session resume uses the same gate so hydration cannot race a field-line write.
+**Decision**: the handler, holding the per-session `state_change_gate`, performs: (1) synchronous append of field-level settings lines to the rollout store; (2) best-effort mailbox notification to the actor (epoch-tagged) to refresh its cached copies, update summary/record, clear caches, and broadcast; (3) when a turn is active, delivery of the override to the turn control plane (DD-5). Success is returned after step (1).
 
-Why the mailbox notification can be best-effort: after L2-DES-SERVER-002 the actor mailbox stays short-command only, so `notify_*` is processed before the next turn's `CheckoutTurnWorkingSet` baseline snapshot; a crash is covered by the recovery path (DD-4). The actor never writes the live override channel; handlers do.
+Why the mailbox notification can be best-effort: mailbox FIFO guarantees the notification is processed before the next `ExecuteTurn`, so the next turn's baseline snapshot always includes the change; a crash is covered by the recovery path (DD-4). The actor never writes the live override channel; handlers do.
 
 ### DD-4: Field-level append-only settings log with epochs
 
@@ -96,9 +88,9 @@ Each field declares the decision point at which a change becomes visible and the
 | model / model binding | each model call | The next model call in the turn uses the new model; the in-flight request completes; prompt-cache efficiency loss is expected and acceptable |
 | reasoning effort | each model call | Same as model |
 | collaboration mode | each system-prompt construction (per model call) | The next model call carries the new mode's prompt and tool policy; already-executed tool calls are unaffected. **Implementation status (Phase 4): deferred** — mode drives the session-context/system-prompt build, which is captured once per turn today; live mode requires per-iteration prompt rebuild and lands as a follow-up slice. Mid-turn mode changes currently take effect from the next turn. |
-| effective context window (compaction limit) | session/new and session restore (model resolution); each auto-compaction check reads the resolved budget | The value is no longer client-settable: `effectiveContextWindow` patches are ignored and the response echoes the model-derived window, so a patch never changes when auto-compaction runs |
+| effective context window (compaction limit) | each auto-compaction check | The next check evaluates against the new limit; past compactions are not undone |
 
-The effective context window is **model-derived, not client-settable**: the applied limit is the session model's usable window (`context_window × effective_context_window_percent / 100`), resolved by `resolved_compaction_limit` in `crates/server/src/runtime/context_occupancy.rs` at session/new and again on resume/restore. `session/metadata/update.settings.effectiveContextWindow` is accepted only as a legacy echo: absolute patches are ignored, the response reports the model-derived window, and nothing is written to `config.toml`. The former global `compaction_token_limit` config field has been removed from the schema; leftover keys in old `config.toml` files are ignored by serde (`resolved_compaction_limit` derives purely from the model). Persistence for this value is therefore per-model configuration (the model's `context_window` / `effective_context_window_percent`), not a per-session or global field-line setting.
+The effective context window has a **different durability target** than the other fields, and this is intentional: the value is persisted globally to the user's `config.toml` (`compaction_token_limit`), so it survives restarts and applies to every session. Each session applies it **clamped** to its own model: `resolved_compaction_limit(global, session_model)` caps the requested window at the model's `context_window` (e.g. requesting 500k against a 128k model yields the model's limit), because a session physically cannot hold more context than its model supports. The clamped value is then pushed live into the session ("hot apply"). The session does not persist its own clamped copy in the rollout; on restore it re-derives the clamped value from the global config and its model. The update also fans out to all other loaded sessions under the same rule (existing behavior, preserved).
 
 **Permission/sandbox interaction (human-approved 2026-08-02)**: permission profile and sandbox profile are separate fields of the canonical `SessionSettings` — policy decision vs execution enforcement — and a single patch may change both atomically. The contractual interaction: when a patch changes `permission_profile` and omits `sandbox_profile`, the sandbox is re-derived from the new preset (`implied_sandbox_profile`, current `ApplyPermissionProfile` behavior); when the patch explicitly carries `sandbox_profile`, the explicit value wins.
 
@@ -122,8 +114,6 @@ The protocol layer currently carries two divergent models for the same concept: 
 
 **Decision**: per L2-DES-APP-008, canonical is the single retained protocol surface. The settings domain converges on the canonical `SessionSettings` model end-to-end: canonical `session/metadata/update` params → handler → settings log → core `TurnConfig`. The legacy flat params are kept only as deserialization aliases that translate into the canonical model at the handler boundary (L2-DES-APP-008 DD-4), then removed with the rest of the legacy surface. No new settings-specific types may be introduced outside the canonical model; where the canonical model lacks a concept needed here (e.g. `applied_to_active_turn` in the result), it is added to the canonical model rather than to a parallel one. The epoch from DD-4 is distinct from `expected_version`: the epoch orders settings writes and stamps traces; `expected_version` lets a client guard against overwriting a concurrent edit.
 
-Note (2026-08-31): `SessionSettings.reasoning_effort` on the snapshot is the **raw selection string** — the same contract as `SessionSettingsPatch.reasoning_effort`, including the toggle keywords `enabled`/`disabled` that toggle/variant-style models use and the typed `ReasoningEffort` enum cannot express. The enum remains only on `Session.model.reasoning_effort` (`ModelBinding`), where it carries the resolved request-parameter semantics. Snapshots that parsed the selection through the enum silently dropped the toggle keywords and every client restored them as unset.
-
 ## Settings Inventory (Current Implementation)
 
 | Setting | Write API → mailbox command | Mid-turn read points | Persistence |
@@ -131,7 +121,7 @@ Note (2026-08-31): `SessionSettings.reasoning_effort` on the snapshot is the **r
 | permission preset | `session/metadata/update.settings.permissionProfile` → `ApplyPermissionProfile` | mode: by-value capture (`turn_exec/query.rs:98`); profile: turn-inline (`approval.rs:487`); caches: turn-inline / actor | record-level `SessionMeta` (`handlers/session.rs:391`); recovery re-derives profile (`persistence.rs:1347`) |
 | sandbox profile | `session/metadata/update.settings.sandboxProfile` → `ApplySandboxProfile` | admission: turn-inline (`approval.rs:576`); execution: `ToolRuntimeContext.sandbox_profile` per call (`core/tools/router.rs:277`) | record-level `SessionMeta` |
 | model / binding / effort / collaboration mode | `session/metadata/update` → `UpdateSessionMetadata` | `TurnConfig` by value in the core query loop (`core/query/mod.rs:365`) | record-level `SessionMeta` + SQLite `upsert_session` |
-| effective context window | `session/metadata/update.settings.effectiveContextWindow`: legacy echo only — absolute patches are ignored, the response carries the model-derived window, and `config.toml` is never written for this value | `session.settings.effective_context_window` / `session.config.token_budget` seeded from the model window at session/new and restore; compaction checks read the budget (`context_occupancy.rs`) | model-derived (`context_window × effective_context_window_percent / 100`); re-derived at session/new and on restore; no field-line or global-config write |
+| effective context window | `session/metadata/update.settings.effectiveContextWindow`: persist to `config.toml` first (`config_store.set_compaction_token_limit`), then fan out to all loaded sessions → `ApplyEffectiveContextWindow` per session | `session.config.token_budget` at compaction check (`core/query/mod.rs:151`) | global `config.toml` (`compaction_token_limit`); per-session clamped value re-derived on restore (deliberately not stored in rollout) |
 
 Note: the canonical protocol already defines a unified `SessionSettings` struct (`crates/protocol/src/native/session.rs:128`) and an `expected_version` optimistic-concurrency field on canonical update params; the wire-served handlers currently use the older flat params, and `SessionMetadataUpdateParams` exists in two divergent shapes (`crates/protocol/src/session.rs:289` vs `crates/protocol/src/native/rpc_session.rs:169`). Per L2-DES-APP-008, the settings domain rides the protocol unification: the canonical `session/metadata/update` is the single entry point (DD-10).
 
@@ -154,9 +144,9 @@ Findings that shape Phase 1, recorded during implementation:
 - **The write path is already single-write v2**: `append_line` projects legacy `RolloutLine` through the per-file `LegacyProjector` into `RolloutLineV2` rows (`persistence.rs:693-792`); replay inverse-projects (`V2InverseProjector`) back into legacy lines for `ReplayState`. The field-level log therefore rides `InternalRecordV2` (the GoalState/UsageRecord precedent), not a new top-level line family: add `InternalRecordV2::SessionSettings`, a legacy `RolloutLine::SessionSettings` mirror for replay consumption, and both projector mappings.
 - The sandbox settings patch persists explicitly; sandbox recovery precedence follows the approved patch-interaction rule (a `permissionProfile` line clears any explicit `sandboxProfile` override seen so far; a `sandboxProfile` line sets the override).
 - **No epoch field in Phase 1**: line order in the append-only file already provides total ordering (per-file write lock), and no Phase 1 consumer needs epochs. The `epoch` column of DD-4 is introduced in Phase 2 when writes cross paths (handler-direct vs actor) and races become possible.
-- **compaction/effective-window durability (updated 2026-09-08)**: supersedes the earlier global-`config.toml` design in DD-6. The applied window is model-derived and is never written to the rollout or `config.toml`; `session/metadata/update` only echoes it for older clients, and the former `compaction_token_limit` config field has been removed (leftover keys in old configs are ignored).
+- **compaction does not dual-write**: its durability target is global `config.toml` per DD-6.
 - **Ephemeral degrade (added 2026-08-02)**: ephemeral sessions have neither a rollout file nor a SQLite index row, so the persist-first path cannot apply. The canonical handler degrades through three metadata sources in order — rollout history (durable), SQLite index metadata, actor summary (the only mailbox read, explicitly scoped to the ephemeral degrade) — skipping field-line writes (ephemeral has no durability by definition) and building the response snapshot from the index/summary projection (`canonical_session_from_index_metadata`). Ephemeral sessions' settings updates remain fully functional; there is simply nothing to persist.
-- **Model resolution for the effective-window echo (added 2026-08-02, updated 2026-09-08)**: session/new, restore, and the metadata-update echo resolve the session model through the same two-catalog chain as the legacy handler (workspace runtime-context catalog first, then the deps catalog), mailbox-free — the deps catalog alone misses models that only exist in workspace-scoped catalogs.
+- **Model resolution for the compaction clamp (added 2026-08-02)**: the clamp resolves the session model through the same two-catalog chain as the legacy handler (workspace runtime-context catalog first, then the deps catalog), mailbox-free — the deps catalog alone misses models that only exist in workspace-scoped catalogs.
 - **SQLite index refresh (added 2026-08-02)**: after a settings write the handler upserts the SQLite session index from index metadata + applied patch values, so the session list reflects new model/effort/preset values immediately instead of waiting for the next turn event.
 
 ## Risks and Mitigations
@@ -182,4 +172,3 @@ Findings that shape Phase 1, recorded during implementation:
 | Revision | Date | Author | Change Type | Notes |
 |---:|---|---|---|---|
 | 1 | 2026-08-02 | Assistant | Initial | Initial draft. Status Approved by human 2026-08-02, including the canonical-alignment revision (DD-10), compaction semantics, and the permission/sandbox patch-interaction rule. |
-| 2 | 2026-09-08 | Assistant | Update | Align effective context window / compaction semantics with implementation: the limit is model-derived; `effectiveContextWindow` patches are ignored echoes; global `compaction_token_limit` was removed from the config schema and is ignored if present in old configs (supersedes DD-6 and phase-note text). |

@@ -98,6 +98,9 @@ impl ServerRuntime {
         };
         let active_session_ids = active.active_session_ids;
         let active_source = active.source;
+        let session_context = self
+            .memory_command_sessions(connection_id, &active_session_ids)
+            .await;
         let command = match params.scope {
             devo_protocol::native::rpc_memory::MemoryScope::Project => {
                 if active_source.is_none() && params.source_user_item_id.is_some() {
@@ -107,11 +110,8 @@ impl ServerRuntime {
                         "direct memory/remember commands must omit sourceUserItemId",
                     );
                 }
-                let candidates = self
-                    .project_memory_sessions(connection_id, &active_session_ids)
-                    .await;
                 MemoryCommand::Project {
-                    candidates,
+                    candidates: session_context.sessions,
                     operation: ProjectMemoryOperation::Remember {
                         text: params.text,
                         kind: params.kind,
@@ -122,9 +122,7 @@ impl ServerRuntime {
             devo_protocol::native::rpc_memory::MemoryScope::User => {
                 let source = if let Some(source) = active_source {
                     source
-                } else if let Some(session_id) =
-                    self.subscribed_session_for_connection(connection_id).await
-                {
+                } else {
                     if params.source_user_item_id.is_some() {
                         return self.error_response(
                             request_id,
@@ -132,16 +130,28 @@ impl ServerRuntime {
                             "direct memory/remember commands must omit sourceUserItemId",
                         );
                     }
-                    MemorySourceBinding {
-                        session_id: Some(session_id),
-                        ..MemorySourceBinding::default()
+                    match session_context.user_session {
+                        crate::memory::MemoryUserSessionSelection::Selected(session_id) => {
+                            MemorySourceBinding {
+                                session_id: Some(session_id),
+                                ..MemorySourceBinding::default()
+                            }
+                        }
+                        crate::memory::MemoryUserSessionSelection::Unbound => {
+                            return self.error_response(
+                                request_id,
+                                ProtocolErrorCode::InvalidParams,
+                                "memory/remember requires a session-bound connection",
+                            );
+                        }
+                        crate::memory::MemoryUserSessionSelection::Ambiguous => {
+                            return self.error_response(
+                                request_id,
+                                ProtocolErrorCode::InvalidParams,
+                                "memory/remember User scope has ambiguous Native Session selectors",
+                            );
+                        }
                     }
-                } else {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InvalidParams,
-                        "memory/remember requires a session-bound connection",
-                    );
                 };
                 let Some(source_session_id) = source.session_id else {
                     return self.error_response(
@@ -230,8 +240,9 @@ impl ServerRuntime {
                 .map(|(session_id, _)| session_id)
                 .collect::<Vec<_>>();
             Some(
-                self.project_memory_sessions(connection_id, &active_session_ids)
-                    .await,
+                self.memory_command_sessions(connection_id, &active_session_ids)
+                    .await
+                    .sessions,
             )
         } else {
             None

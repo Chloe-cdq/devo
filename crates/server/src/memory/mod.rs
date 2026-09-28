@@ -50,9 +50,9 @@ pub(crate) use command_types::MemoryInferredRememberRequest;
 pub use command_types::{
     EnqueueOutcome, ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
     MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
-    MemorySourceContext, PrepareMemoryRequest, PreparedMemory, PreparedMemoryForgetRequest,
-    ProjectMemoryOperation, ProjectMemorySession, ProjectMemorySessionActivity,
-    SearchMemoryRequest, SessionMemorySource,
+    MemorySourceContext, MemoryUserSessionSelection, PrepareMemoryRequest, PreparedMemory,
+    PreparedMemoryForgetRequest, ProjectMemoryOperation, ProjectMemorySession,
+    ProjectMemorySessionActivity, SearchMemoryRequest, SessionMemorySource,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";

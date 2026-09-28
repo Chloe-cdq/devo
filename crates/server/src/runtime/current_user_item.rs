@@ -32,6 +32,7 @@ impl ServerRuntime {
         inline
             .persisted_turn_items
             .iter()
+            .chain(inline.restored_user_item.iter())
             .find_map(|item| {
                 if item.turn_id != turn_id || item.item_id.to_string() != user_item_id.as_str() {
                     return None;
@@ -46,15 +47,13 @@ impl ServerRuntime {
 }
 
 impl super::session_actor::SessionActorState {
-    /// Restores the user-message identity for a continuation of the same turn.
-    pub(in crate::runtime) fn current_user_item_id(
+    /// Finds the authoritative user message for a continuation of the same turn.
+    pub(in crate::runtime) fn current_user_item(
         &self,
         turn_id: TurnId,
-    ) -> Option<devo_core::ItemId> {
-        self.persisted_turn_items.iter().rev().find_map(|item| {
-            (item.turn_id == turn_id
-                && matches!(item.turn_item, devo_core::TurnItem::UserMessage(_)))
-            .then_some(item.item_id)
+    ) -> Option<&crate::execution::PersistedTurnItem> {
+        self.persisted_turn_items.iter().rev().find(|item| {
+            item.turn_id == turn_id && matches!(item.turn_item, devo_core::TurnItem::UserMessage(_))
         })
     }
 }

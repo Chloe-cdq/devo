@@ -473,7 +473,10 @@ impl ServerRuntime {
             usage_context_window,
             event_rx,
         );
-        let current_user_item_id = working.state.current_user_item_id(turn.turn_id);
+        let current_user_item_id = working
+            .state
+            .current_user_item(turn.turn_id)
+            .map(|item| item.item_id);
         let query_outcome = self
             .run_turn_model_query(TurnModelQueryParams {
                 state: &mut working.state,
@@ -614,8 +617,8 @@ impl ServerRuntime {
                 turn_id: Some(turn_id.to_string()),
                 current_user_item_id: working
                     .state
-                    .current_user_item_id(turn_id)
-                    .map(|item_id| item_id.to_string()),
+                    .current_user_item(turn_id)
+                    .map(|item| item.item_id.to_string()),
                 cwd: working.state.core.cwd.clone(),
                 agent_scope,
                 collaboration_mode,

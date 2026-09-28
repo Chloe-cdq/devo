@@ -342,8 +342,9 @@ impl ServerRuntime {
             {
                 let path = record.rollout_path.clone();
                 let turn_id = recovery.turn_id.clone();
+                let store = self.rollout_store.clone();
                 let replay = tokio::task::spawn_blocking(move || {
-                    devo_core::durable_execution::read_execution_replay(
+                    store.read_execution_replay(
                         &path,
                         devo_core::TurnId::try_from(turn_id.as_str())?,
                     )

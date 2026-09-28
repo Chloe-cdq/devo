@@ -24,7 +24,7 @@ pub fn forget_request(selector: MemoryForgetSelector) -> MemoryForgetRequest {
         scope: MemoryScope::User,
         source: MemoryForgetSource {
             bound_session_id: Some(source.session_id),
-            user_session_id: Some(source.session_id),
+            user_session: super::MemoryUserSessionSelection::Selected(source.session_id),
             sessions: vec![ProjectMemorySession {
                 session_id: source.session_id,
                 workspace_root: Some(source.workspace_root),

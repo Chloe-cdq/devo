@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use devo_core::durable_execution::{
-    ExecutionRecord, ExecutionReplay, ToolIntentJournal, read_execution_replay,
-};
+use devo_core::durable_execution::{ExecutionRecord, ExecutionReplay, ToolIntentJournal};
 use devo_core::{InternalRecordV2, RolloutLineV2, SessionId, TurnId};
 use tokio::sync::Mutex;
 
@@ -42,18 +40,14 @@ impl ToolIntentJournal for RolloutToolJournal {
     async fn replay(&self) -> anyhow::Result<ExecutionReplay> {
         let path = self.path.clone();
         let turn_id = self.turn_id;
-        tokio::task::spawn_blocking(move || read_execution_replay(&path, turn_id)).await?
+        let store = self.runtime.rollout_store.clone();
+        tokio::task::spawn_blocking(move || store.read_execution_replay(&path, turn_id)).await?
     }
 
     async fn commit(&self, record: ExecutionRecord) -> anyhow::Result<()> {
         let mut committed = self.committed.lock().await;
         if committed.is_none() {
-            let path = self.path.clone();
-            let turn_id = self.turn_id;
-            *committed = Some(
-                tokio::task::spawn_blocking(move || read_execution_replay(&path, turn_id))
-                    .await??,
-            );
+            *committed = Some(self.replay().await?);
         }
         let previous = committed.as_ref().expect("journal initialized");
         let mut updated = previous.clone();

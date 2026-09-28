@@ -179,6 +179,7 @@ pub(crate) enum SessionCommand {
     },
     ApplyPermissionProfile {
         profile: devo_safety::RuntimePermissionProfile,
+        sandbox_profile: String,
         reply: oneshot::Sender<()>,
     },
     ApplyEffectiveContextWindow {

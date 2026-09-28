@@ -1397,7 +1397,9 @@ impl SubscriptionFilter {
 
 #[cfg(test)]
 mod tests {
+    mod journal;
     mod memory_settings;
+    mod permission_snapshot;
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -8000,10 +8002,12 @@ mod tests {
         let started: devo_protocol::native::rpc_turn::TaskStartResult =
             serde_json::from_value(started["result"].clone()).expect("task/start result");
 
-        // The echo process exits quickly; poll task/read until the terminal
-        // snapshot (exit code + output tail) is retained.
+        // Login shell profile hooks can outlast the command itself. Poll for
+        // the terminal snapshot without imposing a five-second startup limit.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut terminal = None;
-        for _ in 0..100 {
+        let mut last_snapshot = None;
+        while tokio::time::Instant::now() < deadline {
             let read = history_request(
                 &runtime,
                 connection_id,
@@ -8027,10 +8031,12 @@ mod tests {
                 terminal = Some((*exit_code, *state, result.output_tail.clone()));
                 break;
             }
+            last_snapshot = Some(result);
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        let (exit_code, state, output_tail) =
-            terminal.expect("process task must reach a terminal snapshot");
+        let (exit_code, state, output_tail) = terminal.unwrap_or_else(|| {
+            panic!("process task must reach a terminal snapshot; last snapshot: {last_snapshot:?}")
+        });
         assert_eq!(exit_code, 0);
         assert_eq!(
             state,

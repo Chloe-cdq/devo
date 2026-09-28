@@ -1,5 +1,7 @@
 mod memory_settings;
 mod write_path;
+#[cfg(test)]
+pub(crate) use write_path::pause_rollout_append;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -655,8 +657,7 @@ impl RolloutStore {
             .await
             .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
         if let Some(turn) = &recovered.latest_turn {
-            let execution =
-                devo_core::durable_execution::read_execution_replay(rollout_path, turn.turn_id)?;
+            let execution = self.read_execution_replay(rollout_path, turn.turn_id)?;
             if execution.has_checkpoint {
                 recovered.core_session.lock().await.set_prompt_messages(
                     devo_core::history::response_items_to_messages(&execution.items),

@@ -21,6 +21,41 @@ impl RolloutStore {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create rollout directory {}", parent.display()))?;
         }
+        self.with_locked_file(rollout_path, || {
+            let mut write_states = self
+                .write_states
+                .lock()
+                .expect("rollout write-state table poisoned");
+            let state = match write_states.get_mut(rollout_path) {
+                Some(state) => state,
+                None => {
+                    let state = hydrate_write_state(rollout_path)?;
+                    write_states
+                        .entry(rollout_path.to_path_buf())
+                        .or_insert(state)
+                }
+            };
+            operation(state)
+        })
+    }
+
+    /// Reads acknowledged execution facts after any in-progress append finishes.
+    /// A partial row from a live writer must never be treated as a crash tail.
+    pub(crate) fn read_execution_replay(
+        &self,
+        rollout_path: &Path,
+        turn_id: devo_core::TurnId,
+    ) -> Result<devo_core::durable_execution::ExecutionReplay> {
+        self.with_locked_file(rollout_path, || {
+            devo_core::durable_execution::read_execution_replay(rollout_path, turn_id)
+        })
+    }
+
+    fn with_locked_file<T>(
+        &self,
+        rollout_path: &Path,
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
         let file_lock = {
             let mut locks = self
                 .file_locks
@@ -32,21 +67,45 @@ impl RolloutStore {
                 .clone()
         };
         let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
-        let mut write_states = self
-            .write_states
-            .lock()
-            .expect("rollout write-state table poisoned");
-        let state = match write_states.get_mut(rollout_path) {
-            Some(state) => state,
-            None => {
-                let state = hydrate_write_state(rollout_path)?;
-                write_states
-                    .entry(rollout_path.to_path_buf())
-                    .or_insert(state)
-            }
-        };
-        operation(state)
+        operation()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn pause_rollout_append(
+    store: RolloutStore,
+    path: std::path::PathBuf,
+    line: devo_core::RolloutLineV2,
+) -> (
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::SyncSender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(/*bound*/ 0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(/*bound*/ 0);
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+
+        store
+            .with_locked_write_state(&path, |_state| {
+                let bytes = serde_json::to_vec(&line)?;
+                let split = bytes.len() / 2;
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?;
+                file.write_all(&bytes[..split])?;
+                file.flush()?;
+                entered_tx.send(())?;
+                release_rx.recv()?;
+                file.write_all(&bytes[split..])?;
+                file.write_all(b"\n")?;
+                file.sync_data()?;
+                Ok(())
+            })
+            .expect("finish paused append");
+    });
+    (entered_rx, release_tx, writer)
 }
 
 #[cfg(test)]

@@ -241,6 +241,10 @@ fn extract_background_task_id(request: &ModelRequest) -> Result<String> {
         .context("background task id")
 }
 
+/// Trace: L2-DES-TOOL-001 Rev 1, L1-REQ-TOOL-002
+/// Verifies: a live exec process accepts stdin and preserves output through successful exit.
+/// Trace: L2-DES-TOOL-001 Rev 1, L1-REQ-TOOL-002
+/// Verifies: a live exec process accepts stdin and preserves output through successful exit.
 #[tokio::test]
 async fn long_running_exec_command_accepts_write_stdin_and_exits() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -265,9 +269,12 @@ async fn long_running_exec_command_accepts_write_stdin_and_exits() -> Result<()>
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
     let exec_result = tool_result(&requests[1], "exec-1").context("exec result")?;
-    assert!(exec_result.contains("Process running with process ID"));
-    assert!(exec_result.contains("ready"));
     let stdin_result = tool_result(&requests[2], "stdin-1").context("stdin result")?;
+    assert!(exec_result.contains("Process running with process ID"));
+    // Process startup may outlast the first yield window. Output collected by
+    // the following stdin call must still include the initial readiness line.
+    let combined_output = format!("{exec_result}\n{stdin_result}");
+    assert!(combined_output.contains("ready"), "{combined_output}");
     assert!(stdin_result.contains("received:hello"));
     assert!(stdin_result.contains("done"));
     assert!(stdin_result.contains("Process exited with code 0"));
