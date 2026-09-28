@@ -379,7 +379,7 @@ impl ServerRuntime {
                 attempt,
             },
         );
-        self.broadcast_recovery_notification(
+        self.broadcast_native_notification(
             session_id,
             devo_protocol::native::event::ServerNotification::TurnResumed {
                 turn: Box::new(native.clone()),

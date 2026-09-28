@@ -13,6 +13,7 @@ mod identity;
 mod migration;
 mod projection;
 mod queries;
+mod recall;
 mod revocation_lifecycle;
 #[cfg(test)]
 mod runtime_test_support;
@@ -175,31 +176,6 @@ impl MemoryRuntime {
         };
         runtime.rebuild_projections()?;
         Ok(runtime)
-    }
-
-    /// Prepares an immutable memory snapshot for a turn.
-    pub async fn prepare_turn(
-        &self,
-        request: PrepareMemoryRequest,
-    ) -> Result<PreparedMemory, MemoryError> {
-        if self.config.resolve_recall(request.session_recall) != MemorySetting::On {
-            return Ok(PreparedMemory::default());
-        }
-        let identity = identity::resolve_project_memory_identity(&request.workspace_root)
-            .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
-        let user_entries = self
-            .list_recallable(ListMemoryRequest {
-                scope: Some(MemoryScope::User),
-                state: Some(MemoryState::Active),
-                limit: Some(self.config.max_entries_per_turn),
-                workspace_root: request.workspace_root.clone(),
-                ..ListMemoryRequest::default()
-            })?
-            .data;
-        Ok(PreparedMemory {
-            project_scope_id: Some(identity.scope_id),
-            user_entries,
-        })
     }
 
     /// Accepts a session source for later extraction work. Disabled memory

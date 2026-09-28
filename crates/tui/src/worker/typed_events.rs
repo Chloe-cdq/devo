@@ -135,6 +135,7 @@ pub(super) fn history_item_from_native_item(
         | Item::SubAgent { .. }
         | Item::BackgroundTask { .. }
         | Item::GoalProgress { .. }
+        | Item::MemoryRecall { .. }
         | Item::Warning { .. } => return None,
     })
 }

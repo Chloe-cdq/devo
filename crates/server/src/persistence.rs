@@ -643,6 +643,11 @@ impl RolloutStore {
             match parsed {
                 ParsedRolloutLine::Legacy(legacy) => replay.apply_line(*legacy)?,
                 ParsedRolloutLine::V2(v2) => {
+                    // Native-only display items still consume sequence positions,
+                    // even when inverse projection omits them from model history.
+                    if let devo_core::RolloutLineV2::Item { item, .. } = v2.as_ref() {
+                        replay.next_item_seq = replay.next_item_seq.max(item.seq + 1);
+                    }
                     for legacy_line in inverse.project_line(&v2).with_context(|| {
                         format!("project v2 line from {}", rollout_path.display())
                     })? {
@@ -1963,12 +1968,8 @@ impl ReplayState {
                 .is_some_and(|session| session.session_context.is_some());
         self.latest_turn_context = None;
         self.loaded_item_count = u64::try_from(retained_item_ids.len()).unwrap_or(u64::MAX);
-        self.next_item_seq = self
-            .pending_items
-            .iter()
-            .map(|item| item.seq.saturating_add(1))
-            .max()
-            .unwrap_or(1);
+        // The write projector never reuses positions consumed before rollback.
+        // Keep the high-water mark, including Native-only display items.
         self.recompute_turn_aggregates();
 
         if self

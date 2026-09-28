@@ -131,6 +131,9 @@ pub enum QueryProviderRetryPhase {
 
 #[derive(Clone, Default)]
 pub struct QueryOptions {
+    /// Immutable advisory memory prepared once by the server at root-turn start.
+    /// This stays outside persisted model history and system policy.
+    pub prepared_memory: Option<Arc<str>>,
     pub output_store: Option<Arc<devo_tools::output_store::OutputStore>>,
     /// Acknowledged journal for durable sessions; absent for ephemeral callers.
     pub journal: Option<Arc<dyn crate::durable_execution::ToolIntentJournal>>,

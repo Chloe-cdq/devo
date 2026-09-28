@@ -6,6 +6,7 @@ mod finalize;
 mod followup;
 mod item_stream;
 pub(crate) mod journal;
+mod memory_recall;
 mod query;
 mod recovery;
 mod recovery_notifications;

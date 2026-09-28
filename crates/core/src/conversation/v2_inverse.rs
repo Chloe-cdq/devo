@@ -556,6 +556,7 @@ impl V2InverseProjector {
             | Item::SubAgent { .. }
             | Item::BackgroundTask { .. }
             | Item::GoalProgress { .. }
+            | Item::MemoryRecall { .. }
             | Item::Warning { .. } => return Ok(None),
         };
 

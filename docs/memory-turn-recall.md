@@ -1,0 +1,15 @@
+# Automatic memory recall
+
+Before the first model request of a root turn, the server prepares one lexical snapshot using the current request and the workspace name. Session `memory_recall` is resolved against the global memory gate and default. Mid-turn setting and cwd changes affect the next turn.
+
+Only Active or explicitly Restored entries from User Memory and the resolved Project Memory scope are eligible. An outstanding revocation excludes an entry even if its stored lifecycle state is inconsistent. Retrieval uses quoted lexical terms through SQLite FTS; relevance is the number of distinct matching query terms. Common English function words are ignored. Relevance ranks first, Project scope breaks relevance ties, explicit origin and greater evidence count break remaining ties, then newer updates and ascending stable entry IDs provide deterministic ordering.
+
+The hard limits are 12 entries and approximately 2,000 tokens, including the advisory framing. Configuration can lower either limit. The token estimate uses UTF-8 bytes divided by four, rounded up. Each entry contributes a bounded content summary; entries that do not fit are skipped so smaller relevant entries can still fit.
+
+The model receives a separate user-role `<advisory_memory>` block. The block labels every entry as quoted data and says current user instructions, project instructions, system and safety policy, and current repository evidence take precedence. Memory content is JSON-escaped so it cannot terminate the block or forge its structure. The system policy and repository instruction prefix are unaffected.
+
+Native history exposes one `memoryRecall` item per prepared root turn with `snapshotRevision` and ordered `entries`. Each entry contains `entryId`, `scope`, `kind`, `summary`, and `sourceSummary`. Clients can collapse it to “Recalled N memories” and expand its entries. Source summaries expose the origin and evidence count, never source transcript text, paths, or opaque source identifiers. A snapshot revision hashes the bounded summaries and ordering. Recall lookup faults yield a persisted empty snapshot and do not fail the foreground turn. If the snapshot item cannot be persisted, the turn omits recall context and does not announce a completed recall item.
+
+The same immutable block is included in every model/tool iteration, including retries and compaction continuations. Approval and failure recovery reuse the persisted snapshot of the original turn rather than querying updated memory. Recall items are display history and do not enter subsequent turns as ordinary model history. Forgetting affects future snapshots and preserves historical recall records.
+
+Subagents do not independently prepare memory. Parent-snapshot inheritance and the remaining memory management UI are separate implementation slices.

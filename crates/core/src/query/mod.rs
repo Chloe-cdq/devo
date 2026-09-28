@@ -658,6 +658,13 @@ pub async fn query(
             &prefetched_user_inputs,
             &active_turn_config.model.input_modalities,
         );
+        if let Some(memory) = &options.prepared_memory {
+            let insert_at = messages
+                .iter()
+                .rposition(is_visible_user_text_message)
+                .unwrap_or(messages.len());
+            messages.insert(insert_at, request_text_message(memory.to_string()));
+        }
         if let Some(goal_context) = session.goal_context_prompt() {
             insert_goal_context_message(&mut messages, &goal_context);
         }

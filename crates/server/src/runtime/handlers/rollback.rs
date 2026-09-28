@@ -569,6 +569,9 @@ impl ServerRuntime {
                     next_status: retry_status.clone(),
                 })
             })?;
+        // Rollback stays on the same append-only rollout: Native display items
+        // and dropped turns have already consumed their sequence positions.
+        rebuilt.next_item_seq = source.next_item_seq;
         let record = source.record.clone();
         let restored_file_count = match action {
             CommitAction::HistoryPending {
