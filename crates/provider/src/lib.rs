@@ -11,9 +11,11 @@ mod hosted_tools;
 mod http;
 pub mod openai;
 mod provider;
+mod quota;
 pub mod recovery_hint;
 mod request;
 pub mod router;
+mod sse;
 mod text_normalization;
 pub mod timeout;
 

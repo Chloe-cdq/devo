@@ -1999,6 +1999,7 @@ dependencies = [
  "async-trait",
  "devo-network-proxy",
  "devo-protocol",
+ "eventsource-stream",
  "futures",
  "pretty_assertions",
  "reqwest 0.12.28",
@@ -2009,6 +2010,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -9,6 +9,25 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 pub(crate) const REQUEST_HEADERS_KEY: &str = "__devo_request_headers";
+const BACKGROUND_REQUEST_KEY: &str = "__devo_background_request";
+
+#[derive(Clone, Copy)]
+pub(crate) enum RequestLogging {
+    Foreground,
+    Background,
+}
+
+pub(crate) fn request_logging(extra_body: Option<&Value>) -> RequestLogging {
+    if extra_body
+        .and_then(|body| body.get(BACKGROUND_REQUEST_KEY))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        RequestLogging::Background
+    } else {
+        RequestLogging::Foreground
+    }
+}
 
 /// Merges an extra JSON object into a provider request body.
 pub fn merge_extra_body(body: &mut Value, extra_body: Option<&Value>) {
@@ -23,7 +42,7 @@ pub fn merge_extra_body(body: &mut Value, extra_body: Option<&Value>) {
     };
 
     for (key, value) in extra_object {
-        if key == REQUEST_HEADERS_KEY {
+        if key == REQUEST_HEADERS_KEY || key == BACKGROUND_REQUEST_KEY {
             continue;
         }
         body_object.insert(key.clone(), value.clone());

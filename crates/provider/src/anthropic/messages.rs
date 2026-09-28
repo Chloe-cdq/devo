@@ -28,7 +28,6 @@ use reqwest::header::CACHE_CONTROL;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderValue;
 use reqwest_eventsource::Event;
-use reqwest_eventsource::EventSource;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
@@ -47,6 +46,7 @@ use crate::error::ProviderError;
 use crate::hosted_tools::append_anthropic_hosted_tools;
 use crate::http::invalid_status_error;
 use crate::merge_extra_body;
+use crate::quota::{QuotaHeaderFamily, QuotaTelemetry};
 
 /// <https://platform.claude.com/docs/en/api/messages>
 /// Anthropic provider backed by the official HTTP API.
@@ -56,6 +56,7 @@ pub struct AnthropicProvider {
     base_url: String,
     api_key: Option<String>,
     http_options: ProviderHttpOptions,
+    quota: QuotaTelemetry,
 }
 
 impl AnthropicProvider {
@@ -71,6 +72,7 @@ impl AnthropicProvider {
             base_url: base_url.into(),
             api_key: None,
             http_options,
+            quota: QuotaTelemetry::default(),
         }
     }
 
@@ -333,6 +335,7 @@ struct AnthropicResponseContentBlock {
 impl ModelProviderSDK for AnthropicProvider {
     async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
         let body = build_request(&request, false);
+        let logging = crate::request::request_logging(request.extra_body.as_ref());
         debug!(
             provider = "anthropic",
             api_base = %self.base_url,
@@ -343,11 +346,17 @@ impl ModelProviderSDK for AnthropicProvider {
             "sending anthropic completion request"
         );
 
+        let request_generation = self.quota.begin_request();
         let response = self
             .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
             .send()
             .await
             .context("failed to send anthropic request")?;
+        self.quota.update(
+            request_generation,
+            response.headers(),
+            QuotaHeaderFamily::Anthropic,
+        );
         let response = match response.error_for_status_ref() {
             Ok(_) => response,
             Err(_) => {
@@ -359,6 +368,7 @@ impl ModelProviderSDK for AnthropicProvider {
                     status,
                     response,
                     &body,
+                    logging,
                 )
                 .await);
             }
@@ -376,6 +386,7 @@ impl ModelProviderSDK for AnthropicProvider {
         request: ModelRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let body = build_request(&request, true);
+        let logging = crate::request::request_logging(request.extra_body.as_ref());
         debug!(
             provider = "anthropic",
             api_base = %self.base_url,
@@ -387,10 +398,14 @@ impl ModelProviderSDK for AnthropicProvider {
         );
 
         let dsml_healer = DsmlToolCallHealer::for_request(&request);
-        let event_source = EventSource::new(self.streaming_request_builder(
-            &body,
-            &crate::request_headers(request.extra_body.as_ref()),
-        ))
+        let event_source = crate::sse::quota_event_source(
+            self.streaming_request_builder(
+                &body,
+                &crate::request_headers(request.extra_body.as_ref()),
+            ),
+            self.quota.clone(),
+            QuotaHeaderFamily::Anthropic,
+        )
         .context("failed to create anthropic event source")?;
         let stream = async_stream::try_stream! {
             let mut message_id = String::new();
@@ -420,6 +435,7 @@ impl ModelProviderSDK for AnthropicProvider {
                             status,
                             response,
                             &body,
+                            logging,
                         )
                         .await)?
                     }
@@ -809,6 +825,10 @@ impl ModelProviderSDK for AnthropicProvider {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    fn remaining_quota_percent(&self) -> Option<u8> {
+        self.quota.remaining_quota_percent()
     }
 
     fn name(&self) -> &str {

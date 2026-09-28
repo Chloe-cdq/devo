@@ -18,7 +18,6 @@ pub(super) struct ExistingMemoryEntry {
 
 pub(super) enum IdentityResolutionMode {
     Explicit,
-    #[cfg(test)]
     Inferred,
 }
 

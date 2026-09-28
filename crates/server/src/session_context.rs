@@ -113,6 +113,10 @@ impl ModelProviderSDK for RoutedModelProvider {
             .map_err(anyhow::Error::new)
     }
 
+    fn remaining_quota_percent(&self) -> Option<u8> {
+        self.router.remaining_quota_percent(&self.route)
+    }
+
     fn name(&self) -> &str {
         &self.provider_name
     }

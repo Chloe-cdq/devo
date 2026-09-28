@@ -105,6 +105,15 @@ pub trait ModelProviderSDK: Send + Sync {
         request: ModelRequest,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>>;
 
+    /// Latest available remaining quota as a percentage in `0..=100`.
+    ///
+    /// `None` means telemetry is unavailable or stale. Implementations should
+    /// report the lowest known request/token window and never assume full quota.
+    /// This reads cached telemetry synchronously without performing network I/O.
+    fn remaining_quota_percent(&self) -> Option<u8> {
+        None
+    }
+
     /// Human-readable provider name (e.g. "anthropic", "openai").
     fn name(&self) -> &str;
 }

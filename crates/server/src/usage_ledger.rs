@@ -177,6 +177,10 @@ impl ModelProviderSDK for InstrumentedProvider {
         }
     }
 
+    fn remaining_quota_percent(&self) -> Option<u8> {
+        self.provider.remaining_quota_percent()
+    }
+
     fn name(&self) -> &str {
         self.provider.name()
     }

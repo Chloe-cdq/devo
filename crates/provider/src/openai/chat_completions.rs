@@ -39,6 +39,7 @@ use crate::dsml::DsmlToolCallHealer;
 use crate::hosted_tools::apply_openai_chat_completions_hosted_tools;
 use crate::http::invalid_status_error;
 use crate::merge_extra_body;
+use crate::quota::{QuotaHeaderFamily, QuotaTelemetry};
 use crate::text_normalization::split_tagged_text;
 
 /// OpenAI chat-completion provider backed by the official HTTP API.
@@ -50,6 +51,7 @@ pub struct OpenAIProvider {
     base_url: String,
     api_key: Option<String>,
     http_options: ProviderHttpOptions,
+    quota: QuotaTelemetry,
 }
 
 impl OpenAIProvider {
@@ -65,6 +67,7 @@ impl OpenAIProvider {
             base_url: base_url.into(),
             api_key: None,
             http_options,
+            quota: QuotaTelemetry::default(),
         }
     }
 
@@ -1107,6 +1110,7 @@ fn parse_finish_reason(value: &str) -> StopReason {
 impl ModelProviderSDK for OpenAIProvider {
     async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
         let body = build_request(&request, false);
+        let logging = crate::request::request_logging(request.extra_body.as_ref());
         debug!(
             provider = "openai",
             api_base = %self.base_url,
@@ -1117,11 +1121,17 @@ impl ModelProviderSDK for OpenAIProvider {
             "sending openai completion request"
         );
 
+        let request_generation = self.quota.begin_request();
         let response = self
             .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
             .send()
             .await
             .context("failed to send openai request")?;
+        self.quota.update(
+            request_generation,
+            response.headers(),
+            QuotaHeaderFamily::OpenAI,
+        );
         let response = match response.error_for_status_ref() {
             Ok(_) => response,
             Err(_) => {
@@ -1133,6 +1143,7 @@ impl ModelProviderSDK for OpenAIProvider {
                     status,
                     response,
                     &body,
+                    logging,
                 )
                 .await);
             }
@@ -1157,6 +1168,10 @@ impl ModelProviderSDK for OpenAIProvider {
         request: ModelRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         stream::completion_stream(self, request).await
+    }
+
+    fn remaining_quota_percent(&self) -> Option<u8> {
+        self.quota.remaining_quota_percent()
     }
 
     fn name(&self) -> &str {

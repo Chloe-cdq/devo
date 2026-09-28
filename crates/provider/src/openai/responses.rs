@@ -10,13 +10,14 @@ use futures::Stream;
 use futures::StreamExt;
 use reqwest::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
-use reqwest_eventsource::{Event, EventSource};
+use reqwest_eventsource::Event;
 use serde_json::{Value, json};
 use tracing::debug;
 
 use crate::error::ProviderError;
 use crate::hosted_tools::append_openai_responses_hosted_tools;
 use crate::http::invalid_status_error;
+use crate::quota::{QuotaHeaderFamily, QuotaTelemetry};
 use crate::text_normalization::{TaggedTextFragment, TaggedTextParser, split_tagged_text};
 use crate::{ModelProviderSDK, ProviderHttpOptions, merge_extra_body};
 
@@ -36,6 +37,7 @@ pub struct OpenAIResponsesProvider {
     base_url: String,
     api_key: Option<String>,
     http_options: ProviderHttpOptions,
+    quota: QuotaTelemetry,
 }
 
 impl OpenAIResponsesProvider {
@@ -51,6 +53,7 @@ impl OpenAIResponsesProvider {
             base_url: base_url.into(),
             api_key: None,
             http_options,
+            quota: QuotaTelemetry::default(),
         }
     }
 
@@ -503,6 +506,7 @@ fn parse_status_reason(value: &str) -> StopReason {
 impl ModelProviderSDK for OpenAIResponsesProvider {
     async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
         let body = build_request(&request, false);
+        let logging = crate::request::request_logging(request.extra_body.as_ref());
         debug!(
             provider = "openai-responses",
             api_base = %self.base_url,
@@ -513,11 +517,17 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
             "sending openai responses completion request"
         );
 
+        let request_generation = self.quota.begin_request();
         let response = self
             .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
             .send()
             .await
             .context("failed to send openai responses request")?;
+        self.quota.update(
+            request_generation,
+            response.headers(),
+            QuotaHeaderFamily::OpenAI,
+        );
         let response = match response.error_for_status_ref() {
             Ok(_) => response,
             Err(_) => {
@@ -529,6 +539,7 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
                     status,
                     response,
                     &body,
+                    logging,
                 )
                 .await);
             }
@@ -546,6 +557,7 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
         request: ModelRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let body = build_request(&request, true);
+        let logging = crate::request::request_logging(request.extra_body.as_ref());
         debug!(
             provider = "openai-responses",
             api_base = %self.base_url,
@@ -556,10 +568,14 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
             "sending openai responses streaming request"
         );
 
-        let event_source = EventSource::new(self.streaming_request_builder(
-            &body,
-            &crate::request_headers(request.extra_body.as_ref()),
-        ))
+        let event_source = crate::sse::quota_event_source(
+            self.streaming_request_builder(
+                &body,
+                &crate::request_headers(request.extra_body.as_ref()),
+            ),
+            self.quota.clone(),
+            QuotaHeaderFamily::OpenAI,
+        )
         .context("failed to create openai responses event source")?;
         let stream = async_stream::try_stream! {
             let mut text_buf = String::new();
@@ -589,6 +605,7 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
                             status,
                             response,
                             &body,
+                            logging,
                         )
                         .await)?
                     }
@@ -945,6 +962,10 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    fn remaining_quota_percent(&self) -> Option<u8> {
+        self.quota.remaining_quota_percent()
     }
 
     fn name(&self) -> &str {

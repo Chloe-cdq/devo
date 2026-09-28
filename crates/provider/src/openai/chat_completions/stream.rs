@@ -9,7 +9,7 @@ use devo_protocol::{
 };
 use futures::Stream;
 use futures::StreamExt;
-use reqwest_eventsource::{Event, EventSource};
+use reqwest_eventsource::Event;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -25,6 +25,8 @@ use crate::dsml::DsmlToolCallHealer;
 use crate::error::ProviderError;
 use crate::http::invalid_status_error;
 use crate::openai::error_payload::provider_error_from_payload;
+use crate::quota::QuotaHeaderFamily;
+use crate::request::RequestLogging;
 use crate::text_normalization::{TaggedTextFragment, TaggedTextParser};
 
 /// <https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events>
@@ -71,6 +73,11 @@ pub(super) async fn completion_stream(
     request: ModelRequest,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
     let body = build_request(&request, true);
+    let logging = crate::request::request_logging(request.extra_body.as_ref());
+    let logged_body = match logging {
+        RequestLogging::Foreground => &body,
+        RequestLogging::Background => &Value::Null,
+    };
     tracing::debug!(
         provider = "openai",
         api_base = %provider.base_url,
@@ -78,13 +85,15 @@ pub(super) async fn completion_stream(
         messages = request.messages.len(),
         tools = request.tools.as_ref().map_or(0, Vec::len),
         max_tokens = request.max_tokens,
-        http_body = %body,
+        http_body = %logged_body,
         "sending openai streaming request"
     );
 
-    let event_source = EventSource::new(
+    let event_source = crate::sse::quota_event_source(
         provider
             .streaming_request_builder(&body, &crate::request_headers(request.extra_body.as_ref())),
+        provider.quota.clone(),
+        QuotaHeaderFamily::OpenAI,
     )
     .context("failed to create openai event source")?;
     let stream = async_stream::try_stream! {
@@ -106,6 +115,7 @@ pub(super) async fn completion_stream(
                         status,
                         response,
                         &body,
+                        logging,
                     )
                     .await)?
                 }
@@ -127,7 +137,10 @@ pub(super) async fn completion_stream(
                     tracing::trace!(
                         event = %message.event,
                         data_len = message.data.len(),
-                        data = %message.data,
+                        data = %match logging {
+                            RequestLogging::Foreground => message.data.as_str(),
+                            RequestLogging::Background => "<redacted>",
+                        },
                         "openai chat completions raw stream event"
                     );
                     if message.data == "[DONE]" {
@@ -148,7 +161,9 @@ pub(super) async fn completion_stream(
 
                     for stream_event in state.apply_chunk(chunk) {
                         if let StreamEvent::TextDelta { index, text } = &stream_event {
-                            if let Some(assistant_token_text) = assistant_token_log_preview(text) {
+                            if matches!(logging, RequestLogging::Foreground)
+                                && let Some(assistant_token_text) = assistant_token_log_preview(text)
+                            {
                                 tracing::debug!(
                                     stream_elapsed_ms = stream_trace_elapsed_ms(),
                                     index,

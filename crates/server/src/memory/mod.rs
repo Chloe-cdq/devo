@@ -8,15 +8,20 @@ mod command_types;
 mod entries;
 mod entry_identity;
 mod equivalence;
+mod extraction;
 mod forget;
 mod identity;
+mod inferred;
+mod jobs;
 mod migration;
 mod projection;
 mod queries;
 mod revocation_lifecycle;
 #[cfg(test)]
 mod runtime_test_support;
+pub(crate) mod scan;
 mod schema;
+mod source;
 mod stored_values;
 #[cfg(test)]
 mod test_support;
@@ -458,7 +463,9 @@ fn redact_error_class(error_class: String) -> String {
         | "permanent_provider_error"
         | "provider_unavailable"
         | "quota_unavailable"
-        | "transient_provider_error" => error_class,
+        | "transient_provider_error"
+        | "storage_error"
+        | "projection_error" => error_class,
         _ => "unknown".to_string(),
     }
 }

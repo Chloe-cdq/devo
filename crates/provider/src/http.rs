@@ -14,7 +14,8 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::warn;
 
-use crate::error::context_limit_error;
+use crate::error::{ProviderError, context_limit_error};
+use crate::request::RequestLogging;
 use crate::timeout::connect_timeout;
 
 #[derive(Clone, Copy)]
@@ -163,7 +164,43 @@ pub(crate) async fn invalid_status_error(
     status: StatusCode,
     response: Response,
     request_body: &Value,
+    logging: RequestLogging,
 ) -> anyhow::Error {
+    if matches!(logging, RequestLogging::Background) {
+        warn!(provider, model, operation, status = %status, "background provider request failed");
+        let status_code = status.as_u16();
+        let provider_name = Some(provider.to_owned());
+        let error = match status_code {
+            401 | 403 => ProviderError::AuthenticationError {
+                message: "Background provider request authentication failed".to_string(),
+                provider_name,
+                status_code: Some(status_code),
+            },
+            429 => ProviderError::RateLimitError {
+                message: "Background provider request was rate limited".to_string(),
+                retry_after_seconds: response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse().ok()),
+                provider_name,
+            },
+            500..=599 => ProviderError::ProviderServerError {
+                message: "Background provider request failed".to_string(),
+                status_code: Some(status_code),
+                provider_name,
+            },
+            400..=499 => ProviderError::InvalidRequestError {
+                message: "Background provider request was rejected".to_string(),
+                details: Some(format!("HTTP status {status_code}")),
+            },
+            _ => ProviderError::UnknownError {
+                message: "Background provider request failed".to_string(),
+                status_code: Some(status_code),
+            },
+        };
+        return anyhow::Error::new(error);
+    }
     let response_body = response
         .text()
         .await
