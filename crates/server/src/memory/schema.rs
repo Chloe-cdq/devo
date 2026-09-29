@@ -200,6 +200,10 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
     if previous_version_number < 6 {
         proposal_relations::backfill_claims(&transaction)?;
     }
+    if previous_version_number < 7 {
+        super::entries::credential_policy::purge_unsafe_memory(&transaction)?;
+        proposal_relations::repair_claims(&transaction)?;
+    }
     transaction.execute(
         "INSERT INTO memory_schema_meta (key, value)
          VALUES ('schema_version', ?1)

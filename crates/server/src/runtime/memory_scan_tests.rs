@@ -551,3 +551,41 @@ async fn scan_reports_missing_credentials_without_quota() -> Result<()> {
     }
     Ok(())
 }
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: unsafe assignment variants make no auxiliary provider request and safe token-count prose still extracts.
+#[tokio::test]
+async fn scan_credential_assignment_variants_never_send_source() -> Result<()> {
+    let (root, runtime, provider) = setup(/*sources*/ 1, /*permits*/ 5)?;
+    let source = std::fs::read_dir(root.path().join("sessions"))?
+        .next()
+        .unwrap()?
+        .path();
+    let original = std::fs::read_to_string(&source)?;
+    for text in [
+        "API key: \" \"",
+        "password=;",
+        "_API_KEY=ab",
+        "_password=ab",
+        "API key: ab",
+        "API key = abcdefghijklmnop",
+        "Credentials: API key: ab",
+        "option = password=ab",
+        "API\nkey=ab",
+        "API\u{2003}key=ab",
+        "API key:\nab",
+        "API key:\u{2003}ab",
+    ] {
+        let quoted = serde_json::to_string(text)?;
+        let escaped = &quoted[1..quoted.len() - 1];
+        std::fs::write(&source, original.replace("I prefer tabs", escaped))?;
+        scan(&runtime, root.path()).await?;
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.requests.lock().unwrap().len(), 0);
+    }
+    std::fs::write(&source, original.replace("I prefer tabs", "token count: 5"))?;
+    scan(&runtime, root.path()).await?;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    Ok(())
+}

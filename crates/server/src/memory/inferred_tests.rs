@@ -459,3 +459,106 @@ fn short_credential_assignments_never_commit() {
     ).unwrap();
     assert_eq!(counts, (0, 0, 0, "completed".into()));
 }
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: direct commits validate both exact candidate fields before storing any copies.
+#[test]
+fn credential_assignment_variants_never_commit_keys_or_bodies() {
+    for field in ["body", "key"] {
+        for text in [
+            "API key: \" \"",
+            "password=;",
+            "_API_KEY=ab",
+            "_password=ab",
+            "API key: ab",
+            "API key = abcdefghijklmnop",
+            "Credentials: API key: ab",
+            "option = password=ab",
+            "API\nkey=ab",
+            "API\u{2003}key=ab",
+            "API key:\nab",
+            "API key:\u{2003}ab",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let runtime = open_runtime(root.path());
+            let (source, mut candidate) = fixture();
+            match field {
+                "body" => candidate.body = text.into(),
+                "key" => candidate.key = text.into(),
+                _ => unreachable!(),
+            }
+            let now = Utc::now();
+            let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+            runtime
+                .commit_extraction(&claim, &source, &[candidate], now)
+                .unwrap();
+            assert_eq!(
+                runtime.list(ListMemoryRequest::default()).unwrap().data,
+                vec![]
+            );
+            let connection = runtime.connection.lock().unwrap();
+            let counts = connection.query_row(
+                "SELECT (SELECT COUNT(*) FROM memory_candidates), (SELECT COUNT(*) FROM memory_evidence), (SELECT COUNT(*) FROM memory_entries_fts), (SELECT COUNT(*) FROM memory_proposal_claims)",
+                [], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?, row.get::<_, u32>(2)?, row.get::<_, u32>(3)?)),
+            ).unwrap();
+            assert_eq!(counts, (0, 0, 0, 0));
+        }
+    }
+}
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: Native explicit admission rejects spelling variants without persisting text.
+#[tokio::test]
+async fn credential_assignment_variants_reject_explicit_memory() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    for text in [
+        "API key: \" \"",
+        "password=;",
+        "_API_KEY=ab",
+        "_password=ab",
+        "API key: ab",
+        "API key = abcdefghijklmnop",
+        "Credentials: API key: ab",
+        "option = password=ab",
+        "API\nkey=ab",
+        "API\u{2003}key=ab",
+        "API key:\nab",
+        "API key:\u{2003}ab",
+    ] {
+        assert!(matches!(
+            runtime
+                .execute_command(MemoryCommand::Remember(remember_request(text)))
+                .await,
+            Err(crate::memory::MemoryError::SecretContentRejected)
+        ));
+        assert_eq!(
+            runtime.list(ListMemoryRequest::default()).unwrap().data,
+            vec![]
+        );
+    }
+}
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: key normalization cannot turn a parser-bypassed proposal into persisted credential bytes.
+#[test]
+fn credential_normalized_proposal_keys_never_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (source, mut candidate) = fixture();
+    candidate.key = "API\nkey=ab".into();
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    assert_eq!(
+        runtime.list(ListMemoryRequest::default()).unwrap().data,
+        vec![]
+    );
+    let connection = runtime.connection.lock().unwrap();
+    assert_eq!(connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM memory_candidates), (SELECT COUNT(*) FROM memory_proposal_claims), (SELECT COUNT(*) FROM memory_entries_fts)",
+        [], |row| Ok((row.get::<_, u32>(0)?,row.get::<_, u32>(1)?,row.get::<_, u32>(2)?))
+    ).unwrap(), (0,0,0));
+}

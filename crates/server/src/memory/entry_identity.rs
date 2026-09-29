@@ -150,6 +150,9 @@ pub(super) fn merge_entry_records<'a>(
             [duplicate_id],
         )?;
     }
+    if !redirects.is_empty() {
+        super::proposal_relations::reconcile_entry(transaction, keeper_id)?;
+    }
     Ok(redirects)
 }
 

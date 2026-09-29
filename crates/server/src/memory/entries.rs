@@ -1,3 +1,6 @@
+#[path = "credential_policy.rs"]
+pub(super) mod credential_policy;
+
 use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::rpc_memory::MemoryEntry;
@@ -5,7 +8,6 @@ use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
-use devo_safety::{InMemorySecretDetectorRegistry, SecretDetectorRegistry};
 use rusqlite::{Connection, OptionalExtension};
 
 #[cfg(test)]
@@ -270,7 +272,7 @@ impl MemoryRuntime {
             entry_id
         };
         if origin == MemoryOrigin::ExplicitUser {
-            super::proposal_relations::bind_explicit_entry(
+            super::proposal_relations::bind_entry(
                 &transaction,
                 request.scope,
                 &scope_id,
@@ -388,40 +390,7 @@ fn classify_kind(body: &str) -> MemoryKind {
     }
 }
 
-pub(super) fn contains_secret(body: &str) -> bool {
-    // Memory cannot send or retain explicitly assigned credentials, even when
-    // their values are shorter than the general detector's confidence threshold.
-    static CREDENTIAL_ASSIGNMENT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let assignment_match = CREDENTIAL_ASSIGNMENT
-        .get_or_init(|| {
-            regex::Regex::new(
-                r#"(?i)\b[a-z0-9_-]*(?:api[_-]?key|token|secret|password)\b["']?\s*[:=]\s*["']?[^\s"']+"#,
-            )
-            .expect("valid credential assignment regex")
-        })
-        .is_match(body);
-    let lower_body = body.to_ascii_lowercase();
-    let marker_match = [
-        "sk-",
-        "ghp_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "bearer ",
-        "api_key=",
-        "apikey=",
-        "aws_secret_access_key",
-        "-----begin ",
-    ]
-    .iter()
-    .any(|marker| lower_body.contains(marker));
-    assignment_match
-        || marker_match
-        || InMemorySecretDetectorRegistry::with_default_detectors()
-            .all()
-            .into_iter()
-            .any(|detector| !detector.detect(body).is_empty())
-}
+pub(super) use credential_policy::contains_secret;
 
 pub(super) fn load_entry(
     connection: &Connection,

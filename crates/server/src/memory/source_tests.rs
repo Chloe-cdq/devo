@@ -467,6 +467,18 @@ fn local_tool_output_is_excluded_without_becoming_external_provenance() {
 fn short_credential_assignments_are_excluded_from_extraction() {
     let dir = TempDir::new().unwrap();
     for text in [
+        "API key: \" \"",
+        "password=;",
+        "_API_KEY=ab",
+        "_password=ab",
+        "API key: ab",
+        "API key = abcdefghijklmnop",
+        "Credentials: API key: ab",
+        "option = password=ab",
+        "API\nkey=ab",
+        "API\u{2003}key=ab",
+        "API key:\nab",
+        "API key:\u{2003}ab",
         "password=1",
         "password=1234567",
         "password : \"1234\"",
@@ -483,6 +495,7 @@ fn short_credential_assignments_are_excluded_from_extraction() {
         let mut lines = legacy(dir.path());
         lines[2]["Item"]["item"]["input_items"][0]["UserMessage"]["text"] = json!(text);
         assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+        assert_eq!(read_source(&write_lines(&dir, &v2(&lines))).unwrap(), None);
     }
 }
 

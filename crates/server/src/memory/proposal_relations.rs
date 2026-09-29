@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use devo_protocol::native::rpc_memory::MemoryScope;
+use devo_protocol::native::rpc_memory::{MemoryOrigin, MemoryScope};
 use rusqlite::{OptionalExtension, Transaction};
 
 use super::entries::contains_secret;
@@ -59,39 +59,89 @@ pub(super) fn record_claim(
             claim.entry_id
         ],
     )?;
-    withhold_competing_inferred(transaction, claim.scope, claim.scope_id, claim.proposal_key)
+    if let Some(entry_id) = claim.entry_id {
+        bind_entry(
+            transaction,
+            claim.scope,
+            claim.scope_id,
+            claim.canonical_key,
+            entry_id,
+        )
+    } else {
+        reconcile_identity(
+            transaction,
+            claim.scope,
+            claim.scope_id,
+            claim.canonical_key,
+        )
+    }
 }
 
-pub(super) fn competitor(
+pub(super) enum InferredAdmission {
+    New,
+    Existing(ExistingMemoryEntry),
+    ExplicitAuthority,
+    Conflict,
+}
+
+/// Records all known memberships before deciding whether inference may create
+/// an entry. A model label is never allowed to reset an existing relationship.
+pub(super) fn admit_inferred(
     transaction: &Transaction<'_>,
     scope: MemoryScope,
     scope_id: &str,
     proposal_key: &str,
-) -> Result<Option<ExistingMemoryEntry>, MemoryError> {
-    let entry = transaction
-        .query_row(
-            "SELECT DISTINCT entry.entry_id, entry.origin FROM memory_proposal_claims AS claim
-         JOIN memory_entries AS entry ON entry.entry_id = claim.entry_id
-         WHERE claim.scope_type = ?1 AND claim.scope_id = ?2 AND claim.proposal_key = ?3
-            AND entry.scope_type = ?1 AND entry.scope_id = ?2
-            AND entry.state IN ('active', 'restored', 'conflicted')
-         ORDER BY CASE entry.origin WHEN 'explicit_user' THEN 0 ELSE 1 END, entry.entry_id
+    canonical_key: &str,
+    existing: Option<ExistingMemoryEntry>,
+) -> Result<InferredAdmission, MemoryError> {
+    record_claim(
+        transaction,
+        ProposalClaim {
+            scope,
+            scope_id,
+            proposal_key,
+            canonical_key,
+            entry_id: existing.as_ref().map(|entry| entry.entry_id.as_str()),
+        },
+    )?;
+    if let Some(entry) = &existing
+        && entry.origin == MemoryOrigin::ExplicitUser
+    {
+        return Ok(InferredAdmission::Existing(
+            existing.expect("checked explicit entry"),
+        ));
+    }
+    let competitor = transaction.query_row(
+        "SELECT COALESCE(entry.origin, 'inferred_session') FROM memory_proposal_claims AS competing
+         LEFT JOIN memory_entries AS entry ON entry.entry_id = competing.entry_id
+         WHERE competing.scope_type = ?1 AND competing.scope_id = ?2
+            AND competing.canonical_key != ?3
+            AND competing.proposal_key IN (
+                SELECT proposal_key FROM memory_proposal_claims
+                WHERE scope_type = ?1 AND scope_id = ?2 AND canonical_key = ?3)
+            AND (competing.entry_id IS NULL OR (entry.scope_type = ?1 AND entry.scope_id = ?2
+                AND entry.state IN ('active', 'restored', 'conflicted')))
+         ORDER BY CASE entry.origin WHEN 'explicit_user' THEN 0 ELSE 1 END
          LIMIT 1",
-            rusqlite::params![scope_name(scope), scope_id, proposal_key],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()?;
-    entry
-        .map(|(entry_id, origin)| {
-            Ok(ExistingMemoryEntry {
-                entry_id,
-                origin: parse_origin(&origin)?,
-            })
-        })
-        .transpose()
+        rusqlite::params![scope_name(scope), scope_id, canonical_key],
+        |row| row.get::<_, String>(0),
+    ).optional()?.map(|origin| parse_origin(&origin)).transpose()?;
+    if competitor == Some(MemoryOrigin::ExplicitUser) {
+        return Ok(InferredAdmission::ExplicitAuthority);
+    }
+    if let Some(existing) = existing {
+        // Inference can add supporting evidence, but cannot reactivate a
+        // conflicted or retired entry. Its lifecycle state is already reconciled.
+        return Ok(InferredAdmission::Existing(existing));
+    }
+    if competitor.is_some() {
+        Ok(InferredAdmission::Conflict)
+    } else {
+        Ok(InferredAdmission::New)
+    }
 }
 
-pub(super) fn bind_explicit_entry(
+pub(super) fn bind_entry(
     transaction: &Transaction<'_>,
     scope: MemoryScope,
     scope_id: &str,
@@ -103,6 +153,15 @@ pub(super) fn bind_explicit_entry(
          WHERE scope_type = ?2 AND scope_id = ?3 AND canonical_key = ?4",
         rusqlite::params![entry_id, scope_name(scope), scope_id, canonical_key],
     )?;
+    reconcile_identity(transaction, scope, scope_id, canonical_key)
+}
+
+fn reconcile_identity(
+    transaction: &Transaction<'_>,
+    scope: MemoryScope,
+    scope_id: &str,
+    canonical_key: &str,
+) -> Result<(), MemoryError> {
     let keys = {
         let mut statement = transaction.prepare(
             "SELECT proposal_key FROM memory_proposal_claims
@@ -121,6 +180,30 @@ pub(super) fn bind_explicit_entry(
     Ok(())
 }
 
+pub(super) fn reconcile_entry(
+    transaction: &Transaction<'_>,
+    entry_id: &str,
+) -> Result<(), MemoryError> {
+    let groups = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT scope_type, scope_id, proposal_key FROM memory_proposal_claims WHERE entry_id = ?1",
+        )?;
+        statement
+            .query_map([entry_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (scope, scope_id, key) in groups {
+        withhold_competing_inferred(transaction, parse_scope(&scope)?, &scope_id, &key)?;
+    }
+    Ok(())
+}
+
 fn withhold_competing_inferred(
     transaction: &Transaction<'_>,
     scope: MemoryScope,
@@ -133,14 +216,19 @@ fn withhold_competing_inferred(
         "UPDATE memory_entries SET state = 'conflicted'
          WHERE scope_type = ?1 AND scope_id = ?2 AND origin = 'inferred_session'
             AND state IN ('active', 'restored')
-            AND entry_id IN (SELECT entry_id FROM memory_proposal_claims
-                WHERE scope_type = ?1 AND scope_id = ?2 AND proposal_key = ?3)
-            AND (SELECT COUNT(DISTINCT entry.entry_id)
-                FROM memory_proposal_claims AS claim
-                JOIN memory_entries AS entry ON entry.entry_id = claim.entry_id
-                WHERE claim.scope_type = ?1 AND claim.scope_id = ?2 AND claim.proposal_key = ?3
-                    AND entry.scope_type = ?1 AND entry.scope_id = ?2
-                    AND entry.state IN ('active', 'restored', 'conflicted')) > 1",
+            AND EXISTS (
+                SELECT 1 FROM memory_proposal_claims AS owned
+                JOIN memory_proposal_claims AS competing
+                    ON competing.scope_type = owned.scope_type
+                    AND competing.scope_id = owned.scope_id
+                    AND competing.proposal_key = owned.proposal_key
+                LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
+                WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.proposal_key = ?3
+                    AND owned.entry_id = memory_entries.entry_id
+                    AND competing.canonical_key != owned.canonical_key
+                    AND (competing.entry_id IS NULL OR (
+                        competitor.scope_type = ?1 AND competitor.scope_id = ?2
+                        AND competitor.state IN ('active', 'restored', 'conflicted'))))",
         rusqlite::params![scope_name(scope), scope_id, proposal_key],
     )?;
     transaction.execute(
@@ -154,7 +242,9 @@ fn withhold_competing_inferred(
     Ok(())
 }
 
-pub(super) fn backfill_claims(transaction: &Transaction<'_>) -> Result<(), MemoryError> {
+type StoredIdentities = BTreeMap<(String, String, String), Vec<String>>;
+
+fn stored_identities(transaction: &Transaction<'_>) -> Result<StoredIdentities, MemoryError> {
     let entries = {
         let mut statement = transaction
             .prepare("SELECT scope_type, scope_id, body, entry_id FROM memory_entries")?;
@@ -169,13 +259,77 @@ pub(super) fn backfill_claims(transaction: &Transaction<'_>) -> Result<(), Memor
             })?
             .collect::<Result<Vec<_>, _>>()?
     };
-    let mut identities = BTreeMap::<(String, String, String), Vec<String>>::new();
+    let mut identities = StoredIdentities::new();
     for (scope, scope_id, body, entry_id) in entries {
         identities
             .entry((scope, scope_id, equivalence::explicit_memory_key(&body)))
             .or_default()
             .push(entry_id);
     }
+    Ok(identities)
+}
+
+/// Repairs v6 key drift from durable claims, even after candidate history was pruned.
+/// Only unique scoped conservative identities are rebound; bodies and evidence are unchanged.
+pub(super) fn repair_claims(transaction: &Transaction<'_>) -> Result<(), MemoryError> {
+    let identities = stored_identities(transaction)?;
+    let claims = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT scope_type, scope_id, canonical_key FROM memory_proposal_claims",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut ambiguous_claims = 0;
+    for (scope, scope_id, canonical_key) in claims {
+        let matches = identities.get(&(scope.clone(), scope_id.clone(), canonical_key.clone()));
+        if matches.is_some_and(|entries| entries.len() > 1) {
+            ambiguous_claims += 1;
+        }
+        let entry_id = matches
+            .filter(|entries| entries.len() == 1)
+            .map(|entries| entries[0].as_str());
+        transaction.execute(
+            "UPDATE memory_proposal_claims SET entry_id = ?1
+             WHERE scope_type = ?2 AND scope_id = ?3 AND canonical_key = ?4",
+            rusqlite::params![entry_id, scope, scope_id, canonical_key],
+        )?;
+    }
+    let groups = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT scope_type, scope_id, proposal_key FROM memory_proposal_claims",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (scope, scope_id, key) in groups {
+        withhold_competing_inferred(transaction, parse_scope(&scope)?, &scope_id, &key)?;
+    }
+    if ambiguous_claims > 0 {
+        tracing::warn!(
+            ambiguous_claims,
+            "memory proposal repair left ambiguous identities unbound"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn backfill_claims(transaction: &Transaction<'_>) -> Result<(), MemoryError> {
+    let identities = stored_identities(transaction)?;
     let candidates = {
         let mut statement = transaction.prepare(
             "SELECT scope_type, scope_id, normalized_key, body FROM memory_candidates

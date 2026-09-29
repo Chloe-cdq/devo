@@ -318,6 +318,18 @@ fn parse_candidates_accepts_thirty_two_project_candidates() {
 fn short_credential_assignments_are_rejected_in_candidates() {
     for field in ["body", "key"] {
         for credential in [
+            "API key: \" \"",
+            "password=;",
+            "_API_KEY=ab",
+            "_password=ab",
+            "API key: ab",
+            "API key = abcdefghijklmnop",
+            "Credentials: API key: ab",
+            "option = password=ab",
+            "API\nkey=ab",
+            "API\u{2003}key=ab",
+            "API key:\nab",
+            "API key:\u{2003}ab",
             "password=1",
             "password=1234567",
             "\"password\": \"1234\"",

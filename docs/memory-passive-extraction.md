@@ -18,7 +18,11 @@ conversational text are sent to the extractor. Attachments, tool results, reason
 system/developer instructions are excluded. Credential-bearing sources and
 candidates are
 rejected before sending or committing, including explicitly assigned short
-passwords and tokens; safe status never contains transcript or provider response
+passwords and tokens. One private policy checks source admission, returned
+candidates, explicit and inferred writes, and projections. Supported credential
+labels include spaces, underscores, hyphens and case variations (for example,
+`API key: ab`); label normalization never changes stored claim text or identity.
+Safe status never contains transcript or provider response
 bodies.
 
 The extractor selects `memory.extract_model`, then the configured small model,
@@ -55,14 +59,36 @@ scoped conservative claim identities and stable entry-ID bindings independently
 of candidate history. Equivalent explicit display changes keep those bindings;
 an explicit resolution can select either retained claim. Entry merges redirect
 bindings in the same transaction before removing duplicates. Candidate-history
-pruning cannot remove live conflict authority. Model proposal keys group
-competitors and never replace the approved textual entry identity.
+pruning cannot remove live conflict authority. Admission checks all retained
+memberships of the scoped conservative claim before creating an inferred entry,
+including opposing claims that have no entry binding. Renaming a model proposal
+key cannot discard a known conflict or explicit authority. Explicit writes,
+entry merges and migration reconcile those same memberships. Inference can add
+supporting evidence but cannot reactivate an existing conflict. Model proposal
+keys group competitors and never replace the approved textual entry identity.
 
 Schema version 6 backfills uniquely provable proposal bindings from existing
 candidates, including equivalent display changes. It leaves ambiguous identities
 unbound, preserves their history, and withholds already-active inferred
 competitors without merging their bodies or evidence. The migration is atomic
 and idempotent; upgrading a v5 database does not rerun the v5 identity migration.
+
+Schema version 7 repairs databases already marked v6. It rebinds only uniquely
+provable scoped identities from durable proposal claims, even when candidates
+have been pruned, and withholds inferred entries that escaped a known conflict
+under another label. Non-sensitive bodies, identities, timestamps and evidence
+are retained; ambiguous identities remain unbound. A derived historical key that
+also identifies a surviving safe entry does not erase its authority or tombstone. The repair also removes
+credential-bearing memory content and its candidate, claim, evidence, revocation
+and FTS copies, including content stored through explicit commands. Generated
+Markdown is rebuilt without those values. Original conversation journals are
+unchanged. Both repairs and the final version marker commit in one transaction;
+a failed migration rolls back and can be retried. Reopening v7 does not rerun
+historical identity migrations.
+
+These rules enforce already-known relationships and a finite credential grammar.
+They do not infer semantic conflicts between previously unrelated wordings or
+promise to recognize every possible secret described in natural language.
 
 Markdown projections are atomically replaced after the authoritative
 commit and repaired from SQLite on restart. Projection failure never repeats

@@ -695,3 +695,6 @@ async fn ambiguous_history_is_not_bound_by_guessing() {
         2
     );
 }
+
+#[path = "proposal_admission_tests.rs"]
+mod admission_tests;
