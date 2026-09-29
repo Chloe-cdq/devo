@@ -1,5 +1,6 @@
 //! Prepared recall stays immutable across both query-loop compaction paths.
 
+use std::io::{self, Write};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,11 +12,15 @@ use devo_core::{
     Message, Model, ModelRequest, ModelResponse, QueryOptions, ResponseContent, SessionConfig,
     SessionState, StopReason, StreamEvent, TurnConfig, Usage, query,
 };
-use devo_protocol::RequestContent;
-use devo_provider::ModelProviderSDK;
+use devo_protocol::{ModelProfileKey, RequestContent, RequestMessage, SamplingControls};
 use devo_provider::error::ProviderError;
-use futures::Stream;
+use devo_provider::openai::OpenAIProvider;
+use devo_provider::{ModelProviderSDK, ProviderHttpOptions};
+use futures::{Stream, StreamExt};
 use pretty_assertions::assert_eq;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tracing::instrument::WithSubscriber;
 
 const MEMORY: &str = "<advisory_memory>Quoted memory: Use tabs.</advisory_memory>";
 
@@ -89,7 +94,34 @@ impl ModelProviderSDK for CompactionProvider {
     }
 }
 
+struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+impl Write for CapturedLogs {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().expect("logs").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn log_subscriber(
+    logs: Arc<Mutex<Vec<u8>>>,
+    max_level: tracing::Level,
+) -> impl tracing::Subscriber + Send + Sync {
+    tracing_subscriber::fmt()
+        .with_ansi(/*ansi*/ false)
+        .without_time()
+        .with_max_level(max_level)
+        .with_writer(move || CapturedLogs(Arc::clone(&logs)))
+        .finish()
+}
+
 async fn verify_compaction_recall(trigger: CompactionTrigger) -> Result<()> {
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = log_subscriber(Arc::clone(&logs), tracing::Level::DEBUG);
     let provider = Arc::new(CompactionProvider {
         trigger,
         stream_attempts: AtomicUsize::new(/*v*/ 0),
@@ -118,6 +150,7 @@ async fn verify_compaction_recall(trigger: CompactionTrigger) -> Result<()> {
             ..QueryOptions::default()
         },
     )
+    .with_subscriber(subscriber)
     .await?;
     let actual = provider
         .requests
@@ -161,6 +194,18 @@ async fn verify_compaction_recall(trigger: CompactionTrigger) -> Result<()> {
         }),
         "recall must stay outside persisted prompt history"
     );
+    let logs = String::from_utf8(logs.lock().expect("logs").clone())?;
+    assert!(logs.contains("sending LLM compaction request"));
+    assert!(logs.contains("received LLM compaction response"));
+    let leaked_content = [
+        "Quoted memory: Use tabs.",
+        "Earlier response",
+        "Earlier work summary",
+    ]
+    .into_iter()
+    .filter(|private_content| logs.contains(private_content))
+    .collect::<Vec<_>>();
+    assert_eq!(leaked_content, Vec::<&str>::new());
     Ok(())
 }
 
@@ -172,4 +217,170 @@ async fn auto_compaction_receives_the_same_recall_as_the_first_query() -> Result
 #[tokio::test]
 async fn context_limit_compaction_and_retry_receive_the_original_recall() -> Result<()> {
     verify_compaction_recall(CompactionTrigger::ContextLimit).await
+}
+
+#[derive(Clone, Copy)]
+enum ProviderRequestMode {
+    Streaming,
+    CompletionError,
+    StreamingError,
+}
+
+async fn verify_provider_log_privacy(mode: ProviderRequestMode) -> Result<()> {
+    const RESPONSE_BODY: &str = "private provider response text";
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await?;
+        let mut bytes = Vec::new();
+        let (header_end, content_length) = loop {
+            let mut chunk = [0_u8; 4096];
+            let count = socket.read(&mut chunk).await?;
+            anyhow::ensure!(count > 0, "request headers ended early");
+            bytes.extend_from_slice(&chunk[..count]);
+            if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&bytes[..end])?;
+                let length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map(|(_, value)| value.trim().parse::<usize>())
+                    .transpose()?
+                    .expect("request content length");
+                break (end + 4, length);
+            }
+        };
+        while bytes.len() < header_end + content_length {
+            let mut chunk = [0_u8; 4096];
+            let count = socket.read(&mut chunk).await?;
+            anyhow::ensure!(count > 0, "request body ended early");
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        let request = serde_json::from_slice::<serde_json::Value>(
+            &bytes[header_end..header_end + content_length],
+        )?;
+        let (status, content_type, body) = match mode {
+            ProviderRequestMode::Streaming => {
+                let chunk = serde_json::json!({
+                    "id": "memory-response",
+                    "choices": [{"index": 0, "delta": {"content": RESPONSE_BODY}, "finish_reason": "stop"}]
+                });
+                ("200 OK", "text/event-stream", format!("data: {chunk}\n\ndata: [DONE]\n\n"))
+            }
+            ProviderRequestMode::CompletionError | ProviderRequestMode::StreamingError => (
+                "400 Bad Request",
+                "application/json",
+                serde_json::json!({"error": {"message": RESPONSE_BODY, "type": "invalid_request_error"}}).to_string(),
+            ),
+        };
+        let content_length = body.len();
+        socket.write_all(format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{body}"
+        ).as_bytes()).await?;
+        Ok::<_, anyhow::Error>(request)
+    });
+    let provider = OpenAIProvider::new(format!("http://{address}/v1")).with_http_options(
+        ProviderHttpOptions::from_raw_with_no_proxy(
+            /*proxy_url*/ None,
+            Some("127.0.0.1".into()),
+            /*headers*/ None,
+        )?,
+    )?;
+    let request = ModelRequest {
+        model_slug: ModelProfileKey::CatalogSlug("gpt-4o".into()),
+        model: "gpt-4o".into(),
+        system: None,
+        messages: vec![RequestMessage {
+            role: "user".into(),
+            content: vec![RequestContent::Text {
+                text: MEMORY.into(),
+            }],
+        }],
+        max_tokens: 128,
+        tools: None,
+        hosted_tools: Vec::new(),
+        sampling: SamplingControls::default(),
+        request_thinking: None,
+        reasoning_effort: None,
+        extra_body: None,
+    };
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = log_subscriber(Arc::clone(&logs), tracing::Level::TRACE);
+    async {
+        match mode {
+            ProviderRequestMode::CompletionError => {
+                assert!(provider.completion(request).await.is_err());
+            }
+            ProviderRequestMode::Streaming | ProviderRequestMode::StreamingError => {
+                let events = provider
+                    .completion_stream(request)
+                    .await?
+                    .collect::<Vec<_>>()
+                    .await;
+                match mode {
+                    ProviderRequestMode::Streaming => {
+                        let events = events.into_iter().collect::<Result<Vec<_>>>()?;
+                        let text = events
+                            .into_iter()
+                            .filter_map(|event| {
+                                if let StreamEvent::TextDelta { text, .. } = event {
+                                    Some(text)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        assert_eq!(text, vec![RESPONSE_BODY.to_string()]);
+                    }
+                    ProviderRequestMode::StreamingError => {
+                        assert!(events.iter().any(Result::is_err))
+                    }
+                    ProviderRequestMode::CompletionError => {
+                        unreachable!("completion handled above")
+                    }
+                }
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .with_subscriber(subscriber)
+    .await?;
+    let wire_request = server.await??;
+    assert_eq!(
+        wire_request["messages"],
+        serde_json::json!([
+            {"role": "user", "content": MEMORY}
+        ])
+    );
+    let logs = String::from_utf8(logs.lock().expect("logs").clone())?;
+    match mode {
+        ProviderRequestMode::Streaming => {
+            assert!(logs.contains("sending openai streaming request"));
+            assert!(logs.contains("openai chat completions raw stream event"));
+        }
+        ProviderRequestMode::CompletionError | ProviderRequestMode::StreamingError => {
+            assert!(logs.contains("provider request failed"));
+        }
+    }
+    let leaked_content = ["Quoted memory: Use tabs.", RESPONSE_BODY]
+        .into_iter()
+        .filter(|private_content| logs.contains(private_content))
+        .collect::<Vec<_>>();
+    assert_eq!(leaked_content, Vec::<&str>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_stream_logs_omit_recall_and_response_bodies() -> Result<()> {
+    verify_provider_log_privacy(ProviderRequestMode::Streaming).await
+}
+
+#[tokio::test]
+async fn provider_completion_error_logs_omit_recall_and_response_bodies() -> Result<()> {
+    verify_provider_log_privacy(ProviderRequestMode::CompletionError).await
+}
+
+#[tokio::test]
+async fn provider_stream_error_logs_omit_recall_and_response_bodies() -> Result<()> {
+    verify_provider_log_privacy(ProviderRequestMode::StreamingError).await
 }

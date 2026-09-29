@@ -173,8 +173,8 @@ pub(crate) async fn invalid_status_error(
         model,
         operation,
         status = %status,
-        http_body = %request_body,
-        response_body = %response_body,
+        request_bytes = request_body.to_string().len(),
+        response_bytes = response_body.len(),
         "provider request failed"
     );
     let response_value = serde_json::from_str::<Value>(&response_body).ok();
