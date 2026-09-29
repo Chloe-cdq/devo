@@ -16,6 +16,13 @@ pub(super) struct ExistingMemoryEntry {
     pub(super) origin: MemoryOrigin,
 }
 
+/// Storage-key occupancy is separate from proven conservative claim identity.
+pub(super) enum MemoryIdentityResolution {
+    Vacant,
+    Existing(ExistingMemoryEntry),
+    Occupied,
+}
+
 pub(super) enum IdentityResolutionMode {
     Explicit,
     Inferred,
@@ -43,9 +50,9 @@ impl MemoryEntryIdentity {
         scope_id: &str,
         body: &str,
         mode: IdentityResolutionMode,
-    ) -> Result<Option<ExistingMemoryEntry>, MemoryError> {
+    ) -> Result<MemoryIdentityResolution, MemoryError> {
         let mut statement = transaction.prepare(
-            "SELECT entry_id, origin, normalized_key
+            "SELECT entry_id, origin, normalized_key, body
              FROM memory_entries
              WHERE scope_type = ?1 AND scope_id = ?2
                AND (
@@ -72,18 +79,26 @@ impl MemoryEntryIdentity {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 },
             )?
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
-        let Some((keeper_id, keeper_origin, _)) = matches.first() else {
-            return Ok(None);
+        // Historical inferred keys can be lossy. Validate every match before
+        // any merge, binding redirect, evidence write or tombstone change.
+        if matches.iter().any(|(_, _, _, stored_body)| {
+            equivalence::explicit_memory_key(stored_body) != self.canonical_key
+        }) {
+            return Ok(MemoryIdentityResolution::Occupied);
+        }
+        let Some((keeper_id, keeper_origin, _, _)) = matches.first() else {
+            return Ok(MemoryIdentityResolution::Vacant);
         };
         let proven_legacy_key = (self.canonical_key != self.legacy_inferred_key
             && matches
                 .iter()
-                .any(|(_, _, normalized_key)| normalized_key == &self.legacy_inferred_key))
+                .any(|(_, _, normalized_key, _)| normalized_key == &self.legacy_inferred_key))
         .then(|| self.legacy_inferred_key.clone());
         let redirects = merge_entry_records(
             transaction,
@@ -91,7 +106,7 @@ impl MemoryEntryIdentity {
             matches
                 .iter()
                 .skip(1)
-                .map(|(entry_id, _, _)| entry_id.as_str()),
+                .map(|(entry_id, _, _, _)| entry_id.as_str()),
         )?;
         apply_replacement_redirects(transaction, &redirects)?;
         if matches!(mode, IdentityResolutionMode::Explicit)
@@ -106,7 +121,7 @@ impl MemoryEntryIdentity {
             )?;
         }
 
-        Ok(Some(ExistingMemoryEntry {
+        Ok(MemoryIdentityResolution::Existing(ExistingMemoryEntry {
             entry_id: keeper_id.clone(),
             origin: parse_origin(keeper_origin)?,
         }))

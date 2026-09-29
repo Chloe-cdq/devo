@@ -10,7 +10,7 @@ use devo_protocol::native::rpc_memory::{MemoryOrigin, MemoryScope};
 use rusqlite::{OptionalExtension, Transaction};
 
 use super::entries::contains_secret;
-use super::entry_identity::ExistingMemoryEntry;
+use super::entry_identity::{ExistingMemoryEntry, MemoryIdentityResolution};
 use super::equivalence;
 use super::stored_values::{parse_origin, parse_scope};
 use super::{MemoryError, scope_name};
@@ -82,6 +82,7 @@ pub(super) enum InferredAdmission {
     Existing(ExistingMemoryEntry),
     ExplicitAuthority,
     Conflict,
+    IdentityCollision,
 }
 
 /// Records all known memberships before deciding whether inference may create
@@ -92,8 +93,25 @@ pub(super) fn admit_inferred(
     scope_id: &str,
     proposal_key: &str,
     canonical_key: &str,
-    existing: Option<ExistingMemoryEntry>,
+    resolution: MemoryIdentityResolution,
 ) -> Result<InferredAdmission, MemoryError> {
+    let existing = match resolution {
+        MemoryIdentityResolution::Vacant => None,
+        MemoryIdentityResolution::Existing(entry) => Some(entry),
+        MemoryIdentityResolution::Occupied => {
+            record_claim(
+                transaction,
+                ProposalClaim {
+                    scope,
+                    scope_id,
+                    proposal_key,
+                    canonical_key,
+                    entry_id: None,
+                },
+            )?;
+            return Ok(InferredAdmission::IdentityCollision);
+        }
+    };
     record_claim(
         transaction,
         ProposalClaim {
@@ -210,27 +228,55 @@ fn withhold_competing_inferred(
     scope_id: &str,
     proposal_key: &str,
 ) -> Result<(), MemoryError> {
-    // Withholding repairs authority/recall state without changing claim bodies,
-    // evidence, or their accepted-content timestamps.
-    transaction.execute(
-        "UPDATE memory_entries SET state = 'conflicted'
-         WHERE scope_type = ?1 AND scope_id = ?2 AND origin = 'inferred_session'
-            AND state IN ('active', 'restored')
-            AND EXISTS (
-                SELECT 1 FROM memory_proposal_claims AS owned
-                JOIN memory_proposal_claims AS competing
-                    ON competing.scope_type = owned.scope_type
-                    AND competing.scope_id = owned.scope_id
-                    AND competing.proposal_key = owned.proposal_key
-                LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
-                WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.proposal_key = ?3
-                    AND owned.entry_id = memory_entries.entry_id
-                    AND competing.canonical_key != owned.canonical_key
-                    AND (competing.entry_id IS NULL OR (
-                        competitor.scope_type = ?1 AND competitor.scope_id = ?2
-                        AND competitor.state IN ('active', 'restored', 'conflicted'))))",
-        rusqlite::params![scope_name(scope), scope_id, proposal_key],
-    )?;
+    // An ambiguous binding stays unbound, but every scoped body proven to be
+    // the contested canonical claim must be withheld. Accepted content,
+    // evidence, keys, and timestamps are unchanged.
+    let contested_keys = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT owned.canonical_key FROM memory_proposal_claims AS owned
+             JOIN memory_proposal_claims AS competing
+                ON competing.scope_type = owned.scope_type
+                AND competing.scope_id = owned.scope_id
+                AND competing.proposal_key = owned.proposal_key
+             LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
+             WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.proposal_key = ?3
+                AND competing.canonical_key != owned.canonical_key
+                AND (competing.entry_id IS NULL OR (
+                    competitor.scope_type = ?1 AND competitor.scope_id = ?2
+                    AND competitor.state IN ('active', 'restored', 'conflicted')))",
+        )?;
+        statement
+            .query_map(
+                rusqlite::params![scope_name(scope), scope_id, proposal_key],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let entries = {
+        let mut statement = transaction.prepare(
+            "SELECT entry_id, body FROM memory_entries
+             WHERE scope_type = ?1 AND scope_id = ?2 AND origin = 'inferred_session'
+                AND state IN ('active', 'restored', 'conflicted')",
+        )?;
+        statement
+            .query_map(rusqlite::params![scope_name(scope), scope_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (entry_id, body) in entries {
+        if contested_keys.contains(&equivalence::explicit_memory_key(&body)) {
+            transaction.execute(
+                "UPDATE memory_entries SET state = 'conflicted'
+                 WHERE entry_id = ?1 AND state IN ('active', 'restored')",
+                [&entry_id],
+            )?;
+            transaction.execute(
+                "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
+                [&entry_id],
+            )?;
+        }
+    }
     transaction.execute(
         "DELETE FROM memory_entries_fts WHERE entry_id IN (
             SELECT entry.entry_id FROM memory_proposal_claims AS claim

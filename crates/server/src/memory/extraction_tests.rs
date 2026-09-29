@@ -51,6 +51,8 @@ fn response(candidate: serde_json::Value) -> Vec<ResponseContent> {
     )]
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: extraction request sends only transcript references without tools.
 #[test]
 fn extraction_request_sends_only_transcript_references_without_tools() {
     // A tool-capable request or leaked session metadata would break this boundary.
@@ -90,6 +92,8 @@ fn extraction_request_sends_only_transcript_references_without_tools() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates preserves structured durable information.
 #[test]
 fn parse_candidates_preserves_structured_durable_information() {
     // Returning no candidates or misclassifying the model's structured fields is a bug.
@@ -105,6 +109,8 @@ fn parse_candidates_preserves_structured_durable_information() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates allows empty collection.
 #[test]
 fn parse_candidates_allows_empty_collection() {
     assert_eq!(
@@ -116,6 +122,8 @@ fn parse_candidates_allows_empty_collection() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates combines text blocks before parsing.
 #[test]
 fn parse_candidates_combines_text_blocks_before_parsing() {
     assert_eq!(
@@ -130,6 +138,8 @@ fn parse_candidates_combines_text_blocks_before_parsing() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates rejects non text output even with valid json.
 #[test]
 fn parse_candidates_rejects_non_text_output_even_with_valid_json() {
     // Ignoring a tool request could accidentally allow tool execution or partial output.
@@ -161,6 +171,8 @@ fn parse_candidates_rejects_non_text_output_even_with_valid_json() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates rejects malformed and unknown fields without exposing content.
 #[test]
 fn parse_candidates_rejects_malformed_and_unknown_fields_without_exposing_content() {
     for text in [
@@ -178,6 +190,8 @@ fn parse_candidates_rejects_malformed_and_unknown_fields_without_exposing_conten
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates rejects empty output.
 #[test]
 fn parse_candidates_rejects_empty_output() {
     for content in [vec![], vec![ResponseContent::Text("  ".into())]] {
@@ -188,6 +202,8 @@ fn parse_candidates_rejects_empty_output() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates rejects unsupported or missing evidence.
 #[test]
 fn parse_candidates_rejects_unsupported_or_missing_evidence() {
     for evidence in [
@@ -204,6 +220,8 @@ fn parse_candidates_rejects_unsupported_or_missing_evidence() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates deduplicates supporting turns.
 #[test]
 fn parse_candidates_deduplicates_supporting_turns() {
     let mut candidate = candidate_json();
@@ -220,6 +238,8 @@ fn parse_candidates_deduplicates_supporting_turns() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates rejects unbounded or empty fields.
 #[test]
 fn parse_candidates_rejects_unbounded_or_empty_fields() {
     for (field, value) in [
@@ -237,6 +257,8 @@ fn parse_candidates_rejects_unbounded_or_empty_fields() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates accepts character limits and trims padding.
 #[test]
 fn parse_candidates_accepts_character_limits_and_trims_padding() {
     let mut candidate = candidate_json();
@@ -254,6 +276,8 @@ fn parse_candidates_accepts_character_limits_and_trims_padding() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates rejects more than thirty two candidates.
 #[test]
 fn parse_candidates_rejects_more_than_thirty_two_candidates() {
     let text = json!({"candidates": vec![candidate_json(); 33]}).to_string();
@@ -263,6 +287,8 @@ fn parse_candidates_rejects_more_than_thirty_two_candidates() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates drops secret bearing key or body.
 #[test]
 fn parse_candidates_drops_secret_bearing_key_or_body() {
     let mut candidates = Vec::new();
@@ -290,6 +316,8 @@ fn parse_candidates_drops_secret_bearing_key_or_body() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: parse candidates accepts thirty two project candidates.
 #[test]
 fn parse_candidates_accepts_thirty_two_project_candidates() {
     let candidate = json!({

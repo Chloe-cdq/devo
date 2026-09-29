@@ -164,6 +164,9 @@ impl MemoryRuntime {
                     (None, "explicit_authority")
                 }
                 super::proposal_relations::InferredAdmission::Conflict => (None, "conflicted"),
+                super::proposal_relations::InferredAdmission::IdentityCollision => {
+                    (None, "identity_collision")
+                }
                 super::proposal_relations::InferredAdmission::Existing(existing) => {
                     transaction.execute(
                         "UPDATE memory_entries SET updated_at = ?1 WHERE entry_id = ?2",

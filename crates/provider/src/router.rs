@@ -284,6 +284,8 @@ mod tests {
         }
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: router quota uses selected route and keeps missing routes unavailable.
     #[test]
     fn router_quota_uses_selected_route_and_keeps_missing_routes_unavailable() {
         let default = Arc::new(CapturingProvider {
@@ -309,6 +311,8 @@ mod tests {
         );
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: single router quota matches its route compatibility.
     #[test]
     fn single_router_quota_matches_its_route_compatibility() {
         let provider = Arc::new(CapturingProvider {

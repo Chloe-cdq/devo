@@ -698,3 +698,10 @@ async fn ambiguous_history_is_not_bound_by_guessing() {
 
 #[path = "proposal_admission_tests.rs"]
 mod admission_tests;
+
+#[path = "proposal_identity_tests.rs"]
+mod identity_tests;
+
+#[cfg(test)]
+#[path = "proposal_ambiguity_tests.rs"]
+mod ambiguity_tests;

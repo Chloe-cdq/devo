@@ -53,6 +53,8 @@ fn v2(lines: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: reads only explicit user and assistant text with source identity.
 #[test]
 fn reads_only_explicit_user_and_assistant_text_with_source_identity() {
     let dir = TempDir::new().unwrap();
@@ -86,6 +88,8 @@ fn reads_only_explicit_user_and_assistant_text_with_source_identity() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: field contribution survives later whole session metadata.
 #[test]
 fn field_contribution_survives_later_whole_session_metadata() {
     let dir = TempDir::new().unwrap();
@@ -100,6 +104,8 @@ fn field_contribution_survives_later_whole_session_metadata() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: skips parent subagent automation and fork sessions.
 #[test]
 fn skips_parent_subagent_automation_and_fork_sessions() {
     let dir = TempDir::new().unwrap();
@@ -127,6 +133,8 @@ fn skips_parent_subagent_automation_and_fork_sessions() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: rejects incomplete turn and corrupt or truncated tail.
 #[test]
 fn rejects_incomplete_turn_and_corrupt_or_truncated_tail() {
     let dir = TempDir::new().unwrap();
@@ -147,6 +155,8 @@ fn rejects_incomplete_turn_and_corrupt_or_truncated_tail() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: tool calls taint the entire session even before rollback.
 #[test]
 fn tool_calls_taint_the_entire_session_even_before_rollback() {
     let dir = TempDir::new().unwrap();
@@ -174,6 +184,8 @@ fn tool_calls_taint_the_entire_session_even_before_rollback() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: detects native mcp tool source even without mcp name.
 #[test]
 fn detects_native_mcp_tool_source_even_without_mcp_name() {
     let dir = TempDir::new().unwrap();
@@ -191,6 +203,8 @@ fn detects_native_mcp_tool_source_even_without_mcp_name() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: hidden context tools and attachments never enter messages.
 #[test]
 fn hidden_context_tools_and_attachments_never_enter_messages() {
     let dir = TempDir::new().unwrap();
@@ -215,6 +229,8 @@ fn hidden_context_tools_and_attachments_never_enter_messages() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: credentials are excluded from extraction.
 #[test]
 fn credentials_are_excluded_from_extraction() {
     let dir = TempDir::new().unwrap();
@@ -224,6 +240,8 @@ fn credentials_are_excluded_from_extraction() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: watermark changes when content is rewritten without length change.
 #[test]
 fn watermark_changes_when_content_is_rewritten_without_length_change() {
     let dir = TempDir::new().unwrap();
@@ -239,6 +257,8 @@ fn watermark_changes_when_content_is_rewritten_without_length_change() {
     assert_eq!(second, read_source(&path).unwrap().unwrap().watermark);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: bounds rollout bytes before parsing.
 #[test]
 fn bounds_rollout_bytes_before_parsing() {
     let dir = TempDir::new().unwrap();
@@ -248,6 +268,8 @@ fn bounds_rollout_bytes_before_parsing() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: folds latest turn and item revisions instead of extracting stale text.
 #[test]
 fn folds_latest_turn_and_item_revisions_instead_of_extracting_stale_text() {
     let dir = TempDir::new().unwrap();
@@ -287,6 +309,8 @@ fn folds_latest_turn_and_item_revisions_instead_of_extracting_stale_text() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: rollback retains only live items and fails closed for unknown turns.
 #[test]
 fn rollback_retains_only_live_items_and_fails_closed_for_unknown_turns() {
     let dir = TempDir::new().unwrap();
@@ -298,6 +322,8 @@ fn rollback_retains_only_live_items_and_fails_closed_for_unknown_turns() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: context activity defers idle gating without becoming source text.
 #[test]
 fn context_activity_defers_idle_gating_without_becoming_source_text() {
     let dir = TempDir::new().unwrap();
@@ -320,6 +346,8 @@ fn context_activity_defers_idle_gating_without_becoming_source_text() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: tool wrappers cannot hide external calls in their input.
 #[test]
 fn tool_wrappers_cannot_hide_external_calls_in_their_input() {
     let dir = TempDir::new().unwrap();
@@ -328,6 +356,8 @@ fn tool_wrappers_cannot_hide_external_calls_in_their_input() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: malformed or future contribution setting cannot reenable extraction.
 #[test]
 fn malformed_or_future_contribution_setting_cannot_reenable_extraction() {
     let dir = TempDir::new().unwrap();
@@ -338,6 +368,8 @@ fn malformed_or_future_contribution_setting_cannot_reenable_extraction() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: native ephemeral or pending item sessions are ineligible.
 #[test]
 fn native_ephemeral_or_pending_item_sessions_are_ineligible() {
     let dir = TempDir::new().unwrap();
@@ -353,6 +385,8 @@ fn native_ephemeral_or_pending_item_sessions_are_ineligible() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: message evidence keeps item time when later settings change.
 #[test]
 fn message_evidence_keeps_item_time_when_later_settings_change() {
     let dir = TempDir::new().unwrap();
@@ -378,6 +412,8 @@ fn message_evidence_keeps_item_time_when_later_settings_change() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: durable execution calls taint source without public tool items.
 #[test]
 fn durable_execution_calls_taint_source_without_public_tool_items() {
     let dir = TempDir::new().unwrap();
@@ -414,6 +450,8 @@ fn durable_execution_calls_taint_source_without_public_tool_items() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: decided native approvals do not hide safe conversation messages.
 #[test]
 fn decided_native_approvals_do_not_hide_safe_conversation_messages() {
     let dir = TempDir::new().unwrap();
@@ -439,6 +477,8 @@ fn decided_native_approvals_do_not_hide_safe_conversation_messages() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: local tool output is excluded without becoming external provenance.
 #[test]
 fn local_tool_output_is_excluded_without_becoming_external_provenance() {
     let dir = TempDir::new().unwrap();

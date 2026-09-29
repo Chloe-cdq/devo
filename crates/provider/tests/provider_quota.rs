@@ -137,6 +137,8 @@ fn response(status: &str, content_type: &str, headers: &str, body: &str) -> Stri
     )
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: completed requests report minimum quota window rounded down.
 #[tokio::test]
 async fn completed_requests_report_minimum_quota_window_rounded_down() {
     let mut observed = Vec::new();
@@ -160,6 +162,8 @@ async fn completed_requests_report_minimum_quota_window_rounded_down() {
     assert_eq!(observed, vec![Some(35), Some(35), Some(35)]);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: streaming requests capture quota from success response headers.
 #[tokio::test]
 async fn streaming_requests_capture_quota_from_success_response_headers() {
     let mut observed = Vec::new();
@@ -185,6 +189,8 @@ async fn streaming_requests_capture_quota_from_success_response_headers() {
     assert_eq!(observed, vec![Some(35), Some(35), Some(35)]);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: response without quota headers clears previous observation.
 #[tokio::test]
 async fn response_without_quota_headers_clears_previous_observation() {
     let mut observed = Vec::new();
@@ -218,6 +224,8 @@ async fn response_without_quota_headers_clears_previous_observation() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: background http errors redact response content and strip internal marker.
 #[tokio::test]
 async fn background_http_errors_redact_response_content_and_strip_internal_marker() {
     for adapter in [Adapter::Chat, Adapter::Responses, Adapter::Anthropic] {
@@ -247,6 +255,8 @@ async fn background_http_errors_redact_response_content_and_strip_internal_marke
         assert_eq!(provider.remaining_quota_percent(), Some(35));
     }
 }
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: background stream diagnostics do not record request or response content.
 #[tokio::test]
 async fn background_stream_diagnostics_do_not_record_request_or_response_content() {
     use std::{
@@ -319,6 +329,8 @@ async fn background_stream_diagnostics_do_not_record_request_or_response_content
         "response text must be absent from logs: {logs}"
     );
 }
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: transport failure clears previous quota observation.
 #[tokio::test]
 async fn transport_failure_clears_previous_quota_observation() {
     let mut observed = Vec::new();
@@ -348,6 +360,8 @@ async fn transport_failure_clears_previous_quota_observation() {
         vec![Some(35), None, Some(35), None, Some(35), None]
     );
 }
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: background stream http errors capture quota without echoing response content.
 #[tokio::test]
 async fn background_stream_http_errors_capture_quota_without_echoing_response_content() {
     let mut observed = Vec::new();
@@ -380,6 +394,8 @@ async fn background_stream_http_errors_capture_quota_without_echoing_response_co
     }
     assert_eq!(observed, vec![Some(35), Some(35), Some(35)]);
 }
+/// Trace: L2-DES-MEM-001 Rev 4.
+/// Verifies: background failures keep retry classification through provider router.
 #[tokio::test]
 async fn background_failures_keep_retry_classification_through_provider_router() {
     use devo_provider::{ProviderRoute, ProviderRouter, SingleProviderRouter};

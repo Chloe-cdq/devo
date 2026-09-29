@@ -67,10 +67,23 @@ entry merges and migration reconcile those same memberships. Inference can add
 supporting evidence but cannot reactivate an existing conflict. Model proposal
 keys group competitors and never replace the approved textual entry identity.
 
+Entry resolution verifies the actual body's conservative identity before merging
+entries or attaching evidence; a matching storage key alone is insufficient.
+When a preserved historical inferred key occupies a different claim's canonical
+key, inference retains the new proposal as an unbound `identity_collision`
+candidate without overwriting the historical entry or attaching evidence to it.
+Known proposal-group conflicts still apply their shared withholding policy. An
+explicit write of the new text fails without overwriting history. An authorized explicit write of the
+original historical text can canonicalize its own identity, after which fresh
+inference can admit the distinct claim independently. This does not automatically
+rekey inferred history.
+
 Schema version 6 backfills uniquely provable proposal bindings from existing
 candidates, including equivalent display changes. It leaves ambiguous identities
-unbound, preserves their history, and withholds already-active inferred
-competitors without merging their bodies or evidence. The migration is atomic
+unbound, preserves their history, and withholds all provably matching inferred
+competitors without merging their bodies or evidence. Withholding compares actual
+scoped body identities for bound and unbound memberships, so an ambiguous
+duplicate cannot regain recall after a later membership is bound. The migration is atomic
 and idempotent; upgrading a v5 database does not rerun the v5 identity migration.
 
 Schema version 7 repairs databases already marked v6. It rebinds only uniquely

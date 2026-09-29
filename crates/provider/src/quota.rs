@@ -120,6 +120,8 @@ mod tests {
 
     use super::*;
 
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: quota header windows reject invalid limits and clamp remaining.
     #[test]
     fn quota_header_windows_reject_invalid_limits_and_clamp_remaining() {
         let cases = [
@@ -153,6 +155,8 @@ mod tests {
         assert_eq!(observed, cases.map(|(_, _, expected)| expected));
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: expired quota does not authorize background work.
     #[test]
     fn expired_quota_does_not_authorize_background_work() {
         let quota = QuotaTelemetry::default();
@@ -163,6 +167,8 @@ mod tests {
         assert_eq!(quota.remaining_quota_percent(), None);
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: invalid headers clear previously available quota.
     #[test]
     fn invalid_headers_clear_previously_available_quota() {
         let quota = QuotaTelemetry::default();
@@ -202,6 +208,8 @@ mod tests {
         assert_eq!((before, quota.remaining_quota_percent()), (Some(90), None));
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: older response cannot replace latest request quota.
     #[test]
     fn older_response_cannot_replace_latest_request_quota() {
         let high = HeaderMap::from_iter([

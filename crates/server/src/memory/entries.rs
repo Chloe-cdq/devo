@@ -12,7 +12,9 @@ use rusqlite::{Connection, OptionalExtension};
 
 #[cfg(test)]
 use super::MemoryInferredRememberRequest;
-use super::entry_identity::{IdentityResolutionMode, MemoryEntryIdentity};
+use super::entry_identity::{
+    IdentityResolutionMode, MemoryEntryIdentity, MemoryIdentityResolution,
+};
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
 use super::stored_values::{parse_kind, parse_origin, parse_scope, parse_state, parse_timestamp};
@@ -139,13 +141,21 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let existing = identity.resolve_and_merge_existing(
+        let existing = match identity.resolve_and_merge_existing(
             &transaction,
             request.scope,
             &scope_id,
             &body,
             identity_resolution_mode,
-        )?;
+        )? {
+            MemoryIdentityResolution::Vacant => None,
+            MemoryIdentityResolution::Existing(entry) => Some(entry),
+            MemoryIdentityResolution::Occupied => {
+                return Err(MemoryError::InvalidRequest(
+                    "memory text collides with a different historical entry".into(),
+                ));
+            }
+        };
         let existing_origin = existing.as_ref().map(|entry| entry.origin);
         let secondary_revocation_key = if source_observed_at.is_some() {
             &identity.legacy_inferred_key
