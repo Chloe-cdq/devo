@@ -182,7 +182,7 @@ pub(super) async fn completion_stream(
 
 fn stream_error(message: String) -> ProviderError {
     ProviderError::StreamError {
-        message,
+        message: message.into(),
         bytes_received: None,
     }
 }

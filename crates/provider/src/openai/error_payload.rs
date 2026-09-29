@@ -40,6 +40,7 @@ pub(super) fn provider_error_from_payload(
         return Some(error);
     }
 
+    let message = message.into();
     Some(match status_code {
         Some(401 | 403) => ProviderError::AuthenticationError {
             message,
@@ -48,7 +49,7 @@ pub(super) fn provider_error_from_payload(
         },
         Some(404) => ProviderError::ModelNotFoundError {
             message,
-            model_name: Some(request.model.clone()),
+            model_name: Some(request.model.clone().into()),
         },
         Some(408) => ProviderError::ProviderTimeoutError {
             message,
@@ -66,7 +67,7 @@ pub(super) fn provider_error_from_payload(
         },
         Some(400..=499) => ProviderError::InvalidRequestError {
             message,
-            details: error_details(payload.kind.as_deref(), payload.code.as_ref()),
+            details: error_details(payload.kind.as_deref(), payload.code.as_ref()).map(Into::into),
         },
         Some(_) => ProviderError::UnknownError {
             message,
@@ -170,13 +171,13 @@ mod tests {
             vec![
                 json!({
                     "error_kind": "provider_server_error",
-                    "message": "failed",
+                    "message": "[redacted]",
                     "status_code": 500,
                     "provider_name": "openai"
                 }),
                 json!({
                     "error_kind": "rate_limit_error",
-                    "message": "busy",
+                    "message": "[redacted]",
                     "retry_after_seconds": null,
                     "provider_name": "openai"
                 }),
@@ -214,13 +215,17 @@ mod tests {
         .expect("provider error");
 
         assert_eq!(
-            serde_json::to_value(error).expect("serialize provider error"),
+            serde_json::to_value(&error).expect("serialize provider error"),
             json!({
                 "error_kind": "context_limit_error",
-                "message": message,
+                "message": "[redacted]",
                 "current_tokens": null,
                 "limit": null
             })
+        );
+        assert_eq!(
+            error.user_message(),
+            format!("context limit exceeded: {message}")
         );
     }
 }

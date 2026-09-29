@@ -1,6 +1,8 @@
 //! Prepared recall stays immutable across both query-loop compaction paths.
 
-use std::io::{self, Write};
+#[path = "support/memory_log_privacy.rs"]
+mod log_support;
+
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,9 +20,10 @@ use devo_provider::openai::OpenAIProvider;
 use devo_provider::{ModelProviderSDK, ProviderHttpOptions};
 use futures::{Stream, StreamExt};
 use pretty_assertions::assert_eq;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing::instrument::WithSubscriber;
+
+use log_support::{log_subscriber, read_http_request, write_http_response};
 
 const MEMORY: &str = "<advisory_memory>Quoted memory: Use tabs.</advisory_memory>";
 
@@ -92,31 +95,6 @@ impl ModelProviderSDK for CompactionProvider {
     fn name(&self) -> &str {
         "memory-compaction-provider"
     }
-}
-
-struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
-
-impl Write for CapturedLogs {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().expect("logs").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn log_subscriber(
-    logs: Arc<Mutex<Vec<u8>>>,
-    max_level: tracing::Level,
-) -> impl tracing::Subscriber + Send + Sync {
-    tracing_subscriber::fmt()
-        .with_ansi(/*ansi*/ false)
-        .without_time()
-        .with_max_level(max_level)
-        .with_writer(move || CapturedLogs(Arc::clone(&logs)))
-        .finish()
 }
 
 async fn verify_compaction_recall(trigger: CompactionTrigger) -> Result<()> {
@@ -231,34 +209,7 @@ async fn verify_provider_log_privacy(mode: ProviderRequestMode) -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await?;
-        let mut bytes = Vec::new();
-        let (header_end, content_length) = loop {
-            let mut chunk = [0_u8; 4096];
-            let count = socket.read(&mut chunk).await?;
-            anyhow::ensure!(count > 0, "request headers ended early");
-            bytes.extend_from_slice(&chunk[..count]);
-            if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-                let headers = std::str::from_utf8(&bytes[..end])?;
-                let length = headers
-                    .lines()
-                    .filter_map(|line| line.split_once(':'))
-                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                    .map(|(_, value)| value.trim().parse::<usize>())
-                    .transpose()?
-                    .expect("request content length");
-                break (end + 4, length);
-            }
-        };
-        while bytes.len() < header_end + content_length {
-            let mut chunk = [0_u8; 4096];
-            let count = socket.read(&mut chunk).await?;
-            anyhow::ensure!(count > 0, "request body ended early");
-            bytes.extend_from_slice(&chunk[..count]);
-        }
-        let request = serde_json::from_slice::<serde_json::Value>(
-            &bytes[header_end..header_end + content_length],
-        )?;
+        let (mut socket, request) = read_http_request(&listener).await?;
         let (status, content_type, body) = match mode {
             ProviderRequestMode::Streaming => {
                 let chunk = serde_json::json!({
@@ -273,10 +224,7 @@ async fn verify_provider_log_privacy(mode: ProviderRequestMode) -> Result<()> {
                 serde_json::json!({"error": {"message": RESPONSE_BODY, "type": "invalid_request_error"}}).to_string(),
             ),
         };
-        let content_length = body.len();
-        socket.write_all(format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{body}"
-        ).as_bytes()).await?;
+        write_http_response(&mut socket, status, content_type, &body).await?;
         Ok::<_, anyhow::Error>(request)
     });
     let provider = OpenAIProvider::new(format!("http://{address}/v1")).with_http_options(

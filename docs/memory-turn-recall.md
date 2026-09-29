@@ -13,3 +13,35 @@ Native history exposes one `memoryRecall` item per prepared root turn with `snap
 The same immutable block is included in every model/tool iteration, including automatic and context-limit compaction requests, compaction retries, and task continuations. Compaction receives the advisory block separately from the conversation history it summarizes. Approval and failure recovery reuse the persisted snapshot of the original turn rather than querying updated memory. Recall items are display history and do not enter subsequent turns as ordinary model history. Forgetting affects future snapshots and preserves historical recall records.
 
 Subagents do not independently prepare memory. Parent-snapshot inheritance and the remaining memory management UI are separate implementation slices.
+
+## Failure diagnostics
+
+Provider failures may quote recalled memory or conversation text. Error message,
+request-detail, model-name, and finish-reason fields therefore use
+`SensitiveErrorText`: `Display`, `Debug`, and serialization redact their values.
+SDK completion errors, stream creation errors, and stream items are normalized
+before leaving the provider boundary. Known HTTP failures use the status code
+for classification (with context-limit handling for invalid-context responses),
+so quoted body text cannot impersonate authentication or server status codes. The router and core query boundary also
+normalize third-party SDK failures. Normalization discards unsafe source/context
+formatting, retains a safe structured cause, and captures diagnostic category and
+recovery guidance before isolating private text. Repeated normalization preserves
+the category; typed HTTP, I/O, and JSON/transport decode failures take precedence
+before the legacy SDK compatibility fallback. Retry and compaction decisions do
+not parse redacted formatting. Wrapping preserves structured recovery flags and
+retry-delay metadata.
+
+Native error and retry notifications explicitly use `user_message()` or
+`user_message_for_error()`. Compaction failures use the same private-text type
+and expose details only in user notifications. These projections must never be
+used in diagnostic logs. Native RPC error responses log only their code,
+request ID, and message byte count; they never log the projected user message.
+CLI failures print details explicitly and retain the safe typed error on return.
+Safe serialization is deliberately lossy and is not a
+persistence format for private provider details; Native user-visible history
+retains its existing error payload. No additional provider-response copies are
+written to diagnostic storage.
+
+Regression tests cover all typed error representations, unsafe SDK sources and
+contexts, retry classification, Native root-turn failures, lazy HTTP/SSE errors,
+compaction, and recovery. The existing workspace-test CI job includes these tests.

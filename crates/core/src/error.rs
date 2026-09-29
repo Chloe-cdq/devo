@@ -15,6 +15,19 @@ pub enum AgentError {
     Aborted,
 }
 
+impl AgentError {
+    /// Private details for Native user-facing failures; never diagnostic logs.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Provider(error) => format!(
+                "model provider error: {}",
+                devo_provider::diagnostic::user_message_for_error(error)
+            ),
+            Self::MaxTurnsExceeded(_) | Self::ContextTooLong | Self::Aborted => self.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

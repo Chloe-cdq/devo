@@ -54,7 +54,7 @@ impl ModelProviderSDK for ContextLimitThenSuccessProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         if self.stream_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(anyhow::Error::new(ProviderError::ContextLimitError {
-                message: CONTEXT_LIMIT_MESSAGE.to_string(),
+                message: CONTEXT_LIMIT_MESSAGE.into(),
                 current_tokens: None,
                 limit: None,
             }));

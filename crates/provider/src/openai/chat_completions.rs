@@ -1106,43 +1106,47 @@ fn parse_finish_reason(value: &str) -> StopReason {
 #[async_trait]
 impl ModelProviderSDK for OpenAIProvider {
     async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
-        let body = build_request(&request, false);
-        debug!(
-            provider = "openai",
-            api_base = %self.base_url,
-            model = %request.model,
-            messages = request.messages.len(),
-            tools = request.tools.as_ref().map_or(0, Vec::len),
-            max_tokens = request.max_tokens,
-            "sending openai completion request"
-        );
+        async {
+            let body = build_request(&request, false);
+            debug!(
+                provider = "openai",
+                api_base = %self.base_url,
+                model = %request.model,
+                messages = request.messages.len(),
+                tools = request.tools.as_ref().map_or(0, Vec::len),
+                max_tokens = request.max_tokens,
+                "sending openai completion request"
+            );
 
-        let response = self
-            .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
-            .send()
-            .await
-            .context("failed to send openai request")?;
-        let response = match response.error_for_status_ref() {
-            Ok(_) => response,
-            Err(_) => {
-                let status = response.status();
-                return Err(invalid_status_error(
-                    "openai",
-                    &request.model,
-                    "request",
-                    status,
-                    response,
-                    &body,
-                )
-                .await);
-            }
-        };
+            let response = self
+                .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
+                .send()
+                .await
+                .context("failed to send openai request")?;
+            let response = match response.error_for_status_ref() {
+                Ok(_) => response,
+                Err(_) => {
+                    let status = response.status();
+                    return Err(invalid_status_error(
+                        "openai",
+                        &request.model,
+                        "request",
+                        status,
+                        response,
+                        &body,
+                    )
+                    .await);
+                }
+            };
 
-        let value: Value = response
-            .json()
-            .await
-            .context("failed to decode openai response")?;
-        parse_response(value, &DsmlToolCallHealer::for_request(&request))
+            let value: Value = response
+                .json()
+                .await
+                .context("failed to decode openai response")?;
+            parse_response(value, &DsmlToolCallHealer::for_request(&request))
+        }
+        .await
+        .map_err(crate::diagnostic::sanitize_error)
     }
 
     /// --------- Here is an example of stream response ------------------------
@@ -1156,7 +1160,14 @@ impl ModelProviderSDK for OpenAIProvider {
         &self,
         request: ModelRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-        stream::completion_stream(self, request).await
+        stream::completion_stream(self, request)
+            .await
+            .map_err(crate::diagnostic::sanitize_error)
+            .map(|stream| {
+                Box::pin(futures::StreamExt::map(stream, |item| {
+                    item.map_err(crate::diagnostic::sanitize_error)
+                })) as Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>
+            })
     }
 
     fn name(&self) -> &str {

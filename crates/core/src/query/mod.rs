@@ -87,6 +87,7 @@ use crate::history::History;
 use crate::history::TokenInfo;
 use crate::history::compaction::CompactAction;
 use crate::history::compaction::CompactionConfig;
+use crate::history::compaction::CompactionError;
 use crate::history::compaction::CompactionKind;
 use crate::history::compaction::compact_history;
 use crate::history::summarizer::DefaultHistorySummarizer;
@@ -213,11 +214,23 @@ async fn summarize_and_compact(
             .await;
         }
         Err(e) => {
-            warn!("LLM compaction failed: {e}");
+            let error_kind = match &e {
+                CompactionError::SummarizationFailed { .. } => "summarization_failed",
+                CompactionError::ContextTooLong => "context_too_long",
+                CompactionError::EmptyResponse => "empty_response",
+                CompactionError::Canceled => "canceled",
+                CompactionError::NotPossible { .. } => "not_possible",
+            };
+            warn!(
+                error_kind,
+                provider = model.provider.name(),
+                model = %model.request_model,
+                "LLM compaction failed"
+            );
             emit_query_event(
                 on_event,
                 QueryEvent::ContextCompactionFailed {
-                    message: e.to_string(),
+                    message: e.user_message(),
                 },
             )
             .await;
@@ -822,7 +835,7 @@ pub async fn query(
                             &turn_config.model.slug,
                             retry_count,
                             backoff,
-                            &retry_error.to_string(),
+                            &devo_provider::diagnostic::user_message_for_error(&retry_error),
                         )
                         .await?;
                         session.turn_count -= 1;

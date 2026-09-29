@@ -3,86 +3,145 @@
 //! Implements L3-BEH-PROVIDER-001 §B6. Classifies provider failures into
 //! recoverable and non-recoverable categories with retry hints.
 
+use crate::SensitiveErrorText;
+use crate::diagnostic::{DiagnosticError, ErrorClass};
 use serde::{Deserialize, Serialize};
 
 /// Structured error from a model provider invocation.
 #[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 #[serde(tag = "error_kind", rename_all = "snake_case")]
 pub enum ProviderError {
+    /// An SDK failure with isolated private details and safe diagnostic sources.
+    #[error(transparent)]
+    Diagnostic(DiagnosticError),
     #[error("authentication failed: {message}")]
     AuthenticationError {
-        message: String,
+        message: SensitiveErrorText,
         provider_name: Option<String>,
         status_code: Option<u16>,
     },
 
     #[error("rate limited: {message}")]
     RateLimitError {
-        message: String,
+        message: SensitiveErrorText,
         retry_after_seconds: Option<u64>,
         provider_name: Option<String>,
     },
 
     #[error("provider server error ({status_code:?}): {message}")]
     ProviderServerError {
-        message: String,
+        message: SensitiveErrorText,
         status_code: Option<u16>,
         provider_name: Option<String>,
     },
 
     #[error("provider timeout: {message}")]
     ProviderTimeoutError {
-        message: String,
+        message: SensitiveErrorText,
         provider_name: Option<String>,
     },
 
     #[error("context limit exceeded: {message}")]
     ContextLimitError {
-        message: String,
+        message: SensitiveErrorText,
         current_tokens: Option<u64>,
         limit: Option<u64>,
     },
 
     #[error("model not found: {model_name:?} — {message}")]
     ModelNotFoundError {
-        message: String,
-        model_name: Option<String>,
+        message: SensitiveErrorText,
+        model_name: Option<SensitiveErrorText>,
     },
 
     #[error("quota exceeded: {message}")]
     QuotaExceededError {
-        message: String,
+        message: SensitiveErrorText,
         provider_name: Option<String>,
     },
 
     #[error("content filtered: {message}")]
     ContentFilteredError {
-        message: String,
-        finish_reason: Option<String>,
+        message: SensitiveErrorText,
+        finish_reason: Option<SensitiveErrorText>,
     },
 
     #[error("invalid request: {message}")]
     InvalidRequestError {
-        message: String,
-        details: Option<String>,
+        message: SensitiveErrorText,
+        details: Option<SensitiveErrorText>,
     },
 
     #[error("stream error: {message}")]
     StreamError {
-        message: String,
+        message: SensitiveErrorText,
         bytes_received: Option<u64>,
     },
 
     #[error("unknown provider error: {message}")]
     UnknownError {
-        message: String,
+        message: SensitiveErrorText,
         status_code: Option<u16>,
     },
 }
 
 impl ProviderError {
+    /// Full details for a user-facing error payload. Never use in diagnostic logs.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Diagnostic(error) => error.user_message(),
+            Self::AuthenticationError { message, .. } => {
+                format!("authentication failed: {}", message.expose())
+            }
+            Self::RateLimitError { message, .. } => format!("rate limited: {}", message.expose()),
+            Self::ProviderServerError {
+                message,
+                status_code,
+                ..
+            } => format!(
+                "provider server error ({status_code:?}): {}",
+                message.expose()
+            ),
+            Self::ProviderTimeoutError { message, .. } => {
+                format!("provider timeout: {}", message.expose())
+            }
+            Self::ContextLimitError { message, .. } => {
+                format!("context limit exceeded: {}", message.expose())
+            }
+            Self::ModelNotFoundError {
+                message,
+                model_name,
+            } => {
+                let model_name = model_name.as_ref().map(SensitiveErrorText::expose);
+                format!("model not found: {model_name:?} — {}", message.expose())
+            }
+            Self::QuotaExceededError { message, .. } => {
+                format!("quota exceeded: {}", message.expose())
+            }
+            Self::ContentFilteredError { message, .. } => {
+                format!("content filtered: {}", message.expose())
+            }
+            Self::InvalidRequestError { message, .. } => {
+                format!("invalid request: {}", message.expose())
+            }
+            Self::StreamError { message, .. } => format!("stream error: {}", message.expose()),
+            Self::UnknownError { message, .. } => {
+                format!("unknown provider error: {}", message.expose())
+            }
+        }
+    }
+
     /// Whether retrying the request may succeed.
     pub fn is_recoverable(&self) -> bool {
+        if let Self::Diagnostic(error) = self {
+            return error.source.as_deref().map_or(
+                matches!(
+                    error.class,
+                    ErrorClass::RateLimit | ErrorClass::ServerError | ErrorClass::NetworkError
+                ),
+                Self::is_recoverable,
+            );
+        }
         matches!(
             self,
             Self::RateLimitError { .. }
@@ -94,6 +153,15 @@ impl ProviderError {
 
     /// Whether this is a transient error that should be retried with backoff.
     pub fn is_transient(&self) -> bool {
+        if let Self::Diagnostic(error) = self {
+            return error.source.as_deref().map_or(
+                matches!(
+                    error.class,
+                    ErrorClass::RateLimit | ErrorClass::ServerError | ErrorClass::NetworkError
+                ),
+                Self::is_transient,
+            );
+        }
         matches!(
             self,
             Self::RateLimitError { .. }
@@ -120,6 +188,7 @@ impl ProviderError {
     /// Suggested retry delay in seconds from the provider.
     pub fn retry_after_seconds(&self) -> Option<u64> {
         match self {
+            Self::Diagnostic(error) => error.source.as_deref().and_then(Self::retry_after_seconds),
             Self::RateLimitError {
                 retry_after_seconds,
                 ..
@@ -130,12 +199,16 @@ impl ProviderError {
 
     /// Whether the error should be surfaced to the user.
     pub fn is_user_facing(&self) -> bool {
+        if let Self::Diagnostic(error) = self {
+            return error.source.as_deref().is_none_or(Self::is_user_facing);
+        }
         !matches!(self, Self::StreamError { .. })
     }
 
     /// Machine-readable error code.
     pub fn error_code(&self) -> &'static str {
         match self {
+            Self::Diagnostic(error) => error.error_code(),
             Self::AuthenticationError { .. } => "AUTHENTICATION_ERROR",
             Self::RateLimitError { .. } => "RATE_LIMIT_ERROR",
             Self::ProviderServerError { .. } => "PROVIDER_SERVER_ERROR",
@@ -172,7 +245,7 @@ pub(crate) fn context_limit_error(
         });
 
     (message_matches || metadata_matches).then_some(ProviderError::ContextLimitError {
-        message,
+        message: message.into(),
         current_tokens: None,
         limit: None,
     })

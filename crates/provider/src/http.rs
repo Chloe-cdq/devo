@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::warn;
 
-use crate::error::context_limit_error;
+use crate::error::{ProviderError, context_limit_error};
 use crate::timeout::connect_timeout;
 
 #[derive(Clone, Copy)]
@@ -192,12 +192,50 @@ pub(crate) async fn invalid_status_error(
         .as_ref()
         .and_then(|value| value.pointer("/error/code"))
         .and_then(Value::as_str);
-    if let Some(error) = context_limit_error(message, error_kind, error_code) {
+    if matches!(status.as_u16(), 400 | 413 | 422)
+        && let Some(error) = context_limit_error(message, error_kind, error_code)
+    {
         return anyhow::Error::new(error);
     }
-    anyhow::anyhow!(
+    let message = format!(
         "{provider} {operation} error for model {model}: Invalid status code: {status}; response body: {response_body}"
-    )
+    ).into();
+    let provider_name = Some(provider.to_string());
+    let status_code = Some(status.as_u16());
+    let error = match status.as_u16() {
+        401 | 403 => ProviderError::AuthenticationError {
+            message,
+            provider_name,
+            status_code,
+        },
+        404 => ProviderError::ModelNotFoundError {
+            message,
+            model_name: Some(model.into()),
+        },
+        408 => ProviderError::ProviderTimeoutError {
+            message,
+            provider_name,
+        },
+        429 => ProviderError::RateLimitError {
+            message,
+            retry_after_seconds: None,
+            provider_name,
+        },
+        500..=599 => ProviderError::ProviderServerError {
+            message,
+            status_code,
+            provider_name,
+        },
+        400..=499 => ProviderError::InvalidRequestError {
+            message,
+            details: None,
+        },
+        _ => ProviderError::UnknownError {
+            message,
+            status_code,
+        },
+    };
+    anyhow::Error::new(error)
 }
 
 fn parse_custom_headers(headers: Option<String>) -> Result<HeaderMap> {

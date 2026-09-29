@@ -17,8 +17,9 @@ pub const MODEL_NOT_FOUND_HINT: &str =
 
 impl ProviderError {
     /// Optional user-facing next step for recovering from this error.
-    pub fn recovery_hint(&self) -> Option<&'static str> {
+    pub fn recovery_hint(&self) -> Option<&str> {
         match self {
+            Self::Diagnostic(error) => error.recovery_hint(),
             Self::AuthenticationError { .. } => Some(AUTH_HINT),
             Self::ProviderTimeoutError { .. } | Self::StreamError { .. } => {
                 Some(NETWORK_PROXY_HINT)
@@ -64,7 +65,7 @@ pub fn recovery_hint_for_anyhow(error: &anyhow::Error) -> Option<String> {
         }
     }
 
-    recovery_hint_for_message(&error.to_string())
+    recovery_hint_for_message(&crate::diagnostic::user_message_for_error(error))
 }
 
 /// Derives a recovery hint from a flattened failure message.

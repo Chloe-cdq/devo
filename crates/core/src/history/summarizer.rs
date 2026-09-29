@@ -130,13 +130,14 @@ impl HistorySummarizer for DefaultHistorySummarizer {
         let response = match response {
             Ok(r) => r,
             Err(e) => {
-                let err_msg = e.to_string();
-                if err_msg.contains("context_length_exceeded")
-                    || err_msg.contains("maximum context length")
+                if devo_provider::diagnostic::classify_error(&e)
+                    == devo_provider::diagnostic::ErrorClass::ContextTooLong
                 {
                     return Err(CompactionError::ContextTooLong);
                 }
-                return Err(CompactionError::SummarizationFailed { message: err_msg });
+                return Err(CompactionError::SummarizationFailed {
+                    message: devo_provider::diagnostic::user_message_for_error(&e).into(),
+                });
             }
         };
 

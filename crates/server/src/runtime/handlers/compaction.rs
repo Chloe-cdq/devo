@@ -881,7 +881,7 @@ impl ServerRuntime {
                     session_id,
                     turn,
                     CompactionTurnOutcome::Failed {
-                        message: format!("compaction failed: {error}"),
+                        message: format!("compaction failed: {}", error.user_message()),
                     },
                     Some(compaction_item_id),
                 )
