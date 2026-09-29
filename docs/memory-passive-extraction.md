@@ -26,10 +26,17 @@ attempt, with tools disabled, and accepts only bounded JSON candidates with
 source turn references. It never writes memory directly. Each attempt is metered
 in the triggering
 session with Native usage purpose `memoryExtraction`, without transcript content.
+Provider, model, and selected variant request/options and headers follow the
+normal request precedence. Overlays cannot change the fixed extraction input,
+output limit, disabled tools/thinking, or background privacy marker.
 
 Known provider quota must meet
 `memory.min_rate_limit_remaining_percent` (default 25). Missing or stale quota
-telemetry skips extraction. Supported HTTP providers observe request and token
+telemetry skips extraction. Known local provider initialization failures are
+recorded as terminal errors for eligible source jobs without a model call, even
+when quota is unavailable. Missing credentials use `credentials_unavailable`;
+other initialization failures use `permanent_provider_error`. Error details are
+never exposed in memory status. Supported HTTP providers observe request and token
 rate-limit headers; the lowest available percentage controls admission.
 
 SQLite claims a session/watermark pair under an immediate transaction. Claims

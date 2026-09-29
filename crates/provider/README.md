@@ -132,6 +132,16 @@ for example:
 Higher layers can use these capability flags to shape requests before they are
 serialized by a provider adapter.
 
+## Local initialization failures
+
+`ModelProviderSDK::initialization_error()` and
+`ProviderRouter::initialization_error(&route)` expose known adapter initialization
+failures synchronously without network I/O. The default is `None`, which means
+no known local failure and makes no claim about quota or remote availability.
+Routing and metering wrappers forward the selected adapter's result. Background
+callers can distinguish missing credentials from unavailable quota without
+sending a model request; any user-visible status must redact error details.
+
 ## Quota telemetry
 
 `ModelProviderSDK::remaining_quota_percent()` returns the latest available

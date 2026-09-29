@@ -58,6 +58,12 @@ pub trait ProviderRouter: Send + Sync {
         request: ModelRequest,
     ) -> Result<devo_protocol::ModelResponse, ProviderError>;
 
+    /// Known local initialization failure for the selected route, without I/O.
+    /// None does not imply known quota or remote availability.
+    fn initialization_error(&self, _route: &ProviderRoute) -> Option<ProviderError> {
+        None
+    }
+
     /// Latest available quota for the selected route; `None` means unavailable.
     fn remaining_quota_percent(&self, _route: &ProviderRoute) -> Option<u8> {
         None
@@ -104,6 +110,10 @@ impl ProviderRouter for SingleProviderRouter {
             .completion(request)
             .await
             .map_err(unknown_provider_error)
+    }
+
+    fn initialization_error(&self, _route: &ProviderRoute) -> Option<ProviderError> {
+        self.provider.initialization_error()
     }
 
     fn remaining_quota_percent(&self, _route: &ProviderRoute) -> Option<u8> {
@@ -178,6 +188,13 @@ impl ProviderRouter for MultiProviderRouter {
             .completion(request)
             .await
             .map_err(unknown_provider_error)
+    }
+
+    fn initialization_error(&self, route: &ProviderRoute) -> Option<ProviderError> {
+        match self.provider_for_route(route) {
+            Ok(provider) => provider.initialization_error(),
+            Err(error) => Some(error),
+        }
     }
 
     fn remaining_quota_percent(&self, route: &ProviderRoute) -> Option<u8> {

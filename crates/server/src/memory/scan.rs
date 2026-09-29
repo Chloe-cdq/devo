@@ -87,7 +87,14 @@ impl MemoryRuntime {
             /*turn_id*/ None,
             devo_protocol::native::usage::UsagePurpose::MemoryExtraction,
         );
-        if !self.quota_allows(provider.as_ref()) {
+        let initialization_failure = provider.initialization_error().map(|error| {
+            if matches!(error, ProviderError::AuthenticationError { .. }) {
+                JobFailure::Credentials
+            } else {
+                JobFailure::PermanentProvider
+            }
+        });
+        if initialization_failure.is_none() && !self.quota_allows(provider.as_ref()) {
             return Ok(());
         }
         let db = Arc::clone(&context.db);
@@ -100,7 +107,8 @@ impl MemoryRuntime {
         .await??;
         let mut admitted = 0;
         for index in indexes.into_iter().flatten() {
-            if admitted >= self.config.max_sources_per_scan || !self.quota_allows(provider.as_ref())
+            if admitted >= self.config.max_sources_per_scan
+                || (initialization_failure.is_none() && !self.quota_allows(provider.as_ref()))
             {
                 break;
             }
@@ -132,6 +140,14 @@ impl MemoryRuntime {
                 continue;
             };
             admitted += 1;
+            if let Some(failure) = initialization_failure {
+                let memory = Arc::clone(&self);
+                tokio::task::spawn_blocking(move || {
+                    memory.fail_job(&claim, failure, chrono::Utc::now())
+                })
+                .await??;
+                continue;
+            }
             loop {
                 if context.activity.is_active(session_id).await
                     || !self.quota_allows(provider.as_ref())
@@ -160,8 +176,45 @@ impl MemoryRuntime {
                     .await??;
                     break;
                 }
-                let request =
+                let mut request =
                     build_extraction_request(model_slug.clone(), request_model.clone(), &source);
+                request.extra_body = devo_core::add_model_request_headers(
+                    devo_core::merge_model_request_body(
+                        turn_config.provider_request_models.request_defaults(),
+                        request.extra_body,
+                    ),
+                    turn_config.provider_request_models.request_headers(),
+                );
+                // Defaults cannot override the fixed input, output bound, or
+                // tool-free extraction profile when adapters merge extra_body.
+                if let Some(serde_json::Value::Object(extra)) = &mut request.extra_body {
+                    for key in [
+                        "model",
+                        "system",
+                        "messages",
+                        "input",
+                        "instructions",
+                        "previous_response_id",
+                        "conversation",
+                        "prompt",
+                        "max_tokens",
+                        "max_completion_tokens",
+                        "max_output_tokens",
+                        "tools",
+                        "tool_choice",
+                        "parallel_tool_calls",
+                        "functions",
+                        "function_call",
+                        "web_search_options",
+                        "thinking",
+                        "reasoning",
+                        "reasoning_effort",
+                        "stream",
+                        "stream_options",
+                    ] {
+                        extra.remove(key);
+                    }
+                }
                 let response =
                     tokio::time::timeout(Duration::from_secs(60), provider.completion(request))
                         .await;

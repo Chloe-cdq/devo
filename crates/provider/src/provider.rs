@@ -105,6 +105,15 @@ pub trait ModelProviderSDK: Send + Sync {
         request: ModelRequest,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>>;
 
+    /// Known local initialization failure, without performing network I/O.
+    ///
+    /// None means no initialization failure is known; it does not imply
+    /// known quota or remote availability. Wrappers must forward this result.
+    /// Callers exposing status must redact error details.
+    fn initialization_error(&self) -> Option<crate::error::ProviderError> {
+        None
+    }
+
     /// Latest available remaining quota as a percentage in `0..=100`.
     ///
     /// `None` means telemetry is unavailable or stale. Implementations should

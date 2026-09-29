@@ -26,6 +26,7 @@ struct BlockingExtractor {
     entered: Notify,
     release: Semaphore,
     calls: AtomicUsize,
+    requests: std::sync::Mutex<Vec<ModelRequest>>,
     quota: std::sync::Mutex<Option<u8>>,
     failure: std::sync::Mutex<Option<devo_provider::error::ProviderError>>,
 }
@@ -34,6 +35,7 @@ impl ModelProviderSDK for BlockingExtractor {
     async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
         assert_eq!(request.model, "test-fast");
         assert!(request.tools.is_none());
+        self.requests.lock().unwrap().push(request);
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.entered.notify_one();
         self.release.acquire().await.unwrap().forget();
@@ -75,7 +77,25 @@ fn setup(
     std::fs::write(root.path().join("providers.json"), serde_json::json!({
         "model":"test-provider/test-fast",
         "provider":{"test-provider":{"name":"test-provider","wire_api":"openai_chat_completions",
-            "models":{"test-fast":{"name":"test-fast"}}}}
+            "request":{"provider_field":"required","nested":{"provider":true}},
+            "options":{"option_field":"required"},
+            "models":{"test-fast":{
+                "name":"test-fast",
+                "headers":{"X-Model":"required","X-Mode":"model"},
+                "request":{"nested":{"model":true}},
+                "default_variant":"fast",
+                "variants":{"fast":{
+                    "headers":{"X-Mode":"variant"},
+                    "options":{"nested":{"variant":true}},
+                    "request":{"tools":[{"type":"web_search"}],"tool_choice":"required",
+                        "thinking":{"type":"enabled"},"__devo_background_request":false,
+                        "previous_response_id":"resp-other-session",
+                        "conversation":"conv-other-session",
+                        "prompt":{"id":"pmpt-other-session"},
+                        "messages":[{"role":"system","content":"override"}],
+                        "input":"override","instructions":"override","max_output_tokens":1}
+                }}
+            }}}}
     }).to_string())?;
     let sessions = root.path().join("sessions");
     std::fs::create_dir_all(&sessions)?;
@@ -123,6 +143,7 @@ fn setup(
         entered: Notify::new(),
         release: Semaphore::new(permits),
         calls: AtomicUsize::new(0),
+        requests: std::sync::Mutex::new(Vec::new()),
         quota: std::sync::Mutex::new(Some(100)),
         failure: std::sync::Mutex::new(None),
     });
@@ -424,5 +445,109 @@ async fn missing_source_does_not_abort_other_sources() -> Result<()> {
     std::fs::remove_file(path)?;
     scan(&runtime, root.path()).await?;
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: extraction inherits the resolved request overlays and headers while remaining tool-free.
+#[tokio::test]
+async fn scan_preserves_model_request_configuration() -> Result<()> {
+    let (root, runtime, provider) = setup(/*sources*/ 1, /*permits*/ 1)?;
+    scan(&runtime, root.path()).await?;
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(
+        (
+            request.extra_body.clone(),
+            serde_json::to_value(&request.tools)?,
+            request.hosted_tools.clone(),
+            request.request_thinking.clone(),
+        ),
+        (
+            Some(serde_json::json!({
+                "provider_field":"required",
+                "option_field":"required",
+                "nested":{"provider":true,"model":true,"variant":true},
+                "__devo_request_headers":{"X-Model":"required","X-Mode":"variant"},
+                "__devo_background_request":true,
+            })),
+            serde_json::Value::Null,
+            Vec::new(),
+            Some("disabled".to_string()),
+        )
+    );
+    Ok(())
+}
+/// Trace: L2-DES-MEM-001 Operational Scheduling
+/// Verifies: known missing credentials are terminal and redacted even without quota telemetry.
+#[tokio::test]
+async fn scan_reports_missing_credentials_without_quota() -> Result<()> {
+    for extraction_provider in [
+        serde_json::json!({
+            "credential":"missing-private-credential",
+            "wire_api":"openai_chat_completions",
+            "models":{"aux":{"name":"aux"}}
+        }),
+        serde_json::json!({
+            "wire_api":"anthropic_messages",
+            "models":{"aux":{"name":"aux"}}
+        }),
+    ] {
+        let (root, runtime, provider) = setup(/*sources*/ 1, /*permits*/ 0)?;
+        let providers_path = root.path().join("providers.json");
+        let mut config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&providers_path)?)?;
+        config["provider"]["unavailable"] = extraction_provider;
+        std::fs::write(providers_path, config.to_string())?;
+        let memory = Arc::new(crate::memory::MemoryRuntime::open(
+            root.path().join("memory"),
+            devo_core::MemoryConfig {
+                enabled: true,
+                extract_model: Some("unavailable/aux".into()),
+                ..devo_core::MemoryConfig::default()
+            },
+        )?);
+        for _ in 0..2 {
+            let context = crate::memory::scan::ScanContext {
+                db: Arc::clone(&runtime.deps.db),
+                model_context: runtime.deps.context_for_workspace(root.path()).await?,
+                usage_ledger: runtime.usage_ledger.clone(),
+                triggering_session: SessionId::new(),
+                activity: Arc::new(IdleSources),
+            };
+            Arc::clone(&memory).run_background_scan(context).await?;
+        }
+        let connection = connect(&runtime).await?;
+        let response = runtime
+            .handle_incoming(
+                connection,
+                serde_json::json!({"id":2,"method":"memory/status","params":{}}),
+            )
+            .await
+            .context("memory status")?;
+        assert_eq!(
+            response,
+            serde_json::json!({
+                "id":2,
+                "result":{
+                    "enabled":true,"storageHealth":"healthy",
+                    "entryCount":0,"candidateCount":0,"pendingJobCount":0,
+                    "retryingJobCount":0,"errorJobCount":1,
+                    "lastSuccessfulScanAt":null,
+                    "errorClasses":["credentials_unavailable"],
+                }
+            })
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        let ping = runtime
+            .handle_incoming(
+                connection,
+                serde_json::json!({"id":3,"method":"runtime/ping","params":{}}),
+            )
+            .await
+            .context("ping")?;
+        assert!(ping.get("result").is_some());
+    }
     Ok(())
 }
