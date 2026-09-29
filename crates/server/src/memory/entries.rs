@@ -269,6 +269,15 @@ impl MemoryRuntime {
             )?;
             entry_id
         };
+        if origin == MemoryOrigin::ExplicitUser {
+            super::proposal_relations::bind_explicit_entry(
+                &transaction,
+                request.scope,
+                &scope_id,
+                &identity.canonical_key,
+                entry_id.as_str(),
+            )?;
+        }
         if !preserve_existing {
             transaction.execute(
                 "DELETE FROM memory_entries_fts WHERE entry_id = ?1",

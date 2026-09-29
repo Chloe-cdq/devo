@@ -142,6 +142,10 @@ pub(super) fn merge_entry_records<'a>(
             [duplicate_id],
         )?;
         transaction.execute(
+            "UPDATE memory_proposal_claims SET entry_id = ?1 WHERE entry_id = ?2",
+            rusqlite::params![keeper_id, duplicate_id],
+        )?;
+        transaction.execute(
             "DELETE FROM memory_entries WHERE entry_id = ?1",
             [duplicate_id],
         )?;

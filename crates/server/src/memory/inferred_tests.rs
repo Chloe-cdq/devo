@@ -300,10 +300,10 @@ fn extraction_storage_failure_rolls_back_every_write() {
     );
     let connection = runtime.connection.lock().unwrap();
     let counts = connection.query_row(
-        "SELECT (SELECT COUNT(*) FROM memory_entries), (SELECT COUNT(*) FROM memory_candidates), (SELECT COUNT(*) FROM memory_evidence), (SELECT COUNT(*) FROM memory_entries_fts), (SELECT state FROM memory_jobs)",
-        [], |row| Ok((row.get::<_, u32>(0)?,row.get::<_, u32>(1)?,row.get::<_, u32>(2)?,row.get::<_, u32>(3)?,row.get::<_, String>(4)?))
+        "SELECT (SELECT COUNT(*) FROM memory_entries), (SELECT COUNT(*) FROM memory_candidates), (SELECT COUNT(*) FROM memory_evidence), (SELECT COUNT(*) FROM memory_entries_fts), (SELECT COUNT(*) FROM memory_proposal_claims), (SELECT state FROM memory_jobs)",
+        [], |row| Ok((row.get::<_, u32>(0)?,row.get::<_, u32>(1)?,row.get::<_, u32>(2)?,row.get::<_, u32>(3)?,row.get::<_, u32>(4)?,row.get::<_, String>(5)?))
     ).unwrap();
-    assert_eq!(counts, (0, 0, 0, 0, "running".into()));
+    assert_eq!(counts, (0, 0, 0, 0, 0, "running".into()));
 }
 
 /// Trace: L2-DES-MEM-001 DD-6/DD-11

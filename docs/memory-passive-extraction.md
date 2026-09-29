@@ -50,7 +50,21 @@ Candidate validation, scoped identity, evidence, revocation/reset checks, FTS,
 and job completion commit together. Equivalent claims add evidence; inferred
 claims preserve explicit authority, and conflicting inferred claims stay out of
 recall. Competing claims retain their source with the candidate; their evidence
-is never added as support for the incumbent entry. Markdown projections are atomically replaced after the authoritative
+is never added as support for the incumbent entry. Proposal groups persist
+scoped conservative claim identities and stable entry-ID bindings independently
+of candidate history. Equivalent explicit display changes keep those bindings;
+an explicit resolution can select either retained claim. Entry merges redirect
+bindings in the same transaction before removing duplicates. Candidate-history
+pruning cannot remove live conflict authority. Model proposal keys group
+competitors and never replace the approved textual entry identity.
+
+Schema version 6 backfills uniquely provable proposal bindings from existing
+candidates, including equivalent display changes. It leaves ambiguous identities
+unbound, preserves their history, and withholds already-active inferred
+competitors without merging their bodies or evidence. The migration is atomic
+and idempotent; upgrading a v5 database does not rerun the v5 identity migration.
+
+Markdown projections are atomically replaced after the authoritative
 commit and repaired from SQLite on restart. Projection failure never repeats
 the extraction call. Persisted source eligibility is rechecked before every
 attempt and before commit. Missing or unreadable journals are isolated from other

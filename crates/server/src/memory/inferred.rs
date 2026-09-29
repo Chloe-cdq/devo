@@ -7,6 +7,7 @@ use super::stored_values::parse_timestamp;
 use super::{MemoryError, MemoryRuntime, kind_name, scope_name};
 use chrono::{DateTime, SecondsFormat, Utc};
 use devo_protocol::native::ids::MemoryEntryId;
+use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::session::MemorySetting;
 use rusqlite::{OptionalExtension, TransactionBehavior};
 
@@ -147,30 +148,30 @@ impl MemoryRuntime {
             // Model keys group competing inferred proposals only. Canonical identity
             // remains the approved conservative textual identity of the actual body.
             let proposal_key = super::equivalence::explicit_memory_key(&candidate.key);
-            let competitor = if existing.is_none() {
-                transaction.query_row(
-                    "SELECT entry.entry_id, entry.origin FROM memory_entries AS entry
-                     JOIN memory_candidates AS candidate
-                        ON candidate.scope_type = entry.scope_type AND candidate.scope_id = entry.scope_id
-                        AND candidate.body = entry.body
-                     WHERE entry.scope_type = ?1 AND entry.scope_id = ?2
-                        AND candidate.normalized_key = ?3 AND candidate.validation_outcome = 'accepted'
-                        AND entry.state IN ('active', 'restored', 'conflicted')
-                     ORDER BY CASE entry.origin WHEN 'explicit_user' THEN 0 ELSE 1 END, entry.entry_id LIMIT 1",
-                    rusqlite::params![scope, scope_id, proposal_key],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                ).optional()?
-            } else {
-                None
-            };
-            let (entry_id, outcome) = if let Some(existing) = existing {
+            let known_entry_id = existing.as_ref().map(|entry| entry.entry_id.clone());
+            let competitor = super::proposal_relations::competitor(
+                &transaction,
+                candidate.scope,
+                &scope_id,
+                &proposal_key,
+            )?;
+            let explicit_competitor = competitor
+                .as_ref()
+                .is_some_and(|entry| entry.origin == MemoryOrigin::ExplicitUser)
+                && existing
+                    .as_ref()
+                    .is_none_or(|entry| entry.origin != MemoryOrigin::ExplicitUser);
+            let (entry_id, outcome) = if explicit_competitor {
+                (None, "explicit_authority")
+            } else if let Some(existing) = existing {
                 transaction.execute(
                     "UPDATE memory_entries SET updated_at = ?1 WHERE entry_id = ?2",
                     rusqlite::params![timestamp, existing.entry_id],
                 )?;
                 (Some(existing.entry_id), "accepted")
-            } else if let Some((entry_id, origin)) = competitor {
-                if origin == "explicit_user" {
+            } else if let Some(competitor) = competitor {
+                let entry_id = competitor.entry_id;
+                if competitor.origin == MemoryOrigin::ExplicitUser {
                     (None, "explicit_authority")
                 } else {
                     transaction.execute(
@@ -208,6 +209,16 @@ impl MemoryRuntime {
                 )?;
                 (Some(entry_id), "accepted")
             };
+            super::proposal_relations::record_claim(
+                &transaction,
+                super::proposal_relations::ProposalClaim {
+                    scope: candidate.scope,
+                    scope_id: &scope_id,
+                    proposal_key: &proposal_key,
+                    canonical_key: &identity.canonical_key,
+                    entry_id: entry_id.as_deref().or(known_entry_id.as_deref()),
+                },
+            )?;
             transaction.execute(
                 "INSERT INTO memory_candidates (
                     candidate_id, scope_type, scope_id, kind, normalized_key, body, origin,

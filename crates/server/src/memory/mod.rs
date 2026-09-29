@@ -15,6 +15,9 @@ mod inferred;
 mod jobs;
 mod migration;
 mod projection;
+mod proposal_relations;
+#[cfg(test)]
+mod proposal_relations_tests;
 mod queries;
 mod revocation_lifecycle;
 #[cfg(test)]
@@ -61,7 +64,7 @@ pub use command_types::{
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "5";
+const MEMORY_SCHEMA_VERSION: &str = "6";
 const USER_SCOPE_ID: &str = "user";
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 100;
