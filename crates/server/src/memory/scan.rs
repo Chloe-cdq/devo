@@ -3,7 +3,7 @@
 use super::MemoryRuntime;
 use super::extraction::{build_extraction_request, parse_candidates};
 use super::jobs::{JobFailure, MAX_ATTEMPTS};
-use super::source::read_source;
+use super::source::{ExtractableSource, read_source};
 use async_trait::async_trait;
 use devo_protocol::SessionId;
 use devo_protocol::native::session::MemorySetting;
@@ -148,6 +148,13 @@ impl MemoryRuntime {
                 .await??;
                 continue;
             }
+            let source_still_eligible = |latest: &ExtractableSource| {
+                latest.watermark == source.watermark
+                    && self
+                        .config
+                        .resolve_contribution(latest.session_contribution)
+                        == MemorySetting::On
+            };
             loop {
                 if context.activity.is_active(session_id).await
                     || !self.quota_allows(provider.as_ref())
@@ -161,13 +168,7 @@ impl MemoryRuntime {
                     .await?
                     .ok()
                     .flatten();
-                if !latest.as_ref().is_some_and(|latest| {
-                    latest.watermark == source.watermark
-                        && self
-                            .config
-                            .resolve_contribution(latest.session_contribution)
-                            == MemorySetting::On
-                }) {
+                if !latest.as_ref().is_some_and(source_still_eligible) {
                     let memory = Arc::clone(&self);
                     let source = source.clone();
                     tokio::task::spawn_blocking(move || {
@@ -230,13 +231,8 @@ impl MemoryRuntime {
                         .await?
                         .ok()
                         .flatten();
-                    let still_eligible = latest.as_ref().is_some_and(|latest| {
-                        latest.watermark == source.watermark
-                            && self
-                                .config
-                                .resolve_contribution(latest.session_contribution)
-                                == MemorySetting::On
-                    }) && !context.activity.is_active(session_id).await;
+                    let still_eligible = latest.as_ref().is_some_and(source_still_eligible)
+                        && !context.activity.is_active(session_id).await;
                     let candidates = if still_eligible {
                         candidates
                     } else {

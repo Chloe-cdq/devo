@@ -404,12 +404,11 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
             .enumerate()
         {
             let (role, text) = match payload {
-                TurnItem::UserMessage(text) => ("user", &text.text),
+                TurnItem::UserMessage(text) | TurnItem::SteerInput(text) => ("user", &text.text),
                 TurnItem::AgentMessage(text) if position >= item.input_items.len() => {
                     ("assistant", &text.text)
                 }
                 TurnItem::AgentMessage(_)
-                | TurnItem::SteerInput(_)
                 | TurnItem::HookPrompt(_)
                 | TurnItem::Plan(_)
                 | TurnItem::Reasoning(_)

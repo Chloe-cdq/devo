@@ -380,6 +380,17 @@ fn classify_kind(body: &str) -> MemoryKind {
 }
 
 pub(super) fn contains_secret(body: &str) -> bool {
+    // Memory cannot send or retain explicitly assigned credentials, even when
+    // their values are shorter than the general detector's confidence threshold.
+    static CREDENTIAL_ASSIGNMENT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let assignment_match = CREDENTIAL_ASSIGNMENT
+        .get_or_init(|| {
+            regex::Regex::new(
+                r#"(?i)\b[a-z0-9_-]*(?:api[_-]?key|token|secret|password)\b["']?\s*[:=]\s*["']?[^\s"']+"#,
+            )
+            .expect("valid credential assignment regex")
+        })
+        .is_match(body);
     let lower_body = body.to_ascii_lowercase();
     let marker_match = [
         "sk-",
@@ -395,7 +406,8 @@ pub(super) fn contains_secret(body: &str) -> bool {
     ]
     .iter()
     .any(|marker| lower_body.contains(marker));
-    marker_match
+    assignment_match
+        || marker_match
         || InMemorySecretDetectorRegistry::with_default_detectors()
             .all()
             .into_iter()

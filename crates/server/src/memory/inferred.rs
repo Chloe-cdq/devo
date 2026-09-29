@@ -181,7 +181,9 @@ impl MemoryRuntime {
                         "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
                         [&entry_id],
                     )?;
-                    (Some(entry_id), "conflicted")
+                    // The opposing source supports the retained candidate, not
+                    // the incumbent entry's body.
+                    (None, "conflicted")
                 }
             } else {
                 let entry_id = MemoryEntryId::new().to_string();

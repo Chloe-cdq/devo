@@ -13,12 +13,13 @@ borrowed fork history, unfinished turns, damaged journals, and sessions that
 used Web, MCP, or Tool Search are excluded. Journals larger than 1 MiB are
 skipped to bound background input work.
 
-Only persisted user text and assistant conversational text are sent to the
-extractor. Attachments, tool results, reasoning, approvals, hidden context, and
+Only persisted user text (including mid-turn steering corrections) and assistant
+conversational text are sent to the extractor. Attachments, tool results, reasoning, approvals, hidden context, and
 system/developer instructions are excluded. Credential-bearing sources and
 candidates are
-rejected before sending or committing; safe status never contains transcript or
-provider response bodies.
+rejected before sending or committing, including explicitly assigned short
+passwords and tokens; safe status never contains transcript or provider response
+bodies.
 
 The extractor selects `memory.extract_model`, then the configured small model,
 then the catalog's fast auxiliary model. It performs one completion per job
@@ -48,7 +49,8 @@ visible through Native `memory/status` using content-free error classes.
 Candidate validation, scoped identity, evidence, revocation/reset checks, FTS,
 and job completion commit together. Equivalent claims add evidence; inferred
 claims preserve explicit authority, and conflicting inferred claims stay out of
-recall. Markdown projections are atomically replaced after the authoritative
+recall. Competing claims retain their source with the candidate; their evidence
+is never added as support for the incumbent entry. Markdown projections are atomically replaced after the authoritative
 commit and repaired from SQLite on restart. Projection failure never repeats
 the extraction call. Persisted source eligibility is rechecked before every
 attempt and before commit. Missing or unreadable journals are isolated from other

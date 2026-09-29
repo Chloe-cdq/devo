@@ -460,3 +460,91 @@ fn local_tool_output_is_excluded_without_becoming_external_provenance() {
         vec!["Fix the flaky test", "On it."]
     );
 }
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: even short explicit credential assignments never become extractor input.
+#[test]
+fn short_credential_assignments_are_excluded_from_extraction() {
+    let dir = TempDir::new().unwrap();
+    for text in [
+        "password=1",
+        "password=1234567",
+        "password : \"1234\"",
+        "\"password\": \"1234567\"",
+        "token=abc",
+        "secret = x",
+        "api-key: x",
+        "apikey=x",
+        "access_token=abc",
+        "client_secret=x",
+        "db_password=1",
+        "authToken=abc",
+    ] {
+        let mut lines = legacy(dir.path());
+        lines[2]["Item"]["item"]["input_items"][0]["UserMessage"]["text"] = json!(text);
+        assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+    }
+}
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: completed Native and legacy sources retain a user's mid-turn correction.
+#[test]
+fn user_steering_corrections_remain_in_extraction_input() {
+    let dir = TempDir::new().unwrap();
+    let mut original = legacy(dir.path());
+    original[2]["Item"]["item"]["input_items"][0]["UserMessage"]["text"] = json!("I prefer tabs");
+    original[2]["Item"]["item"]["output_items"][0]["AgentMessage"]["text"] = json!("Okay");
+    for native in [false, true] {
+        let baseline = if native {
+            v2(&original)
+        } else {
+            original.clone()
+        };
+        let mut expected = read_source(&write_lines(&dir, &baseline)).unwrap().unwrap();
+        let mut corrected = original.clone();
+        corrected[2]["Item"]["item"]["input_items"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"SteerInput":{"text":"Correction: I prefer spaces"}}));
+        let lines = if native { v2(&corrected) } else { corrected };
+        let steering_id = if native {
+            ItemId::from_string(
+                lines
+                    .iter()
+                    .find(|line| line["kind"] == "item" && line["item"]["item"]["entry"] == "steer")
+                    .unwrap()["item"]["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+        } else {
+            ItemId::from_string(ITEM.into())
+        };
+        if native {
+            expected.messages.last_mut().unwrap().item_id = ItemId::from_string(
+                lines
+                    .iter()
+                    .find(|line| {
+                        line["kind"] == "item" && line["item"]["item"]["type"] == "assistantMessage"
+                    })
+                    .unwrap()["item"]["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
+        expected.messages.insert(
+            1,
+            SourceMessage {
+                turn_id: TurnId::from_string(TURN.into()),
+                item_id: steering_id,
+                observed_at: "2026-07-01T12:00:11Z".parse().unwrap(),
+                role: "user".into(),
+                text: "Correction: I prefer spaces".into(),
+            },
+        );
+        let source = read_source(&write_lines(&dir, &lines)).unwrap().unwrap();
+        expected.watermark = source.watermark.clone();
+        assert_eq!(source, expected);
+    }
+}

@@ -311,3 +311,40 @@ fn parse_candidates_accepts_thirty_two_project_candidates() {
         ])
     );
 }
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: a short credential proposed in a body or key cannot pass validation.
+#[test]
+fn short_credential_assignments_are_rejected_in_candidates() {
+    for field in ["body", "key"] {
+        for credential in [
+            "password=1",
+            "password=1234567",
+            "\"password\": \"1234\"",
+            "token=abc",
+            "access_token=abc",
+            "client_secret=x",
+            "db_password=1",
+            "authToken=abc",
+        ] {
+            let mut candidate = candidate_json();
+            candidate[field] = json!(credential);
+            assert_eq!(
+                parse_candidates(&response(candidate), &source()),
+                Ok(vec![])
+            );
+        }
+    }
+    let mut safe = candidate_json();
+    safe["body"] = json!("The password manager is local.");
+    assert_eq!(
+        parse_candidates(&response(safe), &source()),
+        Ok(vec![ExtractionCandidate {
+            scope: MemoryScope::User,
+            kind: MemoryKind::Preference,
+            key: "indentation".into(),
+            body: "The password manager is local.".into(),
+            evidence: vec![TurnId::from("turn_first")],
+        }])
+    );
+}

@@ -7,7 +7,9 @@ use crate::memory::{ListMemoryRequest, MemoryCommand, MemoryCommandResult, Memor
 use chrono::{Duration, Utc};
 use devo_protocol::native::ids::ItemId;
 use devo_protocol::native::ids::{SessionId, TurnId};
-use devo_protocol::native::rpc_memory::{MemoryKind, MemoryOrigin, MemoryScope, MemoryState};
+use devo_protocol::native::rpc_memory::{
+    MemoryEntry, MemoryKind, MemoryOrigin, MemoryProvenance, MemoryScope, MemoryState,
+};
 use devo_protocol::native::session::MemorySetting;
 use pretty_assertions::assert_eq;
 
@@ -50,20 +52,27 @@ fn extraction_commit_indexes_and_finishes_watermark() {
         .commit_extraction(&claim, &source, &[candidate.clone(), candidate], now)
         .unwrap();
     let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;
-    assert_eq!(entries.len(), 1);
+    let timestamp = chrono::DateTime::from_timestamp_millis(now.timestamp_millis()).unwrap();
     assert_eq!(
-        (
-            &entries[0].body,
-            entries[0].origin,
-            entries[0].state,
-            entries[0].provenance.len()
-        ),
-        (
-            &"I prefer tabs".to_string(),
-            MemoryOrigin::InferredSession,
-            MemoryState::Active,
-            1
-        )
+        entries,
+        vec![MemoryEntry {
+            entry_id: entries[0].entry_id.clone(),
+            scope: MemoryScope::User,
+            scope_id: "user".into(),
+            kind: MemoryKind::Preference,
+            normalized_key: "i prefer tabs".into(),
+            body: "I prefer tabs".into(),
+            origin: MemoryOrigin::InferredSession,
+            state: MemoryState::Active,
+            created_at: timestamp,
+            updated_at: timestamp,
+            replacement_entry_id: None,
+            provenance: vec![MemoryProvenance {
+                source_session_id: Some(source.session_id.to_string()),
+                source_turn_id: Some(source.messages[0].turn_id.to_string()),
+                source_user_item_id: Some(source.messages[0].item_id.clone()),
+            }],
+        }]
     );
     let search = runtime
         .search(crate::memory::SearchMemoryRequest {
@@ -90,8 +99,8 @@ fn extraction_commit_indexes_and_finishes_watermark() {
 
 /// Trace: L2-DES-MEM-001 DD-8
 /// Verifies: incompatible inferred claims retain conflict evidence and are excluded from lexical recall.
-#[test]
-fn incompatible_inferred_claims_are_conflicted() {
+#[tokio::test]
+async fn incompatible_inferred_claims_are_conflicted() {
     let root = tempfile::tempdir().unwrap();
     let runtime = open_runtime(root.path());
     let (mut source, mut candidate) = fixture();
@@ -100,6 +109,12 @@ fn incompatible_inferred_claims_are_conflicted() {
     runtime
         .commit_extraction(&first, &source, &[candidate.clone()], now)
         .unwrap();
+    let supported = runtime
+        .list(ListMemoryRequest::default())
+        .unwrap()
+        .data
+        .remove(0);
+    let first_source_id = source.session_id.to_string();
     source.session_id = SessionId::new();
     source.watermark = "source-2".into();
     source.messages[0].text = "I prefer spaces".into();
@@ -109,9 +124,41 @@ fn incompatible_inferred_claims_are_conflicted() {
         .commit_extraction(&second, &source, &[candidate], now)
         .unwrap();
     let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].state, MemoryState::Conflicted);
-    assert_eq!(runtime.status().unwrap().candidate_count, 2);
+    assert_eq!(
+        entries,
+        vec![MemoryEntry {
+            state: MemoryState::Conflicted,
+            ..supported.clone()
+        }]
+    );
+    let candidates = {
+        let connection = runtime.connection.lock().unwrap();
+        let mut statement = connection.prepare(
+            "SELECT body, source_session_id, validation_outcome FROM memory_candidates ORDER BY body",
+        ).unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        candidates,
+        vec![
+            (
+                "I prefer spaces".into(),
+                source.session_id.to_string(),
+                "conflicted".into()
+            ),
+            ("I prefer tabs".into(), first_source_id, "accepted".into()),
+        ]
+    );
     assert!(
         runtime
             .search(crate::memory::SearchMemoryRequest {
@@ -124,6 +171,31 @@ fn incompatible_inferred_claims_are_conflicted() {
             .unwrap()
             .data
             .is_empty()
+    );
+    let restoration = remember_request("I prefer tabs");
+    let mut provenance = supported.provenance.clone();
+    provenance.push(MemoryProvenance {
+        source_session_id: Some(restoration.source.session_id.to_string()),
+        source_turn_id: restoration.source.turn_id.as_ref().map(ToString::to_string),
+        source_user_item_id: restoration.source.user_item_id.clone(),
+    });
+    let restored = match runtime
+        .execute_command(MemoryCommand::Remember(restoration))
+        .await
+        .unwrap()
+    {
+        MemoryCommandResult::Remember(entry) => entry,
+        _ => panic!("remember result"),
+    };
+    assert_eq!(
+        restored,
+        MemoryEntry {
+            origin: MemoryOrigin::ExplicitUser,
+            state: MemoryState::Active,
+            updated_at: restored.updated_at,
+            provenance,
+            ..supported
+        }
     );
 }
 
@@ -361,4 +433,29 @@ async fn legacy_key_collision_does_not_revoke_distinct_structured_claim() {
             ("foo1".to_string(), MemoryState::Retired)
         ]
     );
+}
+
+/// Trace: L2-DES-MEM-001 DD-6
+/// Verifies: transactional admission also rejects a credential when parser validation is bypassed.
+#[test]
+fn short_credential_assignments_never_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (source, mut candidate) = fixture();
+    candidate.body = "client_secret=x".into();
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    assert_eq!(
+        runtime.list(ListMemoryRequest::default()).unwrap().data,
+        vec![]
+    );
+    let connection = runtime.connection.lock().unwrap();
+    let counts = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM memory_candidates), (SELECT COUNT(*) FROM memory_evidence), (SELECT COUNT(*) FROM memory_entries_fts), (SELECT state FROM memory_jobs)",
+        [], |row| Ok((row.get::<_, u32>(0)?,row.get::<_, u32>(1)?,row.get::<_, u32>(2)?,row.get::<_, String>(3)?)),
+    ).unwrap();
+    assert_eq!(counts, (0, 0, 0, "completed".into()));
 }
