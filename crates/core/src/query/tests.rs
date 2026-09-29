@@ -1322,6 +1322,7 @@ async fn automatic_compaction_emits_started_then_completed_when_history_is_repla
         &on_event,
         super::CompactionModelRequest {
             journal: None,
+            prepared_memory: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -1368,6 +1369,7 @@ async fn automatic_compaction_emits_failed_when_compaction_is_skipped() {
         &on_event,
         super::CompactionModelRequest {
             journal: None,
+            prepared_memory: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -1408,6 +1410,7 @@ async fn proactive_compaction_emits_failed_when_compaction_errors() {
         &on_event,
         super::CompactionModelRequest {
             journal: None,
+            prepared_memory: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",

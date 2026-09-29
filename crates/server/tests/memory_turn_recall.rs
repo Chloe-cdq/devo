@@ -76,16 +76,25 @@ async fn root_turn_reuses_recall_after_forget_and_persists_safe_native_item() ->
     let items = recall_items(&runtime, connection, session).await?;
     assert_eq!(items.len(), 1);
     let entries = &items[0]["entries"];
-    assert_eq!(entries.as_array().context("recall entries")?.len(), 2);
-    assert_eq!(entries[0]["entryId"], project_id);
-    assert_eq!(entries[1]["entryId"], serde_json::json!(user.entry_id));
-    assert!(
-        entries[0]["sourceSummary"]
-            .as_str()
-            .context("safe provenance")?
-            .contains("Explicit")
+    assert_eq!(
+        entries,
+        &serde_json::json!([
+            {
+                "entryId": project_id,
+                "scope": "project",
+                "kind": "fact",
+                "summary": "Use tabs",
+                "sourceSummary": "Explicit user memory (1 source)"
+            },
+            {
+                "entryId": user.entry_id,
+                "scope": "user",
+                "kind": "fact",
+                "summary": "Use tabs",
+                "sourceSummary": "Explicit user memory (1 source)"
+            }
+        ])
     );
-    assert!(entries[0].get("provenance").is_none());
     memory_support::run_turn(
         &runtime,
         connection,

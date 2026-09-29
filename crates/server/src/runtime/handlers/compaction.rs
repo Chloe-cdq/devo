@@ -480,8 +480,13 @@ impl ServerRuntime {
             Some(turn.turn_id),
             devo_protocol::native::usage::UsagePurpose::Compaction,
         );
-        let summarizer =
-            DefaultHistorySummarizer::with_models(provider, model_slug, request_model, max_tokens);
+        let summarizer = DefaultHistorySummarizer::with_models(
+            provider,
+            model_slug,
+            request_model,
+            max_tokens,
+            /*prepared_memory*/ None,
+        );
 
         let config = CompactionConfig {
             budget,

@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use devo_protocol::{Model, ModelRequest, RequestMessage, ResponseContent, SamplingControls};
+use devo_protocol::{
+    Model, ModelRequest, RequestContent, RequestMessage, ResponseContent, SamplingControls,
+};
 use devo_provider::ModelProviderSDK;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -19,6 +21,7 @@ pub struct DefaultHistorySummarizer {
     model_slug: String,
     request_model: String,
     max_tokens: usize,
+    prepared_memory: Option<Arc<str>>,
 }
 
 impl DefaultHistorySummarizer {
@@ -29,21 +32,25 @@ impl DefaultHistorySummarizer {
             model_slug: model.slug.clone(),
             request_model: model.slug.clone(),
             max_tokens,
+            prepared_memory: None,
         }
     }
 
-    /// Convenience constructor for a catalog slug and provider wire model.
+    /// Construct with provider routing and optional immutable root-turn recall.
+    /// Recall is added only to model requests, outside the history being compacted.
     pub fn with_models(
         provider: Arc<dyn ModelProviderSDK>,
         model_slug: impl Into<String>,
         request_model: impl Into<String>,
         max_tokens: usize,
+        prepared_memory: Option<Arc<str>>,
     ) -> Self {
         Self {
             provider,
             model_slug: model_slug.into(),
             request_model: request_model.into(),
             max_tokens,
+            prepared_memory,
         }
     }
 }
@@ -72,9 +79,20 @@ fn should_keep_summary_line(line: &str) -> bool {
 impl HistorySummarizer for DefaultHistorySummarizer {
     async fn summarize(
         &self,
-        messages: Vec<RequestMessage>,
+        mut messages: Vec<RequestMessage>,
         cancel_token: Option<&CancellationToken>,
     ) -> Result<String, CompactionError> {
+        if let Some(memory) = &self.prepared_memory {
+            messages.insert(
+                /*index*/ 0,
+                RequestMessage {
+                    role: "user".into(),
+                    content: vec![RequestContent::Text {
+                        text: memory.to_string(),
+                    }],
+                },
+            );
+        }
         let request = ModelRequest {
             model_slug: devo_protocol::ModelProfileKey::CatalogSlug(self.model_slug.clone()),
             model: self.request_model.clone(),

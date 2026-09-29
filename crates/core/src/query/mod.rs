@@ -125,6 +125,7 @@ fn hosted_tools_for_web_search(
 ///   `context_too_long`; keeps from the latest user message onward.
 struct CompactionModelRequest<'a> {
     journal: Option<&'a dyn crate::durable_execution::ToolIntentJournal>,
+    prepared_memory: Option<Arc<str>>,
     provider: &'a Arc<dyn ModelProviderSDK>,
     model_slug: &'a str,
     request_model: &'a str,
@@ -161,6 +162,7 @@ async fn summarize_and_compact(
         model.model_slug,
         model.request_model,
         model.max_tokens,
+        model.prepared_memory,
     );
 
     emit_query_event(on_event, QueryEvent::ContextCompactionStarted).await;
@@ -568,6 +570,7 @@ pub async fn query(
                 &on_event,
                 CompactionModelRequest {
                     journal: options.journal.as_deref(),
+                    prepared_memory: options.prepared_memory.clone(),
                     provider: &compaction_provider,
                     model_slug: &live_compaction_model_slug,
                     request_model: &live_compaction_request_model,
@@ -784,6 +787,7 @@ pub async fn query(
                             &on_event,
                             CompactionModelRequest {
                                 journal: options.journal.as_deref(),
+                                prepared_memory: options.prepared_memory.clone(),
                                 provider: &compaction_provider,
                                 model_slug: &retry_compaction_model_slug,
                                 request_model: &retry_compaction_request_model,
