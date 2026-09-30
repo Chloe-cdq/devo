@@ -29,6 +29,19 @@ impl ServerRuntime {
             activity: Arc::new(RuntimeSourceActivity(Arc::downgrade(self))),
         };
         tokio::spawn(async move {
+            let repair_memory = Arc::clone(&memory);
+            let repair_db = Arc::clone(&context.db);
+            let _ = tokio::task::spawn_blocking(move || {
+                super::session_deletion::retry_pending_memory_source_deletions(
+                    &repair_memory,
+                    &repair_db,
+                );
+                super::session_deletion::reconcile_external_context_sources(
+                    &repair_memory,
+                    &repair_db,
+                );
+            })
+            .await;
             if memory.run_background_scan(context).await.is_err() {
                 tracing::warn!(
                     error_class = "storage_error",

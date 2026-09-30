@@ -108,11 +108,100 @@ fn build_runtime_with_default_tools(
             devo_core::AgentsMdConfig::default(),
             db,
             Arc::new(std::sync::Mutex::new(
-                AppConfigStore::load(data_root.to_path_buf(), None).expect("load app config store"),
+                AppConfigStore::load(data_root.to_path_buf(), /*workspace_root*/ None)
+                    .expect("load app config store"),
             )),
         ),
         ProtocolSet::all(),
     )
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: a failed rollout marker write still leaves a durable, non-destructive source exclusion.
+#[tokio::test]
+async fn failed_external_marker_write_keeps_source_excluded() -> Result<()> {
+    let root = TempDir::new()?;
+    let runtime = build_runtime(root.path());
+    let session_id = SessionId::new();
+    let blocked_path = root.path().join("blocked-rollout");
+    std::fs::create_dir(&blocked_path)?;
+
+    assert!(
+        runtime
+            .mark_external_context_used(
+                Some(blocked_path),
+                session_id,
+                /*parent_session_id*/ None
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        runtime.deps.db.pending_external_context_sources()?,
+        vec![session_id]
+    );
+    assert!(
+        runtime
+            .deps
+            .db
+            .has_external_context_source(&session_id.to_string())?
+    );
+    Ok(())
+}
+
+/// Verifies: a failed middle marker cannot leave an unloaded ancestor eligible.
+#[tokio::test]
+async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> Result<()> {
+    let root = TempDir::new()?;
+    let runtime = build_runtime(root.path());
+    let connection_id = initialized_connection(&runtime).await;
+    let parent_id = start_durable_session(&runtime, connection_id, root.path()).await?;
+    let mut parent = runtime
+        .deps
+        .db
+        .get_session(&parent_id)?
+        .context("parent metadata")?;
+    let grandparent_id = SessionId::new();
+    let mut grandparent = parent.clone();
+    grandparent.session_id = grandparent_id;
+    grandparent.parent_session_id = None;
+    runtime
+        .deps
+        .db
+        .upsert_session(&grandparent, /*rollout_path*/ None)?;
+    parent.parent_session_id = Some(grandparent_id);
+    let blocked_path = root.path().join("blocked-parent-rollout");
+    std::fs::create_dir(&blocked_path)?;
+    runtime
+        .deps
+        .db
+        .upsert_session(&parent, Some(&blocked_path))?;
+
+    let child_id = SessionId::new();
+    assert!(
+        runtime
+            .mark_external_context_used(None, child_id, Some(parent_id))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        (
+            runtime
+                .deps
+                .db
+                .has_external_context_source(&child_id.to_string())?,
+            runtime
+                .deps
+                .db
+                .has_external_context_source(&parent_id.to_string())?,
+            runtime
+                .deps
+                .db
+                .has_external_context_source(&grandparent_id.to_string())?,
+        ),
+        (true, true, true)
+    );
+    Ok(())
 }
 
 #[async_trait]

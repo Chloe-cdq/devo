@@ -65,6 +65,12 @@ impl MemoryRuntime {
         {
             return Ok(None);
         }
+        if self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_external_context_source(source.session_id.as_str())
+                .unwrap_or(true)
+        }) {
+            return Ok(None);
+        }
         let mut connection = self
             .connection
             .lock()
@@ -72,6 +78,7 @@ impl MemoryRuntime {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_deleted_sources WHERE source_session_id = ?1)
+                OR EXISTS(SELECT 1 FROM memory_excluded_sources WHERE source_session_id = ?1)
                 OR EXISTS(SELECT 1 FROM memory_job_receipts
                     WHERE source_session_id = ?1 AND source_watermark = ?2)",
             rusqlite::params![source.session_id.as_str(), source.watermark],

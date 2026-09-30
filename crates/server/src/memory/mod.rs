@@ -15,6 +15,7 @@ mod inferred;
 mod jobs;
 mod migration;
 mod projection;
+mod proposal_reconciliation;
 mod proposal_relations;
 #[cfg(test)]
 mod proposal_relations_tests;
@@ -35,6 +36,7 @@ mod tests;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use chrono::DateTime;
@@ -65,7 +67,7 @@ pub use command_types::{
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "7";
+const MEMORY_SCHEMA_VERSION: &str = "8";
 const USER_SCOPE_ID: &str = "user";
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 100;
@@ -135,6 +137,7 @@ pub struct MemoryRuntime {
     config: MemoryConfig,
     memory_root: PathBuf,
     connection: Mutex<Connection>,
+    deletion_ledger: Option<Arc<crate::db::Database>>,
 }
 
 pub(super) fn scope_name(scope: MemoryScope) -> &'static str {
@@ -181,10 +184,22 @@ impl MemoryRuntime {
             config,
             memory_root,
             connection: Mutex::new(connection),
+            deletion_ledger: None,
         };
         runtime.prune_expired(Utc::now())?;
         runtime.rebuild_projections()?;
         Ok(runtime)
+    }
+
+    pub(crate) fn attach_deletion_ledger(&mut self, db: Arc<crate::db::Database>) {
+        self.deletion_ledger = Some(db);
+    }
+
+    fn has_pending_source_deletions(&self) -> bool {
+        self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_pending_memory_source_deletions().unwrap_or(true)
+                || db.has_pending_external_context_sources().unwrap_or(true)
+        })
     }
 
     /// Prepares an immutable memory snapshot for a turn.

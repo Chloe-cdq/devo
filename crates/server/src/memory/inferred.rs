@@ -25,6 +25,12 @@ impl MemoryRuntime {
         {
             return Ok(());
         }
+        if self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_external_context_source(source.session_id.as_str())
+                .unwrap_or(true)
+        }) {
+            return Ok(());
+        }
         let timestamp = now.to_rfc3339_opts(SecondsFormat::Millis, /*use_z*/ true);
         let mut prepared = Vec::new();
         for candidate in candidates {
@@ -67,6 +73,8 @@ impl MemoryRuntime {
              WHERE job_id = ?1 AND lease_owner = ?2 AND state = 'running' AND lease_until > ?3
                 AND source_session_id = ?4 AND source_watermark = ?5
                 AND NOT EXISTS (SELECT 1 FROM memory_deleted_sources
+                    WHERE source_session_id = ?4)
+                AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources
                     WHERE source_session_id = ?4))",
             rusqlite::params![
                 claim.id,
@@ -159,6 +167,7 @@ impl MemoryRuntime {
                 &scope_id,
                 &proposal_key,
                 &identity.canonical_key,
+                source.session_id.as_str(),
                 existing,
             )?;
             let (entry_id, outcome) = match admission {

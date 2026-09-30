@@ -115,6 +115,12 @@ impl MemoryRuntime {
                 break;
             }
             let session_id = index.metadata.session_id;
+            if context
+                .db
+                .has_external_context_source(&session_id.to_string())?
+            {
+                continue;
+            }
             let Some(path) = index.rollout_path else {
                 continue;
             };
@@ -159,6 +165,9 @@ impl MemoryRuntime {
             };
             loop {
                 if context.activity.is_active(session_id).await
+                    || context
+                        .db
+                        .has_external_context_source(&session_id.to_string())?
                     || !self.quota_allows(provider.as_ref())
                 {
                     let memory = Arc::clone(&self);
@@ -234,7 +243,10 @@ impl MemoryRuntime {
                         .ok()
                         .flatten();
                     let still_eligible = latest.as_ref().is_some_and(source_still_eligible)
-                        && !context.activity.is_active(session_id).await;
+                        && !context.activity.is_active(session_id).await
+                        && !context
+                            .db
+                            .has_external_context_source(&session_id.to_string())?;
                     let candidates = if still_eligible {
                         candidates
                     } else {

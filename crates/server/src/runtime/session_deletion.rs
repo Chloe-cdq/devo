@@ -2,6 +2,52 @@ use std::sync::Arc;
 
 use super::{ServerRuntime, SessionId};
 
+pub(super) fn retry_pending_memory_source_deletions(
+    memory: &crate::memory::MemoryRuntime,
+    db: &crate::db::Database,
+) {
+    let pending = match db.pending_memory_source_deletions() {
+        Ok(pending) => pending,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read memory source deletion ledger");
+            return;
+        }
+    };
+    if pending.is_empty() {
+        return;
+    }
+    if let Err(error) = memory.delete_sources(&pending, chrono::Utc::now()) {
+        tracing::warn!(%error, "memory source deletion remains pending");
+        return;
+    }
+    if let Err(error) = db.finish_memory_source_deletions(&pending) {
+        tracing::warn!(%error, "failed to finish memory source deletion ledger");
+    }
+}
+
+pub(super) fn reconcile_external_context_sources(
+    memory: &crate::memory::MemoryRuntime,
+    db: &crate::db::Database,
+) {
+    let pending = match db.pending_external_context_sources() {
+        Ok(pending) => pending,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read external-context source ledger");
+            return;
+        }
+    };
+    if pending.is_empty() {
+        return;
+    }
+    if let Err(error) = memory.exclude_sources(&pending, chrono::Utc::now()) {
+        tracing::warn!(%error, "external-context source exclusion remains pending");
+        return;
+    }
+    if let Err(error) = db.finish_external_context_sources(&pending) {
+        tracing::warn!(%error, "failed to finish external-context source ledger");
+    }
+}
+
 impl ServerRuntime {
     pub(crate) async fn delete_session_tree(
         self: &Arc<Self>,
@@ -13,17 +59,29 @@ impl ServerRuntime {
                 .await;
         }
 
+        self.deps
+            .db
+            .record_memory_source_deletions(&session_ids)
+            .map_err(|error| format!("failed to record session deletion intent: {error}"))?;
+
         if let Some(memory) = self.memory.as_ref()
             && !session_ids.is_empty()
         {
             let memory = Arc::clone(memory);
             let sources = session_ids.clone();
-            tokio::task::spawn_blocking(move || {
+            let cleanup = tokio::task::spawn_blocking(move || {
                 memory.delete_sources(&sources, chrono::Utc::now())
             })
-            .await
-            .map_err(|error| format!("failed to join memory source deletion: {error}"))?
-            .map_err(|error| format!("failed to delete memory sources: {error}"))?;
+            .await;
+            match cleanup {
+                Ok(Ok(())) => {
+                    if let Err(error) = self.deps.db.finish_memory_source_deletions(&session_ids) {
+                        tracing::warn!(%error, "failed to finish memory source deletion ledger");
+                    }
+                }
+                Ok(Err(error)) => tracing::warn!(%error, "memory source deletion deferred"),
+                Err(error) => tracing::warn!(%error, "memory source deletion task failed"),
+            }
         }
 
         let mut deleted_session_ids = Vec::new();

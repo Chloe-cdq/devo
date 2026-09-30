@@ -1,3 +1,5 @@
+mod memory_source_ledger;
+
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -407,6 +409,18 @@ impl Database {
             );",
         )
         .context("failed to create event_log tables")?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_memory_source_deletions (
+                source_session_id TEXT PRIMARY KEY NOT NULL,
+                requested_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_external_context_sources (
+                source_session_id TEXT PRIMARY KEY NOT NULL,
+                observed_at TEXT NOT NULL,
+                reconciled_at TEXT
+            )",
+        )
+        .context("failed to create memory source deletion ledger")?;
         Ok(())
     }
 

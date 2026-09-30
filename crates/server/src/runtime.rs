@@ -380,7 +380,12 @@ impl ServerRuntime {
             .clone();
         let memory =
             match crate::memory::MemoryRuntime::open(server_home.join("memory"), memory_config) {
-                Ok(runtime) => Some(Arc::new(runtime)),
+                Ok(mut runtime) => {
+                    runtime.attach_deletion_ledger(Arc::clone(&deps.db));
+                    session_deletion::retry_pending_memory_source_deletions(&runtime, &deps.db);
+                    session_deletion::reconcile_external_context_sources(&runtime, &deps.db);
+                    Some(Arc::new(runtime))
+                }
                 Err(error) => {
                     tracing::warn!(%error, "failed to initialize persistent memory runtime");
                     None

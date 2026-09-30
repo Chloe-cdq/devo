@@ -91,6 +91,11 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
             deleted_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS memory_excluded_sources (
+            source_session_id TEXT PRIMARY KEY NOT NULL,
+            excluded_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS memory_deleted_source_scopes (
             source_session_id TEXT NOT NULL,
             scope_type TEXT NOT NULL,
@@ -139,6 +144,14 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
     }
     if previous_version_number < 6 {
         proposal_relations::create_schema(&transaction)?;
+    }
+    if previous_version_number < 8 {
+        ensure_column(
+            &transaction,
+            "memory_proposal_claims",
+            "legacy_unattributed",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
     }
     if previous_version_number < 5 {
         ensure_column(
@@ -221,6 +234,16 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
     }
     if previous_version_number < 7 {
         super::entries::credential_policy::purge_unsafe_memory(&transaction)?;
+        proposal_relations::repair_claims(&transaction)?;
+    }
+    if previous_version_number < 8 {
+        proposal_relations::create_schema(&transaction)?;
+        // Historical candidate retention can erase the only source attribution.
+        // Preserve those claims until explicit resolution rather than guessing.
+        transaction.execute(
+            "UPDATE memory_proposal_claims SET legacy_unattributed = 1",
+            [],
+        )?;
         proposal_relations::repair_claims(&transaction)?;
     }
     transaction.execute(

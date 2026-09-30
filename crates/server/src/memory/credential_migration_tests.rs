@@ -65,8 +65,13 @@ fn snapshot(connection: &Connection) -> Vec<(String, Vec<Vec<Value>>)> {
     ]
     .into_iter()
     .map(|table| {
+        let columns = if table == "memory_proposal_claims" {
+            "scope_type, scope_id, proposal_key, canonical_key, entry_id"
+        } else {
+            "*"
+        };
         let mut statement = connection
-            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .prepare(&format!("SELECT {columns} FROM {table} ORDER BY rowid"))
             .unwrap();
         let columns = statement.column_count();
         let rows = statement
@@ -140,7 +145,7 @@ fn credential_v6_migration_rolls_back_and_retries_without_partial_cleanup() {
     connection
         .execute_batch(
             "CREATE TRIGGER fail_version_write BEFORE UPDATE ON memory_schema_meta
-         WHEN NEW.key = 'schema_version' AND NEW.value = '7'
+         WHEN NEW.key = 'schema_version' AND NEW.value = '8'
          BEGIN SELECT RAISE(ABORT, 'version write blocked'); END;",
         )
         .unwrap();

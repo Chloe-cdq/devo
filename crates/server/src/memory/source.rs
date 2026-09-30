@@ -235,14 +235,6 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                     session = Some(record);
                 }
                 RolloutLine::Turn(line) => {
-                    // A later turn revision or rollback cannot erase a failed
-                    // external-context marker write from the source history.
-                    if matches!(
-                        line.turn.status,
-                        devo_protocol::TurnStatus::Failed | devo_protocol::TurnStatus::Interrupted
-                    ) {
-                        return Ok(None);
-                    }
                     if !session
                         .as_ref()
                         .is_some_and(|session| session.id == line.turn.session_id)
@@ -386,14 +378,24 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                     | devo_protocol::TurnStatus::Running
                     | devo_protocol::TurnStatus::WaitingApproval => true,
                     devo_protocol::TurnStatus::Interrupted | devo_protocol::TurnStatus::Failed => {
-                        true
+                        false
                     }
                     devo_protocol::TurnStatus::Completed => false,
                 }
         })
-        || native_items
-            .values()
-            .any(|item| matches!(item.state, ItemState::Running | ItemState::Waiting))
+        || native_items.values().any(|item| {
+            matches!(item.state, ItemState::Running | ItemState::Waiting)
+                && !devo_protocol::TurnId::try_from(item.turn_id.as_str())
+                    .ok()
+                    .and_then(|turn_id| turns.get(&turn_id))
+                    .is_some_and(|turn| {
+                        matches!(
+                            turn.status,
+                            devo_protocol::TurnStatus::Failed
+                                | devo_protocol::TurnStatus::Interrupted
+                        )
+                    })
+        })
     {
         return Ok(None);
     }
@@ -403,6 +405,12 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     for item in items {
         if !turns.contains_key(&item.turn_id) {
             return Ok(None);
+        }
+        if !turns
+            .get(&item.turn_id)
+            .is_some_and(|turn| turn.status == devo_protocol::TurnStatus::Completed)
+        {
+            continue;
         }
         if native_items
             .get(&item.id.to_string())

@@ -21,6 +21,7 @@ pub(super) struct ProposalClaim<'a> {
     pub(super) proposal_key: &'a str,
     pub(super) canonical_key: &'a str,
     pub(super) entry_id: Option<&'a str>,
+    pub(super) source_session_id: Option<&'a str>,
 }
 
 pub(super) fn create_schema(transaction: &Transaction<'_>) -> Result<(), MemoryError> {
@@ -31,12 +32,23 @@ pub(super) fn create_schema(transaction: &Transaction<'_>) -> Result<(), MemoryE
             proposal_key TEXT NOT NULL,
             canonical_key TEXT NOT NULL,
             entry_id TEXT,
+            legacy_unattributed INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(scope_type, scope_id, proposal_key, canonical_key),
             FOREIGN KEY(entry_id) REFERENCES memory_entries(entry_id) ON DELETE SET NULL
          );
          CREATE INDEX IF NOT EXISTS memory_proposal_claims_identity
             ON memory_proposal_claims(scope_type, scope_id, canonical_key);
-         CREATE INDEX IF NOT EXISTS memory_proposal_claims_entry ON memory_proposal_claims(entry_id);",
+         CREATE INDEX IF NOT EXISTS memory_proposal_claims_entry ON memory_proposal_claims(entry_id);
+         CREATE TABLE IF NOT EXISTS memory_proposal_claim_sources (
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            proposal_key TEXT NOT NULL,
+            canonical_key TEXT NOT NULL,
+            source_session_id TEXT NOT NULL,
+            PRIMARY KEY(scope_type, scope_id, proposal_key, canonical_key, source_session_id)
+         );
+         CREATE INDEX IF NOT EXISTS memory_proposal_claim_sources_source
+            ON memory_proposal_claim_sources(source_session_id);",
     )?;
     Ok(())
 }
@@ -59,6 +71,20 @@ pub(super) fn record_claim(
             claim.entry_id
         ],
     )?;
+    if let Some(source_session_id) = claim.source_session_id {
+        transaction.execute(
+            "INSERT OR IGNORE INTO memory_proposal_claim_sources
+             (scope_type, scope_id, proposal_key, canonical_key, source_session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                scope_name(claim.scope),
+                claim.scope_id,
+                claim.proposal_key,
+                claim.canonical_key,
+                source_session_id
+            ],
+        )?;
+    }
     if let Some(entry_id) = claim.entry_id {
         bind_entry(
             transaction,
@@ -94,6 +120,7 @@ pub(super) fn admit_inferred(
     scope_id: &str,
     proposal_key: &str,
     canonical_key: &str,
+    source_session_id: &str,
     resolution: MemoryIdentityResolution,
 ) -> Result<InferredAdmission, MemoryError> {
     let existing = match resolution {
@@ -108,6 +135,7 @@ pub(super) fn admit_inferred(
                     proposal_key,
                     canonical_key,
                     entry_id: None,
+                    source_session_id: Some(source_session_id),
                 },
             )?;
             return Ok(InferredAdmission::IdentityCollision);
@@ -121,6 +149,7 @@ pub(super) fn admit_inferred(
             proposal_key,
             canonical_key,
             entry_id: existing.as_ref().map(|entry| entry.entry_id.as_str()),
+            source_session_id: Some(source_session_id),
         },
     )?;
     if let Some(entry) = &existing
@@ -136,8 +165,24 @@ pub(super) fn admit_inferred(
          WHERE competing.scope_type = ?1 AND competing.scope_id = ?2
             AND competing.canonical_key != ?3
             AND competing.proposal_key IN (
-                SELECT proposal_key FROM memory_proposal_claims
-                WHERE scope_type = ?1 AND scope_id = ?2 AND canonical_key = ?3)
+                SELECT owned.proposal_key FROM memory_proposal_claims AS owned
+                WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.canonical_key = ?3
+                  AND (owned.legacy_unattributed = 1 OR EXISTS (
+                    SELECT 1 FROM memory_proposal_claim_sources AS support
+                    WHERE support.scope_type = owned.scope_type
+                      AND support.scope_id = owned.scope_id
+                      AND support.proposal_key = owned.proposal_key
+                      AND support.canonical_key = owned.canonical_key
+                      AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
+                        WHERE excluded.source_session_id = support.source_session_id))))
+            AND (competing.legacy_unattributed = 1 OR EXISTS (
+                SELECT 1 FROM memory_proposal_claim_sources AS support
+                WHERE support.scope_type = competing.scope_type
+                  AND support.scope_id = competing.scope_id
+                  AND support.proposal_key = competing.proposal_key
+                  AND support.canonical_key = competing.canonical_key
+                  AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
+                    WHERE excluded.source_session_id = support.source_session_id)))
             AND (competing.entry_id IS NULL OR (entry.scope_type = ?1 AND entry.scope_id = ?2
                 AND entry.state IN ('active', 'restored', 'conflicted')))
          ORDER BY CASE entry.origin WHEN 'explicit_user' THEN 0 ELSE 1 END
@@ -251,6 +296,22 @@ fn withhold_competing_inferred(
              LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
              WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.proposal_key = ?3
                 AND competing.canonical_key != owned.canonical_key
+                AND (owned.legacy_unattributed = 1 OR EXISTS (
+                    SELECT 1 FROM memory_proposal_claim_sources AS support
+                    WHERE support.scope_type = owned.scope_type
+                      AND support.scope_id = owned.scope_id
+                      AND support.proposal_key = owned.proposal_key
+                      AND support.canonical_key = owned.canonical_key
+                      AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
+                        WHERE excluded.source_session_id = support.source_session_id)))
+                AND (competing.legacy_unattributed = 1 OR EXISTS (
+                    SELECT 1 FROM memory_proposal_claim_sources AS support
+                    WHERE support.scope_type = competing.scope_type
+                      AND support.scope_id = competing.scope_id
+                      AND support.proposal_key = competing.proposal_key
+                      AND support.canonical_key = competing.canonical_key
+                      AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
+                        WHERE excluded.source_session_id = support.source_session_id)))
                 AND (competing.entry_id IS NULL OR (
                     competitor.scope_type = ?1 AND competitor.scope_id = ?2
                     AND competitor.state IN ('active', 'restored', 'conflicted')))",
@@ -425,6 +486,7 @@ pub(super) fn backfill_claims(transaction: &Transaction<'_>) -> Result<(), Memor
                 proposal_key: &proposal_key,
                 canonical_key: &canonical_key,
                 entry_id,
+                source_session_id: None,
             },
         )?;
     }

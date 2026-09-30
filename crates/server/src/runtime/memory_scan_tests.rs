@@ -389,7 +389,7 @@ async fn deleting_source_during_extraction_prevents_late_commit() -> Result<()> 
 }
 
 /// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
-/// Verifies: a projection failure leaves session deletion retryable after durable memory cleanup.
+/// Verifies: a projection failure cannot block session deletion; projection repair is retryable.
 #[tokio::test]
 async fn source_delete_retries_after_projection_write_failure() -> Result<()> {
     let (root, runtime, _) = setup(/*sources*/ 1, /*permits*/ 1)?;
@@ -400,9 +400,6 @@ async fn source_delete_retries_after_projection_write_failure() -> Result<()> {
     std::fs::remove_dir(&projection_dir)?;
     std::fs::write(&projection_dir, "blocked")?;
 
-    assert!(runtime.delete_session_tree(source_id).await.is_err());
-    assert!(runtime.deps.db.get_session(&source_id)?.is_some());
-    std::fs::remove_file(&projection_dir)?;
     assert_eq!(
         runtime
             .delete_session_tree(source_id)
@@ -411,8 +408,86 @@ async fn source_delete_retries_after_projection_write_failure() -> Result<()> {
         vec![source_id]
     );
     assert!(runtime.deps.db.get_session(&source_id)?.is_none());
+    assert_eq!(
+        runtime.deps.db.pending_memory_source_deletions()?,
+        vec![source_id]
+    );
+    std::fs::remove_file(&projection_dir)?;
+    super::session_deletion::retry_pending_memory_source_deletions(
+        runtime.memory.as_ref().unwrap(),
+        &runtime.deps.db,
+    );
+    assert_eq!(runtime.deps.db.pending_memory_source_deletions()?, vec![]);
     let projection = std::fs::read_to_string(projection_dir.join("MEMORY.md"))?;
     assert!(projection.contains("state: retired"));
+    Ok(())
+}
+
+/// Trace: L1-REQ-MEM-001 Session Deletion; L2-DES-MEM-001 Entry Lifecycle and Retention.
+/// Verifies: memory outage cannot block session deletion and the intent survives until repair.
+#[tokio::test]
+async fn source_delete_survives_memory_storage_error() -> Result<()> {
+    let (root, runtime, _) = setup(/*sources*/ 1, /*permits*/ 1)?;
+    let source_id = runtime.deps.db.list_root_sessions()?[0].session_id;
+    scan(&runtime, root.path()).await?;
+    let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+    connection.execute("DROP TABLE memory_deleted_sources", [])?;
+
+    assert_eq!(
+        runtime
+            .delete_session_tree(source_id)
+            .await
+            .map_err(anyhow::Error::msg)?,
+        vec![source_id]
+    );
+    assert!(runtime.deps.db.get_session(&source_id)?.is_none());
+    assert_eq!(
+        runtime.deps.db.pending_memory_source_deletions()?,
+        vec![source_id]
+    );
+
+    connection.execute(
+        "CREATE TABLE memory_deleted_sources (
+            source_session_id TEXT PRIMARY KEY NOT NULL,
+            deleted_at TEXT NOT NULL)",
+        [],
+    )?;
+    let memory = runtime.memory.as_ref().unwrap();
+    super::session_deletion::retry_pending_memory_source_deletions(memory, &runtime.deps.db);
+    assert_eq!(runtime.deps.db.pending_memory_source_deletions()?, vec![]);
+    let result = memory
+        .execute_command(crate::memory::MemoryCommand::List(
+            crate::memory::ListMemoryRequest::default(),
+        ))
+        .await?;
+    let crate::memory::MemoryCommandResult::List(entries) = result else {
+        panic!("list result")
+    };
+    assert_eq!(
+        entries.data[0].state,
+        devo_protocol::native::rpc_memory::MemoryState::Retired
+    );
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: the durable external-context ledger excludes a source even without a rollout marker.
+#[tokio::test]
+async fn external_context_ledger_blocks_scan_without_rollout_marker() -> Result<()> {
+    let (root, runtime, provider) = setup(/*sources*/ 1, /*permits*/ 1)?;
+    let source_id = runtime.deps.db.list_root_sessions()?[0].session_id;
+    runtime
+        .deps
+        .db
+        .record_external_context_sources(&[source_id])?;
+
+    scan(&runtime, root.path()).await?;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        runtime.deps.db.pending_external_context_sources()?,
+        vec![source_id]
+    );
     Ok(())
 }
 

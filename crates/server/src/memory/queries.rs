@@ -24,66 +24,77 @@ impl MemoryRuntime {
         const MAX_SUMMARY_CHARS: usize = 240;
 
         let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
+        let mut pending_source_deletion = self.has_pending_source_deletions();
         let connection = self
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
-        let mut statement = connection.prepare(
-            "SELECT entry_id
+        loop {
+            let mut statement = connection.prepare(
+                "SELECT entry_id
              FROM memory_entries
              WHERE scope_type = ?1
                AND scope_id = ?2
                AND (?3 IS NULL OR kind = ?3)
                AND ((?4 IS NULL AND state IN ('active', 'restored')) OR state = ?4)
                AND (body LIKE '%' || ?5 || '%' OR normalized_key LIKE '%' || ?5 || '%')
+               AND (?7 = 0 OR origin = 'explicit_user')
              ORDER BY updated_at DESC, entry_id ASC
              LIMIT ?6",
-        )?;
-        let ids = statement
-            .query_map(
-                rusqlite::params![
-                    scope_name(request.scope),
-                    scope_id,
-                    request.kind.map(kind_name),
-                    request.state.map(state_name),
-                    request.query,
-                    SEARCH_LIMIT,
-                ],
-                |row| row.get::<_, String>(0),
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
-        let entries = ids
-            .iter()
-            .map(|entry_id| {
-                load_entry(&connection, &MemoryEntryId::from_string(entry_id.clone()))?.ok_or_else(
-                    || MemoryError::InvalidStoredValue("searched entry is missing".into()),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Page {
-            data: entries
-                .into_iter()
-                .map(|entry| {
-                    let mut summary = entry
-                        .body
-                        .chars()
-                        .take(MAX_SUMMARY_CHARS)
-                        .collect::<String>();
-                    if entry.body.chars().count() > MAX_SUMMARY_CHARS {
-                        summary.push('…');
-                    }
-                    MemorySearchEntry {
-                        entry_id: entry.entry_id,
-                        scope: entry.scope,
-                        kind: entry.kind,
-                        state: entry.state,
-                        summary,
-                    }
+            )?;
+            let ids = statement
+                .query_map(
+                    rusqlite::params![
+                        scope_name(request.scope),
+                        scope_id,
+                        request.kind.map(kind_name),
+                        request.state.map(state_name),
+                        request.query.as_str(),
+                        SEARCH_LIMIT,
+                        pending_source_deletion,
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            let entries = ids
+                .iter()
+                .map(|entry_id| {
+                    load_entry(&connection, &MemoryEntryId::from_string(entry_id.clone()))?
+                        .ok_or_else(|| {
+                            MemoryError::InvalidStoredValue("searched entry is missing".into())
+                        })
                 })
-                .collect(),
-            next_cursor: None,
-        })
+                .collect::<Result<Vec<_>, _>>()?;
+            // If intent committed while this read waited, rerun the limit with explicit-only SQL.
+            if !pending_source_deletion && self.has_pending_source_deletions() {
+                pending_source_deletion = true;
+                continue;
+            }
+            return Ok(Page {
+                data: entries
+                    .into_iter()
+                    .map(|entry| {
+                        let mut summary = entry
+                            .body
+                            .chars()
+                            .take(MAX_SUMMARY_CHARS)
+                            .collect::<String>();
+                        if entry.body.chars().count() > MAX_SUMMARY_CHARS {
+                            summary.push('…');
+                        }
+                        MemorySearchEntry {
+                            entry_id: entry.entry_id,
+                            scope: entry.scope,
+                            kind: entry.kind,
+                            state: entry.state,
+                            summary,
+                        }
+                    })
+                    .collect(),
+                next_cursor: None,
+            });
+        }
     }
 
     pub(super) fn list(&self, request: ListMemoryRequest) -> Result<MemoryListResult, MemoryError> {
@@ -104,6 +115,7 @@ impl MemoryRuntime {
     ) -> Result<MemoryListResult, MemoryError> {
         let scope = request.scope.unwrap_or(MemoryScope::User);
         let scope_id = self.scope_id(scope, &request.workspace_root)?;
+        let mut pending_source_deletion = self.has_pending_source_deletions();
         let limit = request
             .limit
             .unwrap_or(DEFAULT_LIST_LIMIT)
@@ -129,6 +141,7 @@ impl MemoryRuntime {
                {state_filter}
                AND (?5 IS NULL OR origin = ?5)
                AND (?6 IS NULL OR body LIKE '%' || ?6 || '%' OR normalized_key LIKE '%' || ?6 || '%')
+               AND (?9 = 0 OR origin = 'explicit_user')
              ORDER BY updated_at DESC, entry_id ASC
              LIMIT ?7 OFFSET ?8"
         );
@@ -136,41 +149,49 @@ impl MemoryRuntime {
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
-        let mut statement = connection.prepare(&query)?;
         let kind = request.kind.map(kind_name);
         let state = request.state.map(state_name);
         let origin = request.origin.map(origin_name);
-        let ids = statement
-            .query_map(
-                rusqlite::params![
-                    scope_name(scope),
-                    scope_id,
-                    kind,
-                    state,
-                    origin,
-                    request.text,
-                    i64::from(limit) + 1,
-                    i64::try_from(offset).map_err(|_| {
-                        MemoryError::InvalidRequest("memory cursor is too large".into())
-                    })?,
-                ],
-                |row| row.get::<_, String>(0),
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        let has_next = ids.len() > usize::try_from(limit).unwrap_or(usize::MAX);
-        let ids = ids.into_iter().take(limit as usize).collect::<Vec<_>>();
-        drop(statement);
-        let entries = ids
-            .iter()
-            .map(|id| {
-                load_entry(&connection, &MemoryEntryId::from_string(id.clone()))?.ok_or_else(|| {
-                    MemoryError::InvalidStoredValue("listed entry is missing".into())
+        loop {
+            let mut statement = connection.prepare(&query)?;
+            let ids = statement
+                .query_map(
+                    rusqlite::params![
+                        scope_name(scope),
+                        scope_id,
+                        kind,
+                        state,
+                        origin,
+                        request.text.as_deref(),
+                        i64::from(limit) + 1,
+                        i64::try_from(offset).map_err(|_| {
+                            MemoryError::InvalidRequest("memory cursor is too large".into())
+                        })?,
+                        pending_source_deletion,
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            let has_next = ids.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+            let ids = ids.into_iter().take(limit as usize).collect::<Vec<_>>();
+            drop(statement);
+            let entries = ids
+                .iter()
+                .map(|id| {
+                    load_entry(&connection, &MemoryEntryId::from_string(id.clone()))?.ok_or_else(
+                        || MemoryError::InvalidStoredValue("listed entry is missing".into()),
+                    )
                 })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Page {
-            data: entries,
-            next_cursor: has_next.then(|| (offset + usize::try_from(limit).unwrap()).to_string()),
-        })
+                .collect::<Result<Vec<_>, _>>()?;
+            if !pending_source_deletion && self.has_pending_source_deletions() {
+                pending_source_deletion = true;
+                continue;
+            }
+            return Ok(Page {
+                data: entries,
+                next_cursor: has_next
+                    .then(|| (offset + usize::try_from(limit).unwrap()).to_string()),
+            });
+        }
     }
 }

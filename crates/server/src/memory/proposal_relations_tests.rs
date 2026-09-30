@@ -33,7 +33,7 @@ fn contribute(
     let now = Utc::now();
     let turn_id = TurnId::new();
     let source = ExtractableSource {
-        session_id: SessionId::new(),
+        session_id: SessionId::from_legacy_uuid(uuid::Uuid::new_v4()),
         workspace_root,
         session_contribution: MemorySetting::On,
         observed_at: now - Duration::hours(7),
@@ -694,6 +694,111 @@ async fn ambiguous_history_is_not_bound_by_guessing() {
             .len(),
         2
     );
+}
+
+/// Trace: L1-REQ-MEM-001 Session Deletion; L2-DES-MEM-001 Entry Lifecycle and Retention.
+/// Verifies: deleting the only opposing source removes its conflict authority and restores surviving evidence.
+#[test]
+fn deleting_opposing_source_restores_surviving_inferred_claim() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    contribute(
+        &runtime,
+        "I prefer tabs",
+        "indentation",
+        ContributionScope::User,
+    );
+    let opposing = contribute(
+        &runtime,
+        "I prefer spaces",
+        "indentation",
+        ContributionScope::User,
+    );
+    let conflicted = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(conflicted.len(), 1);
+    assert_eq!(conflicted[0].state, MemoryState::Conflicted);
+
+    let source_id = devo_protocol::SessionId::try_from(opposing.session_id.as_str()).unwrap();
+    runtime.delete_sources(&[source_id], Utc::now()).unwrap();
+
+    let surviving = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(
+        surviving,
+        vec![MemoryEntry {
+            state: MemoryState::Active,
+            ..conflicted[0].clone()
+        }]
+    );
+    assert_recallable(&runtime, &surviving);
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: external source exclusion removes conflict authority without erasing audit rows.
+#[test]
+fn excluding_opposing_source_restores_survivor_and_preserves_claim() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    contribute(
+        &runtime,
+        "I prefer tabs",
+        "indentation",
+        ContributionScope::User,
+    );
+    let opposing = contribute(
+        &runtime,
+        "I prefer spaces",
+        "indentation",
+        ContributionScope::User,
+    );
+    let conflicted = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(conflicted[0].state, MemoryState::Conflicted);
+
+    let source_id = devo_protocol::SessionId::try_from(opposing.session_id.as_str()).unwrap();
+    runtime.exclude_sources(&[source_id], Utc::now()).unwrap();
+
+    let surviving = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(surviving[0].state, MemoryState::Active);
+    assert_recallable(&runtime, &surviving);
+    let claim_count: i64 = runtime
+        .connection
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_proposal_claim_sources WHERE source_session_id = ?1",
+            [opposing.session_id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claim_count, 1);
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention.
+/// Verifies: a second runtime observes the same transactional conflict repair.
+#[test]
+fn second_runtime_deletes_opposing_source_without_stale_conflict() {
+    let root = tempfile::tempdir().unwrap();
+    let first = open_runtime(root.path());
+    let second = open_runtime(root.path());
+    contribute(
+        &first,
+        "I prefer tabs",
+        "indentation",
+        ContributionScope::User,
+    );
+    let opposing = contribute(
+        &first,
+        "I prefer spaces",
+        "indentation",
+        ContributionScope::User,
+    );
+    let source_id = devo_protocol::SessionId::try_from(opposing.session_id.as_str()).unwrap();
+
+    second.delete_sources(&[source_id], Utc::now()).unwrap();
+
+    let entries = first.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].state, MemoryState::Active);
+    assert_recallable(&first, &entries);
 }
 
 #[path = "proposal_admission_tests.rs"]

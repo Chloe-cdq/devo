@@ -1857,7 +1857,8 @@ async fn hosted_web_offered_without_use_does_not_mark_external_context() {
         let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
         let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
         session.push_message(Message::user("research this"));
-        let mut turn_config = TurnConfig::new(Model::default(), None);
+        let mut turn_config =
+            TurnConfig::new(Model::default(), /*reasoning_effort_selection*/ None);
         if web_search {
             turn_config.web_search = devo_config::ResolvedWebSearchConfig::Provider;
         } else {
@@ -1906,7 +1907,8 @@ async fn hosted_web_marker_failure_aborts_observed_use() {
         let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
         let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
         session.push_message(Message::user("research this"));
-        let mut turn_config = TurnConfig::new(Model::default(), None);
+        let mut turn_config =
+            TurnConfig::new(Model::default(), /*reasoning_effort_selection*/ None);
         if web_search {
             turn_config.web_search = devo_config::ResolvedWebSearchConfig::Provider;
         } else {

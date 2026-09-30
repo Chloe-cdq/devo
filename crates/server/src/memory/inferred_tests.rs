@@ -779,3 +779,41 @@ fn fresh_source_reactivates_entry_retired_by_source_deletion() {
         .unwrap();
     assert_eq!(fts_count, 1);
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: excluding one of two equivalent sources preserves clean support but hides excluded provenance.
+#[test]
+fn external_source_exclusion_keeps_only_clean_public_provenance() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (mut clean, candidate) = fixture();
+    clean.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&clean, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &clean, std::slice::from_ref(&candidate), now)
+        .unwrap();
+    let mut external = clean.clone();
+    external.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    external.watermark = "external".into();
+    let claim = runtime.claim_source(&external, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &external, &[candidate], now)
+        .unwrap();
+
+    runtime
+        .exclude_sources(
+            &[devo_protocol::SessionId::try_from(external.session_id.as_str()).unwrap()],
+            now,
+        )
+        .unwrap();
+
+    let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].state, MemoryState::Active);
+    assert_eq!(entries[0].provenance.len(), 1);
+    assert_eq!(
+        entries[0].provenance[0].source_session_id.as_deref(),
+        Some(clean.session_id.as_str())
+    );
+}

@@ -13,14 +13,16 @@ borrowed fork history, unfinished turns, damaged journals, and sessions that
 used Web, MCP, or Tool Search are excluded. Journals larger than 1 MiB are
 skipped to bound background input work.
 
-Actual external-tool use adds a monotonic, fsynced `ExternalContextUsed` fact
-to the session rollout. Local Web, MCP, and Tool Search calls require that
-write before dispatch. Hosted Web use is marked when the provider reports the
-call; a marker write failure aborts the turn, and failed or incomplete turns
-are ineligible. Subagent use also marks its durable parent chain because child
-results can enter a parent conversation. Merely offering hosted Web capability
-does not exclude a text-only session. The source reader also recognizes older
-tool records without this fact.
+Actual external-tool use first records a durable, session-wide exclusion in
+the session index and then adds an fsynced `ExternalContextUsed` rollout fact.
+Local Web, MCP, and Tool Search calls require the rollout write before dispatch;
+hosted Web use is marked when the provider reports the call. A failed marker
+write aborts the turn, while the index exclusion still blocks extraction and
+recall until non-destructive memory-state reconciliation succeeds. Subagent use
+also excludes its durable parent chain. Failed and interrupted turns do not
+themselves taint a session; only completed turns contribute text. Merely
+offering hosted Web capability does not exclude a text-only session. The source
+reader also recognizes older tool records without this fact.
 
 Only persisted user text (including mid-turn steering corrections) and assistant
 conversational text are sent to the extractor. Attachments, tool results, reasoning, approvals, hidden context, and
@@ -59,16 +61,20 @@ the same live lease. Transient failures retry after 30 seconds and then 60
 seconds, with three attempts total. Permanent and exhausted failures remain
 visible through Native `memory/status` using content-free error classes.
 
-Deleting a source session durably fences its ID before removing its rollout.
-The memory transaction removes that source's candidates, job details, and
-evidence; an inferred entry is retired when its last evidence disappears.
+Deleting a source session first records durable deletion intent in the session
+index, then removes its rollout and session metadata even if memory storage or
+projection is unavailable. Until reconciliation finishes, inferred memory is
+withheld from server reads; explicit memory remains available. The idempotent
+memory transaction permanently fences the source, removes its candidates, job
+details, evidence, and proposal-claim support, and recomputes conflicts from
+surviving support. An inferred entry is retired when its last evidence disappears.
 Explicit entries remain. Fresh, uncontested evidence from a different source
 can reactivate an entry retired only by source deletion; forget revocations
 still block inference. A stale scan or in-flight extraction cannot recreate
 memory from a fenced source. Affected projection scopes are durably recorded
-and rebuilt from SQLite, including on retry after a projection write failure.
-If projection repair fails, session deletion returns an error before removing
-the rollout; retrying repairs the projection and completes deletion.
+and rebuilt from SQLite, including on startup or the next scan after a
+projection write failure. Source exclusion after external-context use retains
+its evidence and claim rows for audit while removing their inference authority.
 
 Expired candidates are pruned on startup and before a scan. Completed job
 details older than `memory.candidate_and_job_retention_days` (default 30) are
@@ -123,7 +129,11 @@ and FTS copies, including content stored through explicit commands. Generated
 Markdown is rebuilt without those values. Original conversation journals are
 unchanged. Both repairs and the final version marker commit in one transaction;
 a failed migration rolls back and can be retried. Reopening v7 does not rerun
-historical identity migrations.
+historical identity migrations. Schema version 8 records per-source proposal
+support so later source deletion or exclusion can remove only that source's
+conflict authority. Existing claims whose complete supporter set cannot be
+reconstructed after candidate pruning are marked legacy-unattributed and kept
+conservative until an explicit resolution; migration does not guess a source.
 
 These rules enforce already-known relationships and a finite credential grammar.
 They do not infer semantic conflicts between previously unrelated wordings or

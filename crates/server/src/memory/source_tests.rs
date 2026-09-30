@@ -204,9 +204,9 @@ fn detects_native_mcp_tool_source_even_without_mcp_name() {
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7.
-/// Verifies: a failed hosted marker write cannot become eligible after a later turn.
+/// Verifies: an ordinary failed turn does not taint a later clean completed turn.
 #[test]
-fn failed_turn_remains_ineligible_after_later_success() {
+fn clean_failed_turn_followed_by_success_is_eligible() {
     let dir = TempDir::new().unwrap();
     let mut lines = legacy(dir.path());
     lines[1]["Turn"]["turn"]["status"] = json!("Failed");
@@ -214,20 +214,48 @@ fn failed_turn_remains_ineligible_after_later_success() {
     later_turn["Turn"]["turn"]["id"] = json!("00000000-0000-0000-0000-0000000000c2");
     later_turn["Turn"]["turn"]["status"] = json!("Completed");
     lines.push(later_turn);
-    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+    let mut later_item = lines[2].clone();
+    later_item["Item"]["item"]["id"] = json!("00000000-0000-0000-0000-0000000000c3");
+    later_item["Item"]["item"]["turn_id"] = json!("00000000-0000-0000-0000-0000000000c2");
+    lines.push(later_item);
+    assert!(read_source(&write_lines(&dir, &lines)).unwrap().is_some());
+}
+
+/// Verifies: a pending native item from a failed turn cannot taint a later clean turn.
+#[test]
+fn failed_native_item_does_not_taint_later_completed_turn() {
+    let dir = TempDir::new().unwrap();
+    let mut legacy_lines = legacy(dir.path());
+    legacy_lines[1]["Turn"]["turn"]["status"] = json!("Failed");
+    let mut later_turn = legacy_lines[1].clone();
+    later_turn["Turn"]["turn"]["id"] = json!("00000000-0000-0000-0000-0000000000c2");
+    later_turn["Turn"]["turn"]["status"] = json!("Completed");
+    legacy_lines.push(later_turn);
+    let mut later_item = legacy_lines[2].clone();
+    later_item["Item"]["item"]["id"] = json!("00000000-0000-0000-0000-0000000000c3");
+    later_item["Item"]["item"]["turn_id"] = json!("00000000-0000-0000-0000-0000000000c2");
+    legacy_lines.push(later_item);
+    let mut lines = v2(&legacy_lines);
+    let failed_item = lines
+        .iter_mut()
+        .find(|line| line["kind"] == "item" && line["item"]["turnId"] == TURN)
+        .unwrap();
+    failed_item["item"]["state"] = json!("running");
+
+    assert!(read_source(&write_lines(&dir, &lines)).unwrap().is_some());
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7.
-/// Verifies: a later turn record cannot erase a failed marker-write fallback.
+/// Verifies: a completed revision of a failed turn is eligible when no external context was used.
 #[test]
-fn failed_turn_remains_ineligible_after_turn_supersession() {
+fn clean_failed_turn_superseded_by_completion_is_eligible() {
     let dir = TempDir::new().unwrap();
     let mut lines = legacy(dir.path());
     lines[1]["Turn"]["turn"]["status"] = json!("Failed");
     let mut replacement = lines[1].clone();
     replacement["Turn"]["turn"]["status"] = json!("Completed");
     lines.push(replacement);
-    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+    assert!(read_source(&write_lines(&dir, &lines)).unwrap().is_some());
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7.

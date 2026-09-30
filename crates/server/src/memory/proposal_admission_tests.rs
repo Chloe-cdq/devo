@@ -1,6 +1,122 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+/// Verifies: an excluded claim in one group cannot conflict with clean support in another.
+#[test]
+fn excluding_cross_group_claim_restores_clean_inferred_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let excluded = contribute(
+        &runtime,
+        "I prefer tabs.",
+        "indentation",
+        ContributionScope::User,
+    );
+    contribute(
+        &runtime,
+        "I prefer spaces.",
+        "indentation",
+        ContributionScope::User,
+    );
+    contribute(
+        &runtime,
+        "I prefer tabs.",
+        "formatting",
+        ContributionScope::User,
+    );
+    assert_eq!(
+        runtime.list(ListMemoryRequest::default()).unwrap().data[0].state,
+        MemoryState::Conflicted
+    );
+
+    runtime
+        .exclude_sources(
+            &[devo_protocol::SessionId::try_from(excluded.session_id.as_str()).unwrap()],
+            Utc::now(),
+        )
+        .unwrap();
+    let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].state, MemoryState::Active);
+    assert_recallable(&runtime, &entries);
+}
+
+/// Verifies: a new clean group can reactivate an identity after its old group is excluded.
+#[test]
+fn clean_cross_group_claim_reactivates_retired_inferred_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let excluded = contribute(
+        &runtime,
+        "I prefer tabs.",
+        "indentation",
+        ContributionScope::User,
+    );
+    contribute(
+        &runtime,
+        "I prefer spaces.",
+        "indentation",
+        ContributionScope::User,
+    );
+    runtime
+        .exclude_sources(
+            &[devo_protocol::SessionId::try_from(excluded.session_id.as_str()).unwrap()],
+            Utc::now(),
+        )
+        .unwrap();
+
+    contribute(
+        &runtime,
+        "I prefer tabs.",
+        "formatting",
+        ContributionScope::User,
+    );
+    let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].state, MemoryState::Active);
+    assert_recallable(&runtime, &entries);
+}
+
+/// Verifies: deleting an owned claim still checks clean support in another group.
+#[test]
+fn deleting_cross_group_owned_claim_restores_surviving_inferred_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let deleted = contribute(
+        &runtime,
+        "I prefer tabs.",
+        "indentation",
+        ContributionScope::User,
+    );
+    contribute(
+        &runtime,
+        "I prefer spaces.",
+        "indentation",
+        ContributionScope::User,
+    );
+    contribute(
+        &runtime,
+        "I prefer tabs.",
+        "formatting",
+        ContributionScope::User,
+    );
+    assert_eq!(
+        runtime.list(ListMemoryRequest::default()).unwrap().data[0].state,
+        MemoryState::Conflicted
+    );
+
+    runtime
+        .delete_sources(
+            &[devo_protocol::SessionId::try_from(deleted.session_id.as_str()).unwrap()],
+            Utc::now(),
+        )
+        .unwrap();
+    let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].state, MemoryState::Active);
+    assert_recallable(&runtime, &entries);
+}
+
 /// Trace: L2-DES-MEM-001 Rev 4 DD-8.
 /// Verifies: an unbound opposing claim cannot gain recall by changing its model proposal label.
 #[tokio::test]
@@ -117,7 +233,8 @@ fn install_v6_key_drift(runtime: &MemoryRuntime) {
          VALUES('drifted-opposition', 'user', 'user', 'preference', 'i prefer spaces', 'I prefer spaces.', 'inferred_session', 'active', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z');
          INSERT INTO memory_entries_fts(entry_id, normalized_key, body) VALUES('drifted-opposition', 'i prefer spaces', 'I prefer spaces.');
          INSERT INTO memory_evidence VALUES('drifted-evidence', 'drifted-opposition', 'drifted-source', 'drifted-turn', NULL, '2026-09-01T00:00:00Z', 'drifted-watermark');
-         INSERT INTO memory_proposal_claims VALUES('user', 'user', 'whitespace', 'i prefer spaces', 'drifted-opposition');
+         INSERT INTO memory_proposal_claims(scope_type, scope_id, proposal_key, canonical_key, entry_id)
+         VALUES('user', 'user', 'whitespace', 'i prefer spaces', 'drifted-opposition');
          DELETE FROM memory_candidates;
          UPDATE memory_schema_meta SET value = '6' WHERE key = 'schema_version';"
     ).unwrap();
@@ -186,7 +303,7 @@ async fn v6_key_drift_repair_rebinds_all_memberships_and_withholds_unsafe_recall
         assert_eq!(
             snapshot,
             (
-                "7".into(),
+                "8".into(),
                 vec![
                     (
                         "indentation".into(),
