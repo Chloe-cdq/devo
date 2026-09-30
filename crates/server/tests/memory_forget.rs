@@ -156,21 +156,22 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
 
     let prepared = runtime
         .prepare_turn(PrepareMemoryRequest {
+            query: "Use tabs".into(),
             workspace_root: database_root.path().to_path_buf(),
             session_recall: devo_protocol::native::session::MemorySetting::On,
         })
         .await
         .expect("prepare restored memory recall");
-    let project_scope_id = prepared
-        .project_scope_id
-        .clone()
-        .expect("prepared project scope");
+    assert!(prepared.project_scope_id.is_some());
     assert_eq!(
-        prepared,
-        devo_server::memory::PreparedMemory {
-            project_scope_id: Some(project_scope_id),
-            user_entries: vec![restored.clone()],
-        }
+        prepared.entries,
+        vec![devo_protocol::native::rpc_memory::MemoryRecallEntry {
+            entry_id: restored.entry_id.clone(),
+            scope: MemoryScope::User,
+            kind: restored.kind,
+            summary: "Use tabs".into(),
+            source_summary: "Explicit user memory (1 source)".into(),
+        }]
     );
     let projection = fs::read_to_string(database_root.path().join("user").join("MEMORY.md"))
         .expect("read restored user projection");

@@ -4441,6 +4441,7 @@ fn append_preview_item(
         | devo_protocol::native::item::Item::BackgroundTask { .. }
         | devo_protocol::native::item::Item::ContextCompaction { .. }
         | devo_protocol::native::item::Item::GoalProgress { .. }
+        | devo_protocol::native::item::Item::MemoryRecall { .. }
         | devo_protocol::native::item::Item::Warning { .. } => None,
     };
     if let Some(message) = message {
@@ -4764,6 +4765,7 @@ async fn subscribe_session_events(
             | devo_protocol::native::item::Item::BackgroundTask { .. }
             | devo_protocol::native::item::Item::ContextCompaction { .. }
             | devo_protocol::native::item::Item::GoalProgress { .. }
+            | devo_protocol::native::item::Item::MemoryRecall { .. }
             | devo_protocol::native::item::Item::Warning { .. } => {}
         }
     }

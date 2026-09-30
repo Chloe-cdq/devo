@@ -78,7 +78,6 @@ pub(super) async fn completion_stream(
         messages = request.messages.len(),
         tools = request.tools.as_ref().map_or(0, Vec::len),
         max_tokens = request.max_tokens,
-        http_body = %body,
         "sending openai streaming request"
     );
 
@@ -127,7 +126,6 @@ pub(super) async fn completion_stream(
                     tracing::trace!(
                         event = %message.event,
                         data_len = message.data.len(),
-                        data = %message.data,
                         "openai chat completions raw stream event"
                     );
                     if message.data == "[DONE]" {
@@ -184,7 +182,7 @@ pub(super) async fn completion_stream(
 
 fn stream_error(message: String) -> ProviderError {
     ProviderError::StreamError {
-        message,
+        message: message.into(),
         bytes_received: None,
     }
 }

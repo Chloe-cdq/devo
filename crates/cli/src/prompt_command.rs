@@ -184,8 +184,8 @@ pub(crate) async fn run_prompt(
             None => eprintln!("devo [prompt] empty response"),
         },
         Err(e) => {
+            let message = e.user_message();
             if output_format == PromptOutputFormat::Jsonl {
-                let message = e.to_string();
                 write_jsonl(&PromptJsonlEvent::Error {
                     session_id: session_state.id.as_str(),
                     message: &message,
@@ -194,8 +194,10 @@ pub(crate) async fn run_prompt(
                     session_id: session_state.id.as_str(),
                     message: &message,
                 })?;
+            } else {
+                eprintln!("prompt failed: {message}");
             }
-            anyhow::bail!("prompt failed: {e}");
+            return Err(anyhow::Error::new(e).context("prompt failed"));
         }
     }
 

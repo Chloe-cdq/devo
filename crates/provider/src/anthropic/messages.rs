@@ -332,43 +332,47 @@ struct AnthropicResponseContentBlock {
 #[async_trait]
 impl ModelProviderSDK for AnthropicProvider {
     async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
-        let body = build_request(&request, false);
-        debug!(
-            provider = "anthropic",
-            api_base = %self.base_url,
-            model = %request.model,
-            messages = request.messages.len(),
-            tools = request.tools.as_ref().map_or(0, Vec::len),
-            max_tokens = request.max_tokens,
-            "sending anthropic completion request"
-        );
+        async {
+            let body = build_request(&request, false);
+            debug!(
+                provider = "anthropic",
+                api_base = %self.base_url,
+                model = %request.model,
+                messages = request.messages.len(),
+                tools = request.tools.as_ref().map_or(0, Vec::len),
+                max_tokens = request.max_tokens,
+                "sending anthropic completion request"
+            );
 
-        let response = self
-            .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
-            .send()
-            .await
-            .context("failed to send anthropic request")?;
-        let response = match response.error_for_status_ref() {
-            Ok(_) => response,
-            Err(_) => {
-                let status = response.status();
-                return Err(invalid_status_error(
-                    "anthropic",
-                    &request.model,
-                    "request",
-                    status,
-                    response,
-                    &body,
-                )
-                .await);
-            }
-        };
+            let response = self
+                .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
+                .send()
+                .await
+                .context("failed to send anthropic request")?;
+            let response = match response.error_for_status_ref() {
+                Ok(_) => response,
+                Err(_) => {
+                    let status = response.status();
+                    return Err(invalid_status_error(
+                        "anthropic",
+                        &request.model,
+                        "request",
+                        status,
+                        response,
+                        &body,
+                    )
+                    .await);
+                }
+            };
 
-        let value: Value = response
-            .json()
-            .await
-            .context("failed to decode anthropic response")?;
-        parse_response(value, &DsmlToolCallHealer::for_request(&request))
+            let value: Value = response
+                .json()
+                .await
+                .context("failed to decode anthropic response")?;
+            parse_response(value, &DsmlToolCallHealer::for_request(&request))
+        }
+        .await
+        .map_err(crate::diagnostic::sanitize_error)
     }
 
     async fn completion_stream(
@@ -391,7 +395,8 @@ impl ModelProviderSDK for AnthropicProvider {
             &body,
             &crate::request_headers(request.extra_body.as_ref()),
         ))
-        .context("failed to create anthropic event source")?;
+        .context("failed to create anthropic event source")
+        .map_err(crate::diagnostic::sanitize_error)?;
         let stream = async_stream::try_stream! {
             let mut message_id = String::new();
             let mut stream_usage = AnthropicStreamUsage::default();
@@ -808,7 +813,9 @@ impl ModelProviderSDK for AnthropicProvider {
             yield StreamEvent::MessageDone { response };
         };
 
-        Ok(Box::pin(stream))
+        Ok(Box::pin(futures::StreamExt::map(stream, |item| {
+            item.map_err(crate::diagnostic::sanitize_error)
+        })))
     }
 
     fn name(&self) -> &str {
@@ -1384,7 +1391,7 @@ fn parse_stop_reason(value: &str) -> StopReason {
 
 fn stream_error(message: String) -> ProviderError {
     ProviderError::StreamError {
-        message,
+        message: message.into(),
         bytes_received: None,
     }
 }

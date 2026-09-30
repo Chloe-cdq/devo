@@ -379,7 +379,7 @@ fn classify_kind(body: &str) -> MemoryKind {
     }
 }
 
-fn contains_secret(body: &str) -> bool {
+pub(super) fn contains_secret(body: &str) -> bool {
     let lower_body = body.to_ascii_lowercase();
     let marker_match = [
         "sk-",

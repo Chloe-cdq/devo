@@ -83,6 +83,18 @@ pub enum MemoryOrigin {
     InferredSession,
 }
 
+/// Bounded, safe inspection data for one automatically recalled entry.
+/// Raw source records and transcript content are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRecallEntry {
+    pub entry_id: MemoryEntryId,
+    pub scope: MemoryScope,
+    pub kind: MemoryKind,
+    pub summary: String,
+    pub source_summary: String,
+}
+
 /// Parameters for an explicit User- or Project-scope memory write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

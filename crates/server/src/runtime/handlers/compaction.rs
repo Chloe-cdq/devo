@@ -480,8 +480,13 @@ impl ServerRuntime {
             Some(turn.turn_id),
             devo_protocol::native::usage::UsagePurpose::Compaction,
         );
-        let summarizer =
-            DefaultHistorySummarizer::with_models(provider, model_slug, request_model, max_tokens);
+        let summarizer = DefaultHistorySummarizer::with_models(
+            provider,
+            model_slug,
+            request_model,
+            max_tokens,
+            /*prepared_memory*/ None,
+        );
 
         let config = CompactionConfig {
             budget,
@@ -876,7 +881,7 @@ impl ServerRuntime {
                     session_id,
                     turn,
                     CompactionTurnOutcome::Failed {
-                        message: format!("compaction failed: {error}"),
+                        message: format!("compaction failed: {}", error.user_message()),
                     },
                     Some(compaction_item_id),
                 )

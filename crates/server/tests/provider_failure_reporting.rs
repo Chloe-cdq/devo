@@ -72,7 +72,7 @@ impl ProviderRouter for ExhaustingRouter {
         if attempt < FAILING_ATTEMPTS {
             return Ok(Box::pin(stream::iter(vec![Err(
                 ProviderError::ProviderServerError {
-                    message: PROVIDER_ERROR_TEXT.to_string(),
+                    message: PROVIDER_ERROR_TEXT.into(),
                     status_code: Some(500),
                     provider_name: Some("openai".to_string()),
                 }

@@ -1030,7 +1030,7 @@ impl ServerRuntime {
         tracing::warn!(
             request_id = %request_id,
             code = ?code,
-            error_message = %message,
+            message_bytes = message.len(),
             "returning protocol error"
         );
         serde_json::to_value(ErrorResponse {

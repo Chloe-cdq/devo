@@ -727,6 +727,7 @@ async fn committed_memory_only_enters_a_new_prepared_turn_snapshot() {
     )
     .expect("open enabled memory runtime");
     let request = PrepareMemoryRequest {
+        query: "remember this fact".into(),
         workspace_root: data_root.path().to_path_buf(),
         session_recall: devo_protocol::native::session::MemorySetting::Inherit,
     };
@@ -748,8 +749,8 @@ async fn committed_memory_only_enters_a_new_prepared_turn_snapshot() {
         .await
         .expect("prepare next snapshot");
 
-    assert!(before.user_entries.is_empty());
-    assert_eq!(after.user_entries.len(), 1);
+    assert!(before.entries.is_empty());
+    assert_eq!(after.entries.len(), 1);
 }
 
 /// Trace: L2-DES-MEM-001 Rev 3 DD-3

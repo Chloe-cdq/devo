@@ -63,7 +63,7 @@ pub enum CompactionError {
     #[error("summarization failed: {message}")]
     SummarizationFailed {
         /// Human-readable failure description.
-        message: String,
+        message: devo_provider::SensitiveErrorText,
     },
     /// The summarizer's context window was exceeded by the input.
     #[error("summarizer context window exceeded")]
@@ -80,6 +80,21 @@ pub enum CompactionError {
         /// Number of retries attempted.
         retries: u32,
     },
+}
+
+impl CompactionError {
+    /// Full compaction failure details for user notifications, never logs.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::SummarizationFailed { message } => {
+                format!("summarization failed: {}", message.expose())
+            }
+            Self::ContextTooLong
+            | Self::EmptyResponse
+            | Self::Canceled
+            | Self::NotPossible { .. } => self.to_string(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

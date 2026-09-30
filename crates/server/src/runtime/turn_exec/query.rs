@@ -49,6 +49,9 @@ impl ServerRuntime {
         } else {
             ToolAgentScope::Parent
         };
+        let prepared_memory = self
+            .prepare_turn_memory(state, turn_id, input, &input_mode)
+            .await;
         let agent_tool_policy = state.agent_tool_policy;
         let session_tool_registry = self.tool_registry_for_actor_state(state);
         let runtime_context = Arc::clone(&state.runtime_context);
@@ -243,6 +246,7 @@ impl ServerRuntime {
                 &runtime,
                 Some(callback),
                 QueryOptions {
+                    prepared_memory,
                     output_store,
                     journal: state.record.as_ref().map(|record| {
                         Arc::new(super::journal::RolloutToolJournal::new(

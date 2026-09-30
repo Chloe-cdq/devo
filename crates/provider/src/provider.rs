@@ -90,7 +90,10 @@ pub trait ProviderAdapter: ModelProviderSDK {
 /// A unified interface for model provider SDKs.
 ///
 /// Implementations handle the specifics of each provider SDK while exposing a
-/// common completion and completion-stream API.
+/// common completion and completion-stream API. Failures must cross
+/// [`crate::diagnostic::sanitize_error`] before being returned, including each
+/// stream error item. Diagnostic formatting must never expose response bodies;
+/// clients obtain private details through explicit user-facing projections.
 #[async_trait]
 pub trait ModelProviderSDK: Send + Sync {
     /// Send a request and get a complete response.

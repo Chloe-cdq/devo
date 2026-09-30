@@ -413,11 +413,13 @@ impl ServerRuntime {
                 result: devo_protocol::native::rpc_admin::ProviderValidateResult { reply_preview },
             })
             .expect("serialize canonical provider/validate response"),
-            Err(error) => self.error_response(
-                request_id,
-                ProtocolErrorCode::InternalError,
-                error.to_string(),
-            ),
+            Err(error) => {
+                let message = error.downcast_ref::<devo_core::AgentError>().map_or_else(
+                    || devo_provider::diagnostic::user_message_for_error(&error),
+                    devo_core::AgentError::user_message,
+                );
+                self.error_response(request_id, ProtocolErrorCode::InternalError, message)
+            }
         }
     }
 }

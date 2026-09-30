@@ -87,6 +87,7 @@ use crate::history::History;
 use crate::history::TokenInfo;
 use crate::history::compaction::CompactAction;
 use crate::history::compaction::CompactionConfig;
+use crate::history::compaction::CompactionError;
 use crate::history::compaction::CompactionKind;
 use crate::history::compaction::compact_history;
 use crate::history::summarizer::DefaultHistorySummarizer;
@@ -125,6 +126,7 @@ fn hosted_tools_for_web_search(
 ///   `context_too_long`; keeps from the latest user message onward.
 struct CompactionModelRequest<'a> {
     journal: Option<&'a dyn crate::durable_execution::ToolIntentJournal>,
+    prepared_memory: Option<Arc<str>>,
     provider: &'a Arc<dyn ModelProviderSDK>,
     model_slug: &'a str,
     request_model: &'a str,
@@ -161,6 +163,7 @@ async fn summarize_and_compact(
         model.model_slug,
         model.request_model,
         model.max_tokens,
+        model.prepared_memory,
     );
 
     emit_query_event(on_event, QueryEvent::ContextCompactionStarted).await;
@@ -211,11 +214,23 @@ async fn summarize_and_compact(
             .await;
         }
         Err(e) => {
-            warn!("LLM compaction failed: {e}");
+            let error_kind = match &e {
+                CompactionError::SummarizationFailed { .. } => "summarization_failed",
+                CompactionError::ContextTooLong => "context_too_long",
+                CompactionError::EmptyResponse => "empty_response",
+                CompactionError::Canceled => "canceled",
+                CompactionError::NotPossible { .. } => "not_possible",
+            };
+            warn!(
+                error_kind,
+                provider = model.provider.name(),
+                model = %model.request_model,
+                "LLM compaction failed"
+            );
             emit_query_event(
                 on_event,
                 QueryEvent::ContextCompactionFailed {
-                    message: e.to_string(),
+                    message: e.user_message(),
                 },
             )
             .await;
@@ -568,6 +583,7 @@ pub async fn query(
                 &on_event,
                 CompactionModelRequest {
                     journal: options.journal.as_deref(),
+                    prepared_memory: options.prepared_memory.clone(),
                     provider: &compaction_provider,
                     model_slug: &live_compaction_model_slug,
                     request_model: &live_compaction_request_model,
@@ -658,6 +674,13 @@ pub async fn query(
             &prefetched_user_inputs,
             &active_turn_config.model.input_modalities,
         );
+        if let Some(memory) = &options.prepared_memory {
+            let insert_at = messages
+                .iter()
+                .rposition(is_visible_user_text_message)
+                .unwrap_or(messages.len());
+            messages.insert(insert_at, request_text_message(memory.to_string()));
+        }
         if let Some(goal_context) = session.goal_context_prompt() {
             insert_goal_context_message(&mut messages, &goal_context);
         }
@@ -777,6 +800,7 @@ pub async fn query(
                             &on_event,
                             CompactionModelRequest {
                                 journal: options.journal.as_deref(),
+                                prepared_memory: options.prepared_memory.clone(),
                                 provider: &compaction_provider,
                                 model_slug: &retry_compaction_model_slug,
                                 request_model: &retry_compaction_request_model,
@@ -811,7 +835,7 @@ pub async fn query(
                             &turn_config.model.slug,
                             retry_count,
                             backoff,
-                            &retry_error.to_string(),
+                            &devo_provider::diagnostic::user_message_for_error(&retry_error),
                         )
                         .await?;
                         session.turn_count -= 1;
