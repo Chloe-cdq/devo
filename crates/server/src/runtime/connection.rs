@@ -1397,6 +1397,7 @@ impl SubscriptionFilter {
 
 #[cfg(test)]
 mod tests {
+    mod external_context;
     mod journal;
     mod memory_settings;
     mod permission_snapshot;

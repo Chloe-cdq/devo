@@ -13,6 +13,15 @@ borrowed fork history, unfinished turns, damaged journals, and sessions that
 used Web, MCP, or Tool Search are excluded. Journals larger than 1 MiB are
 skipped to bound background input work.
 
+Actual external-tool use adds a monotonic, fsynced `ExternalContextUsed` fact
+to the session rollout. Local Web, MCP, and Tool Search calls require that
+write before dispatch. Hosted Web use is marked when the provider reports the
+call; a marker write failure aborts the turn, and failed or incomplete turns
+are ineligible. Subagent use also marks its durable parent chain because child
+results can enter a parent conversation. Merely offering hosted Web capability
+does not exclude a text-only session. The source reader also recognizes older
+tool records without this fact.
+
 Only persisted user text (including mid-turn steering corrections) and assistant
 conversational text are sent to the extractor. Attachments, tool results, reasoning, approvals, hidden context, and
 system/developer instructions are excluded. Credential-bearing sources and
@@ -49,6 +58,23 @@ have a two-minute lease and a unique owner. Concurrent processes cannot claim
 the same live lease. Transient failures retry after 30 seconds and then 60
 seconds, with three attempts total. Permanent and exhausted failures remain
 visible through Native `memory/status` using content-free error classes.
+
+Deleting a source session durably fences its ID before removing its rollout.
+The memory transaction removes that source's candidates, job details, and
+evidence; an inferred entry is retired when its last evidence disappears.
+Explicit entries remain. Fresh, uncontested evidence from a different source
+can reactivate an entry retired only by source deletion; forget revocations
+still block inference. A stale scan or in-flight extraction cannot recreate
+memory from a fenced source. Affected projection scopes are durably recorded
+and rebuilt from SQLite, including on retry after a projection write failure.
+If projection repair fails, session deletion returns an error before removing
+the rollout; retrying repairs the projection and completes deletion.
+
+Expired candidates are pruned on startup and before a scan. Completed job
+details older than `memory.candidate_and_job_retention_days` (default 30) are
+replaced by a minimal source/watermark/completion-time receipt, so expiry does
+not cause a processed source to be extracted again or erase the last successful
+scan timestamp. Active and retryable jobs remain.
 
 Candidate validation, scoped identity, evidence, revocation/reset checks, FTS,
 and job completion commit together. Equivalent claims add evidence; inferred

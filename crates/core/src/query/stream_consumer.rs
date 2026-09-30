@@ -8,9 +8,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures::Stream;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -58,6 +60,9 @@ pub(crate) async fn run_provider_attempt(
     request: ModelRequest,
     session: &mut SessionState,
     on_event: &Option<EventCallback>,
+    on_hosted_external_context_use: &Option<
+        Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>,
+    >,
     cancel_token: Option<&CancellationToken>,
     model_slug: &str,
 ) -> Result<AssembledModelTurn, ProviderAttemptError> {
@@ -79,6 +84,7 @@ pub(crate) async fn run_provider_attempt(
         stream,
         session,
         on_event,
+        on_hosted_external_context_use,
         cancel_token,
         provider.name(),
         model_slug,
@@ -103,6 +109,9 @@ async fn consume_provider_stream(
     mut stream: ProviderEventStream,
     session: &mut SessionState,
     on_event: &Option<EventCallback>,
+    on_hosted_external_context_use: &Option<
+        Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>,
+    >,
     cancel_token: Option<&CancellationToken>,
     provider_name: &str,
     model_slug: &str,
@@ -189,12 +198,13 @@ async fn consume_provider_stream(
                         acc.hosted_tool_inputs.insert(id.clone(), (index, name.clone(), input.clone()));
                         emit_hosted_tool_start(
                             on_event,
+                            on_hosted_external_context_use,
                             &mut acc.emitted_hosted_tool_starts,
                             &id,
                             &name,
                             &input,
                         )
-                        .await;
+                        .await?;
                     }
                     Ok(StreamEvent::HostedToolCallDone {
                         index,
@@ -213,12 +223,13 @@ async fn consume_provider_stream(
                         acc.hosted_tool_inputs.insert(id.clone(), (index, name.clone(), input.clone()));
                         emit_hosted_tool_start(
                             on_event,
+                            on_hosted_external_context_use,
                             &mut acc.emitted_hosted_tool_starts,
                             &id,
                             &name,
                             &input,
                         )
-                        .await;
+                        .await?;
                         emit_hosted_tool_result(
                             on_event,
                             &mut acc.emitted_hosted_tool_results,
@@ -303,12 +314,15 @@ async fn consume_provider_stream(
         }
     }
 
-    assemble_model_turn(session, on_event, acc).await
+    assemble_model_turn(session, on_event, on_hosted_external_context_use, acc).await
 }
 
 async fn assemble_model_turn(
     session: &SessionState,
     on_event: &Option<EventCallback>,
+    on_hosted_external_context_use: &Option<
+        Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>,
+    >,
     acc: StreamAccumulation,
 ) -> Result<AssembledModelTurn, ProviderAttemptError> {
     let StreamAccumulation {
@@ -404,12 +418,13 @@ async fn assemble_model_turn(
                     hosted_tool_inputs.insert(id.clone(), (index, name.clone(), input.clone()));
                     emit_hosted_tool_start(
                         on_event,
+                        on_hosted_external_context_use,
                         &mut emitted_hosted_tool_starts,
                         &id,
                         &name,
                         &input,
                     )
-                    .await;
+                    .await?;
                     if output.is_some() || status.is_some() {
                         emit_hosted_tool_result(
                             on_event,
@@ -488,12 +503,13 @@ async fn assemble_model_turn(
     for (id, name, input) in pending_hosted_tools {
         emit_hosted_tool_start(
             on_event,
+            on_hosted_external_context_use,
             &mut emitted_hosted_tool_starts,
             &id,
             &name,
             &input,
         )
-        .await;
+        .await?;
         emit_hosted_tool_result(
             on_event,
             &mut emitted_hosted_tool_results,
@@ -613,12 +629,19 @@ fn hosted_tool_input_or_previous(
 
 async fn emit_hosted_tool_start(
     on_event: &Option<EventCallback>,
+    on_hosted_external_context_use: &Option<
+        Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>,
+    >,
     emitted_tool_use_starts: &mut HashSet<String>,
     id: &str,
     name: &str,
     input: &serde_json::Value,
-) {
-    if emitted_tool_use_starts.insert(id.to_string()) {
+) -> Result<(), ProviderAttemptError> {
+    if !emitted_tool_use_starts.contains(id) {
+        if let Some(mark) = on_hosted_external_context_use {
+            mark().await.map_err(ProviderAttemptError::Fatal)?;
+        }
+        emitted_tool_use_starts.insert(id.to_string());
         emit_query_event(
             on_event,
             QueryEvent::ToolUseStart {
@@ -629,6 +652,7 @@ async fn emit_hosted_tool_start(
         )
         .await;
     }
+    Ok(())
 }
 
 struct HostedToolResultEvent<'a> {

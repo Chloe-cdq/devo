@@ -65,7 +65,9 @@ impl MemoryRuntime {
         let owned: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_jobs
              WHERE job_id = ?1 AND lease_owner = ?2 AND state = 'running' AND lease_until > ?3
-                AND source_session_id = ?4 AND source_watermark = ?5)",
+                AND source_session_id = ?4 AND source_watermark = ?5
+                AND NOT EXISTS (SELECT 1 FROM memory_deleted_sources
+                    WHERE source_session_id = ?4))",
             rusqlite::params![
                 claim.id,
                 claim.owner,
@@ -171,6 +173,22 @@ impl MemoryRuntime {
                     transaction.execute(
                         "UPDATE memory_entries SET updated_at = ?1 WHERE entry_id = ?2",
                         rusqlite::params![timestamp, existing.entry_id],
+                    )?;
+                    (Some(existing.entry_id), "accepted")
+                }
+                super::proposal_relations::InferredAdmission::ExistingRetiredUncontested(
+                    existing,
+                ) => {
+                    transaction.execute(
+                        "UPDATE memory_entries SET state = 'active', updated_at = ?1
+                         WHERE entry_id = ?2",
+                        rusqlite::params![timestamp, existing.entry_id],
+                    )?;
+                    transaction.execute(
+                        "INSERT INTO memory_entries_fts(entry_id, normalized_key, body)
+                         SELECT entry_id, normalized_key, body FROM memory_entries
+                         WHERE entry_id = ?1",
+                        [&existing.entry_id],
                     )?;
                     (Some(existing.entry_id), "accepted")
                 }

@@ -86,6 +86,25 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
             UNIQUE(source_session_id, source_watermark)
         );
 
+        CREATE TABLE IF NOT EXISTS memory_deleted_sources (
+            source_session_id TEXT PRIMARY KEY NOT NULL,
+            deleted_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_deleted_source_scopes (
+            source_session_id TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            PRIMARY KEY(source_session_id, scope_type, scope_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_job_receipts (
+            source_session_id TEXT NOT NULL,
+            source_watermark TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            PRIMARY KEY(source_session_id, source_watermark)
+        );
+
         CREATE TABLE IF NOT EXISTS memory_scope_state (
             scope_type TEXT NOT NULL,
             scope_id TEXT NOT NULL,

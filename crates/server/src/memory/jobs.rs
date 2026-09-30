@@ -70,6 +70,15 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memory_deleted_sources WHERE source_session_id = ?1)
+                OR EXISTS(SELECT 1 FROM memory_job_receipts
+                    WHERE source_session_id = ?1 AND source_watermark = ?2)",
+            rusqlite::params![source.session_id.as_str(), source.watermark],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(None);
+        }
         let timestamp = now.to_rfc3339_opts(SecondsFormat::Millis, /*use_z*/ true);
         let lease_until = (now + Duration::minutes(2))
             .to_rfc3339_opts(SecondsFormat::Millis, /*use_z*/ true);

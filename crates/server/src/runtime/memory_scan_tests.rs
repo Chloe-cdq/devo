@@ -296,6 +296,126 @@ async fn scan(runtime: &Arc<ServerRuntime>, root: &std::path::Path) -> Result<()
         .await
 }
 
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: deleting a processed source retires its inferred entry and removes source detail.
+#[tokio::test]
+async fn deleting_processed_source_removes_its_memory() -> Result<()> {
+    let (root, runtime, _) = setup(/*sources*/ 1, /*permits*/ 1)?;
+    let source_id = runtime.deps.db.list_root_sessions()?[0].session_id;
+    scan(&runtime, root.path()).await?;
+    let memory = runtime.memory.as_ref().unwrap();
+    let before = memory
+        .execute_command(crate::memory::MemoryCommand::List(
+            crate::memory::ListMemoryRequest::default(),
+        ))
+        .await?;
+    let crate::memory::MemoryCommandResult::List(before) = before else {
+        panic!("list result")
+    };
+    assert_eq!(before.data.len(), 1);
+
+    assert_eq!(
+        runtime
+            .delete_session_tree(source_id)
+            .await
+            .map_err(anyhow::Error::msg)?,
+        vec![source_id]
+    );
+    let after = memory
+        .execute_command(crate::memory::MemoryCommand::List(
+            crate::memory::ListMemoryRequest::default(),
+        ))
+        .await?;
+    let crate::memory::MemoryCommandResult::List(after) = after else {
+        panic!("list result")
+    };
+    let entries = after.data;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].state,
+        devo_protocol::native::rpc_memory::MemoryState::Retired
+    );
+    let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+    let counts: (i64, i64, i64) = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM memory_candidates),
+                (SELECT COUNT(*) FROM memory_evidence),
+                (SELECT COUNT(*) FROM memory_jobs)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(counts, (0, 0, 0));
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: deletion wins over an extractor response already in flight.
+#[tokio::test]
+async fn deleting_source_during_extraction_prevents_late_commit() -> Result<()> {
+    let (root, runtime, provider) = setup(/*sources*/ 1, /*permits*/ 0)?;
+    let source_id = runtime.deps.db.list_root_sessions()?[0].session_id;
+    let path = root.path().to_path_buf();
+    let scanning = Arc::clone(&runtime);
+    let task = tokio::spawn(async move { scan(&scanning, &path).await });
+    tokio::time::timeout(Duration::from_secs(10), provider.entered.notified()).await?;
+
+    assert_eq!(
+        runtime
+            .delete_session_tree(source_id)
+            .await
+            .map_err(anyhow::Error::msg)?,
+        vec![source_id]
+    );
+    provider.release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(10), task).await???;
+
+    let memory = runtime.memory.as_ref().unwrap();
+    let result = memory
+        .execute_command(crate::memory::MemoryCommand::List(
+            crate::memory::ListMemoryRequest::default(),
+        ))
+        .await?;
+    let crate::memory::MemoryCommandResult::List(entries) = result else {
+        panic!("list result")
+    };
+    assert_eq!(entries.data, vec![]);
+    let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+    let job_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM memory_jobs WHERE source_session_id = ?1",
+        [source_id.to_string()],
+        |row| row.get(0),
+    )?;
+    assert_eq!(job_count, 0);
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: a projection failure leaves session deletion retryable after durable memory cleanup.
+#[tokio::test]
+async fn source_delete_retries_after_projection_write_failure() -> Result<()> {
+    let (root, runtime, _) = setup(/*sources*/ 1, /*permits*/ 1)?;
+    let source_id = runtime.deps.db.list_root_sessions()?[0].session_id;
+    scan(&runtime, root.path()).await?;
+    let projection_dir = root.path().join("memory/user");
+    std::fs::remove_file(projection_dir.join("MEMORY.md"))?;
+    std::fs::remove_dir(&projection_dir)?;
+    std::fs::write(&projection_dir, "blocked")?;
+
+    assert!(runtime.delete_session_tree(source_id).await.is_err());
+    assert!(runtime.deps.db.get_session(&source_id)?.is_some());
+    std::fs::remove_file(&projection_dir)?;
+    assert_eq!(
+        runtime
+            .delete_session_tree(source_id)
+            .await
+            .map_err(anyhow::Error::msg)?,
+        vec![source_id]
+    );
+    assert!(runtime.deps.db.get_session(&source_id)?.is_none());
+    let projection = std::fs::read_to_string(projection_dir.join("MEMORY.md"))?;
+    assert!(projection.contains("state: retired"));
+    Ok(())
+}
+
 /// Trace: L2-DES-MEM-001 Operational Scheduling
 /// Verifies: unknown and below-threshold quotas never claim or call, while exactly 25 percent admits a source.
 #[tokio::test]

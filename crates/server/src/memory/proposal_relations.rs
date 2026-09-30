@@ -80,6 +80,7 @@ pub(super) fn record_claim(
 pub(super) enum InferredAdmission {
     New,
     Existing(ExistingMemoryEntry),
+    ExistingRetiredUncontested(ExistingMemoryEntry),
     ExplicitAuthority,
     Conflict,
     IdentityCollision,
@@ -148,8 +149,17 @@ pub(super) fn admit_inferred(
         return Ok(InferredAdmission::ExplicitAuthority);
     }
     if let Some(existing) = existing {
-        // Inference can add supporting evidence, but cannot reactivate a
-        // conflicted or retired entry. Its lifecycle state is already reconciled.
+        // A source deletion retires an inferred entry without revoking its
+        // identity. Fresh, uncontested evidence can restore it; forget
+        // revocations were checked by the caller before admission.
+        let state: String = transaction.query_row(
+            "SELECT state FROM memory_entries WHERE entry_id = ?1",
+            [&existing.entry_id],
+            |row| row.get(0),
+        )?;
+        if state == "retired" && competitor.is_none() {
+            return Ok(InferredAdmission::ExistingRetiredUncontested(existing));
+        }
         return Ok(InferredAdmission::Existing(existing));
     }
     if competitor.is_some() {

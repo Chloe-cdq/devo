@@ -1,3 +1,7 @@
+mod external_context;
+#[cfg(test)]
+#[path = "persistence/external_context_tests.rs"]
+mod external_context_tests;
 mod memory_settings;
 mod write_path;
 #[cfg(test)]
@@ -104,6 +108,7 @@ pub(crate) struct RolloutStore {
 pub(crate) struct WritePathState {
     projector: LegacyProjector,
     next_line_index: u64,
+    external_context_used: bool,
 }
 
 impl std::fmt::Debug for RolloutStore {
@@ -1092,12 +1097,14 @@ fn discard_rollout_crash_tail(rollout_path: &Path) -> Result<()> {
 fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
     let mut projector = LegacyProjector::new();
     let mut next_line_index = 0u64;
+    let mut external_context_used = false;
     let file = match File::open(rollout_path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(WritePathState {
                 projector,
                 next_line_index,
+                external_context_used: false,
             });
         }
         Err(error) => {
@@ -1119,7 +1126,18 @@ fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
                     format!("hydrate projector from {}", rollout_path.display())
                 })?;
             }
-            Ok(ParsedRolloutLine::V2(v2)) => projector.observe_v2_line(&v2),
+            Ok(ParsedRolloutLine::V2(v2)) => {
+                if matches!(
+                    v2.as_ref(),
+                    RolloutLineV2::Internal {
+                        entry: devo_core::InternalRecordV2::ExternalContextUsed,
+                        ..
+                    }
+                ) {
+                    external_context_used = true;
+                }
+                projector.observe_v2_line(&v2);
+            }
             Err(RolloutLineReadError::TruncatedTail)
                 if rollout_remainder_is_crash_tail(&mut lines) =>
             {
@@ -1149,6 +1167,7 @@ fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
     Ok(WritePathState {
         projector,
         next_line_index,
+        external_context_used,
     })
 }
 

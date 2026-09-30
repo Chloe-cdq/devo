@@ -25,6 +25,7 @@ mod runtime_test_support;
 pub(crate) mod scan;
 mod schema;
 mod source;
+mod source_lifecycle;
 mod stored_values;
 #[cfg(test)]
 mod test_support;
@@ -181,6 +182,7 @@ impl MemoryRuntime {
             memory_root,
             connection: Mutex::new(connection),
         };
+        runtime.prune_expired(Utc::now())?;
         runtime.rebuild_projections()?;
         Ok(runtime)
     }
@@ -425,9 +427,12 @@ fn count_rows(connection: &Connection, sql: &str) -> Result<u64, MemoryError> {
 
 fn last_successful_scan_at(connection: &Connection) -> Result<Option<DateTime<Utc>>, MemoryError> {
     let timestamp = connection.query_row(
-        "SELECT MAX(updated_at)
-         FROM memory_jobs
-         WHERE state = 'completed' AND job_kind = 'source_scan'",
+        "SELECT (SELECT timestamp FROM (
+             SELECT updated_at AS timestamp FROM memory_jobs
+             WHERE state = 'completed' AND job_kind = 'source_scan'
+             UNION ALL
+             SELECT completed_at AS timestamp FROM memory_job_receipts
+         ) ORDER BY julianday(timestamp) DESC LIMIT 1)",
         [],
         |row| row.get::<_, Option<String>>(0),
     )?;

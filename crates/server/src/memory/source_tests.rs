@@ -203,6 +203,48 @@ fn detects_native_mcp_tool_source_even_without_mcp_name() {
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: a failed hosted marker write cannot become eligible after a later turn.
+#[test]
+fn failed_turn_remains_ineligible_after_later_success() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = legacy(dir.path());
+    lines[1]["Turn"]["turn"]["status"] = json!("Failed");
+    let mut later_turn = lines[1].clone();
+    later_turn["Turn"]["turn"]["id"] = json!("00000000-0000-0000-0000-0000000000c2");
+    later_turn["Turn"]["turn"]["status"] = json!("Completed");
+    lines.push(later_turn);
+    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: a later turn record cannot erase a failed marker-write fallback.
+#[test]
+fn failed_turn_remains_ineligible_after_turn_supersession() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = legacy(dir.path());
+    lines[1]["Turn"]["turn"]["status"] = json!("Failed");
+    let mut replacement = lines[1].clone();
+    replacement["Turn"]["turn"]["status"] = json!("Completed");
+    lines.push(replacement);
+    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: a durable session fact excludes an otherwise clean source.
+#[test]
+fn external_context_marker_excludes_clean_source() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = v2(&legacy(dir.path()));
+    let marker = json!({"v":2,"kind":"internal","timestamp":"2026-07-01T12:00:20Z","sessionId":SESSION,"turnId":null,"seq":99,"entry":{"type":"externalContextUsed"}});
+    assert!(matches!(
+        parse_rollout_line(&marker.to_string()),
+        Ok(ParsedRolloutLine::V2(_))
+    ));
+    lines.push(marker);
+    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+}
+
 /// Trace: L2-DES-MEM-001 Rev 4.
 /// Verifies: hidden context tools and attachments never enter messages.
 #[test]

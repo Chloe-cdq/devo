@@ -149,6 +149,7 @@ mod provider_discovery;
 mod reference_search;
 mod session_actor;
 mod session_cache;
+mod session_deletion;
 mod session_interactive;
 mod session_title;
 mod skills;

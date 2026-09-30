@@ -1,6 +1,7 @@
 mod approval_resume;
 mod context_compaction;
 mod event_stream;
+mod external_context;
 mod failure;
 mod finalize;
 mod followup;

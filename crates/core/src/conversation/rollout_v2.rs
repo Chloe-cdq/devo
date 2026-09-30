@@ -223,6 +223,9 @@ pub enum InternalRecordV2 {
     /// One append-only model-call accounting entry. Unlike turn summary usage,
     /// this preserves failed attempts and non-turn overhead calls.
     UsageRecord { record: UsageRecord },
+    /// Session-wide, monotonic fact that an external-context tool was invoked.
+    /// This is internal replay data and has no Native session wire field.
+    ExternalContextUsed,
     /// One field-level session settings change (L2-DES-CONV-002 DD-4). The
     /// last line per field wins during replay; line position provides the
     /// total order, and `epoch` annotates the settings-write sequence for

@@ -167,6 +167,10 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                         }
                     }
                     RolloutLineV2::Internal {
+                        entry: InternalRecordV2::ExternalContextUsed,
+                        ..
+                    } => return Ok(None),
+                    RolloutLineV2::Internal {
                         entry: InternalRecordV2::SessionSettings { schema_version, .. },
                         ..
                     } if *schema_version != 1 => return Ok(None),
@@ -231,6 +235,14 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                     session = Some(record);
                 }
                 RolloutLine::Turn(line) => {
+                    // A later turn revision or rollback cannot erase a failed
+                    // external-context marker write from the source history.
+                    if matches!(
+                        line.turn.status,
+                        devo_protocol::TurnStatus::Failed | devo_protocol::TurnStatus::Interrupted
+                    ) {
+                        return Ok(None);
+                    }
                     if !session
                         .as_ref()
                         .is_some_and(|session| session.id == line.turn.session_id)
@@ -373,9 +385,10 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                     devo_protocol::TurnStatus::Pending
                     | devo_protocol::TurnStatus::Running
                     | devo_protocol::TurnStatus::WaitingApproval => true,
-                    devo_protocol::TurnStatus::Interrupted
-                    | devo_protocol::TurnStatus::Completed
-                    | devo_protocol::TurnStatus::Failed => false,
+                    devo_protocol::TurnStatus::Interrupted | devo_protocol::TurnStatus::Failed => {
+                        true
+                    }
+                    devo_protocol::TurnStatus::Completed => false,
                 }
         })
         || native_items

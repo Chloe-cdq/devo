@@ -30,6 +30,8 @@ type ProgressCallbackArc = Arc<ProgressCallback>;
 type CompletionCallback = dyn Fn(ToolCallResult) -> BoxFuture<'static, ()> + Send + Sync;
 type CompletionCallbackArc = Arc<CompletionCallback>;
 type ExecutionStartCallback = dyn Fn(ToolCall) -> BoxFuture<'static, ()> + Send + Sync;
+type ExternalContextCallback =
+    dyn Fn(ToolCall) -> BoxFuture<'static, Result<(), String>> + Send + Sync;
 type ExecutionStartCallbackArc = Arc<ExecutionStartCallback>;
 type PermissionFuture = futures::future::BoxFuture<'static, Result<PermissionGrant, String>>;
 type PermissionCheckFn = dyn Fn(ToolPermissionRequest) -> PermissionFuture + Send + Sync;
@@ -371,6 +373,19 @@ impl ToolRuntime {
             }
         }
 
+        if (matches!(
+            tool_name,
+            "web_search" | "webfetch" | "web_fetch" | "ToolSearch"
+        ) || tool_name.starts_with("mcp__"))
+            && let Some(callback) = &self.execution_options.on_external_context_use
+            && let Err(error) = callback(call.clone()).await
+        {
+            return ToolCallResult::error(
+                &call.id,
+                &format!("external context marker could not be persisted: {error}"),
+            );
+        }
+
         if let Some(callback) = &self.execution_options.on_tool_execution_start {
             callback(call.clone()).await;
         }
@@ -618,6 +633,9 @@ fn canonical_tool_name<'a>(registry: &ToolRegistry, tool_name: &'a str) -> &'a s
         {
             "webfetch"
         }
+        "tool-search" | "tool_search" | "loadtool" if registry.spec("ToolSearch").is_some() => {
+            "ToolSearch"
+        }
         _ => tool_name,
     }
 }
@@ -792,6 +810,7 @@ pub struct ToolExecutionOptions {
     pub budgets: ToolBudgets,
     pub cancel_token: CancellationToken,
     pub on_tool_execution_start: Option<ExecutionStartCallbackArc>,
+    pub on_external_context_use: Option<Arc<ExternalContextCallback>>,
 }
 
 impl std::fmt::Debug for ToolExecutionOptions {
@@ -820,6 +839,7 @@ impl Default for ToolExecutionOptions {
             },
             cancel_token: CancellationToken::new(),
             on_tool_execution_start: None,
+            on_external_context_use: None,
         }
     }
 }
@@ -1617,6 +1637,82 @@ mod tests {
         Arc::new(builder.build())
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+    /// Verifies: a failed marker write blocks local external-tool dispatch.
+    #[tokio::test]
+    async fn external_tool_persistence_failure_prevents_dispatch() {
+        let registry = make_registry();
+        let mut builder = ToolRegistryBuilder::new();
+        let mut web_spec = registry.spec("read_tool").unwrap().clone();
+        web_spec.name = "web_fetch".to_string();
+        builder.push_spec(web_spec);
+        builder.register_handler("web_fetch", Arc::clone(registry.get("read_tool").unwrap()));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started_for_callback = Arc::clone(&started);
+        let runtime = ToolRuntime::new_with_context_and_options(
+            Arc::new(builder.build()),
+            PermissionChecker::always_allow(),
+            ToolRuntimeContext::default(),
+            ToolExecutionOptions {
+                on_external_context_use: Some(Arc::new(|_| {
+                    Box::pin(async { Err("marker write failed".to_string()) })
+                })),
+                on_tool_execution_start: Some(Arc::new(move |_| {
+                    let started = Arc::clone(&started_for_callback);
+                    Box::pin(async move {
+                        started.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })
+                })),
+                ..ToolExecutionOptions::default()
+            },
+        );
+        let result = runtime
+            .execute_batch(&[ToolCall {
+                id: "external".to_string(),
+                name: "web_fetch".to_string(),
+                input: serde_json::json!({}),
+            }])
+            .await;
+        assert!(result[0].is_error);
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+    /// Verifies: Tool Search aliases require the same persisted marker as the canonical tool.
+    #[tokio::test]
+    async fn tool_search_invocation_aliases_hit_external_context_hook() {
+        let registry = make_registry();
+        let mut builder = ToolRegistryBuilder::new();
+        let mut spec = registry.spec("read_tool").unwrap().clone();
+        spec.name = "ToolSearch".to_string();
+        builder.push_spec(spec);
+        builder.register_handler("ToolSearch", Arc::clone(registry.get("read_tool").unwrap()));
+        let runtime = ToolRuntime::new_with_context_and_options(
+            Arc::new(builder.build()),
+            PermissionChecker::always_allow(),
+            ToolRuntimeContext::default(),
+            ToolExecutionOptions {
+                on_external_context_use: Some(Arc::new(|_| {
+                    Box::pin(async { Err("marker write failed".to_string()) })
+                })),
+                ..ToolExecutionOptions::default()
+            },
+        );
+        for name in ["ToolSearch", "tool-search", "tool_search", "loadtool"] {
+            let result = runtime
+                .execute_batch(&[ToolCall {
+                    id: name.to_string(),
+                    name: name.to_string(),
+                    input: serde_json::json!({}),
+                }])
+                .await;
+            assert_eq!(
+                result[0].content.clone().into_string(),
+                "external context marker could not be persisted: marker write failed",
+                "{name}"
+            );
+        }
+    }
     #[tokio::test]
     async fn unknown_tool_returns_error() {
         let registry = make_registry();
@@ -3110,6 +3206,7 @@ deny = ["/etc/passwd"]
                 },
                 cancel_token: CancellationToken::new(),
                 on_tool_execution_start: None,
+                on_external_context_use: None,
             },
         );
         let call = ToolCall {
@@ -3168,6 +3265,7 @@ deny = ["/etc/passwd"]
                 },
                 cancel_token,
                 on_tool_execution_start: None,
+                on_external_context_use: None,
             },
         );
         let call = ToolCall {

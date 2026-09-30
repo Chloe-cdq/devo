@@ -160,3 +160,113 @@ async fn foreground_turn_completes_while_extraction_is_blocked() -> Result<()> {
     provider.release.add_permits(1);
     Ok(())
 }
+
+struct HostedGate {
+    entered: Arc<Notify>,
+    release: Arc<Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl ModelProviderSDK for HostedGate {
+    async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        anyhow::bail!("hosted test expects a stream")
+    }
+
+    async fn completion_stream(
+        &self,
+        _request: ModelRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        use futures::StreamExt;
+
+        let entered = Arc::clone(&self.entered);
+        let release = Arc::clone(&self.release);
+        let start = StreamEvent::HostedToolCallStart {
+            index: 0,
+            id: "hosted-web".into(),
+            name: "web_search".into(),
+            input: serde_json::json!({"query":"Rust"}),
+        };
+        let done = StreamEvent::MessageDone {
+            response: ModelResponse {
+                id: "hosted-response".into(),
+                content: vec![ResponseContent::Text("done".into())],
+                stop_reason: Some(StopReason::EndTurn),
+                usage: Usage::default(),
+                metadata: ResponseMetadata::default(),
+            },
+        };
+        Ok(Box::pin(futures::stream::iter([Ok(start)]).chain(
+            futures::stream::once(async move {
+                entered.notify_one();
+                release.acquire().await?.forget();
+                Ok(done)
+            }),
+        )))
+    }
+
+    fn name(&self) -> &str {
+        "hosted-test-provider"
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7, L2-DES-SERVER-002.
+/// Verifies: a live hosted-tool marker is durable while the active turn still answers read RPCs.
+#[tokio::test]
+async fn hosted_marker_persists_during_active_turn_without_blocking_ping() -> Result<()> {
+    let root = TempDir::new()?;
+    let provider = Arc::new(HostedGate {
+        entered: Arc::new(Notify::new()),
+        release: Arc::new(Semaphore::new(/*permits*/ 0)),
+    });
+    let runtime = support::build_runtime(root.path(), provider.clone())?;
+    let (connection, mut notifications) = support::initialize_connection(&runtime).await?;
+    let session = support::start_session(&runtime, connection, root.path()).await?;
+    let started = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({"id":11,"method":"turn/start","params":{
+                "sessionId":session,"input":[{"type":"text","text":"Search the web"}],
+                "idempotencyKey":"hosted-marker-integration"
+            }}),
+        )
+        .await
+        .context("turn/start")?;
+    assert!(started.get("result").is_some());
+    tokio::time::timeout(Duration::from_secs(5), provider.entered.notified()).await?;
+
+    let ping = tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.handle_incoming(
+            connection,
+            serde_json::json!({"id":12,"method":"runtime/ping","params":{}}),
+        ),
+    )
+    .await?
+    .context("ping")?;
+    assert_eq!(ping.get("error"), None);
+    let db = devo_server::db::Database::open(root.path().join("goal_continuation.db"))?;
+    let rollout = db
+        .get_session_index(&session)?
+        .context("session index")?
+        .rollout_path
+        .context("rollout path")?;
+    let marker_count = std::fs::read_to_string(rollout)?
+        .lines()
+        .filter_map(|line| devo_core::parse_rollout_line(line).ok())
+        .filter(|line| {
+            matches!(line, devo_core::ParsedRolloutLine::V2(v2)
+            if matches!(v2.as_ref(), devo_core::RolloutLineV2::Internal {
+                entry: devo_core::InternalRecordV2::ExternalContextUsed, ..
+            }))
+        })
+        .count();
+    assert_eq!(marker_count, 1);
+
+    provider.release.add_permits(1);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        support::collect_until_turn_completed(&mut notifications),
+    )
+    .await??;
+    Ok(())
+}

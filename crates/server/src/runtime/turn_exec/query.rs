@@ -83,6 +83,11 @@ impl ServerRuntime {
                     .push_message(Message::user(input_message.clone()));
             }
         }
+        let external_context_path = state
+            .record
+            .as_ref()
+            .map(|record| record.rollout_path.clone());
+        let external_context_parent = state.summary.parent_session_id;
         let event_callback_tx = event_tx.clone();
         let callback: devo_core::EventCallback = std::sync::Arc::new(move |event: QueryEvent| {
             let event_callback_tx = event_callback_tx.clone();
@@ -91,6 +96,9 @@ impl ServerRuntime {
             })
         });
         let tool_execution_start_tx = event_tx.clone();
+        let local_marker_runtime = Arc::clone(self);
+        let hosted_marker_runtime = Arc::clone(self);
+        let hosted_marker_path = external_context_path.clone();
         let registry = match agent_tool_policy {
             devo_protocol::AgentToolPolicy::Inherit if usage_parent_session_id.is_some() => {
                 Arc::new(without_agent_coordination_tools(&session_tool_registry))
@@ -199,6 +207,15 @@ impl ServerRuntime {
             ToolExecutionOptions {
                 output_store: output_store.clone(),
                 cancel_token: turn_cancel_token,
+                on_external_context_use: Some(Arc::new(move |_call: ToolCall| {
+                    let runtime = Arc::clone(&local_marker_runtime);
+                    let path = external_context_path.clone();
+                    Box::pin(async move {
+                        runtime
+                            .mark_external_context_used(path, session_id, external_context_parent)
+                            .await
+                    })
+                })),
                 on_tool_execution_start: Some(Arc::new(move |call: ToolCall| {
                     let tool_execution_start_tx = tool_execution_start_tx.clone();
                     Box::pin(async move {
@@ -257,6 +274,20 @@ impl ServerRuntime {
                     compaction_provider: Some(compaction_provider),
                     live_settings: live_turn_settings.clone(),
                     last_model_request,
+                    on_hosted_external_context_use: Some(Arc::new(move || {
+                        let runtime = Arc::clone(&hosted_marker_runtime);
+                        let path = hosted_marker_path.clone();
+                        Box::pin(async move {
+                            runtime
+                                .mark_external_context_used(
+                                    path,
+                                    session_id,
+                                    external_context_parent,
+                                )
+                                .await
+                                .map_err(anyhow::Error::msg)
+                        })
+                    })),
                 },
             ));
             tokio::select! {

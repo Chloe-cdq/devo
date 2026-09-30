@@ -734,6 +734,7 @@ pub async fn query(
             request,
             session,
             &on_event,
+            &options.on_hosted_external_context_use,
             options.cancel_token.as_ref(),
             &turn_config.model.slug,
         )

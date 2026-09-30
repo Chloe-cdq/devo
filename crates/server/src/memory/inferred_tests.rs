@@ -562,3 +562,220 @@ fn credential_normalized_proposal_keys_never_commit() {
         [], |row| Ok((row.get::<_, u32>(0)?,row.get::<_, u32>(1)?,row.get::<_, u32>(2)?))
     ).unwrap(), (0,0,0));
 }
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: a source deleted during extraction cannot be reclaimed from a stale scan snapshot.
+#[test]
+fn deleted_source_cannot_be_reclaimed_or_committed() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (mut source, candidate) = fixture();
+    source.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    let session_id = devo_protocol::SessionId::try_from(source.session_id.as_str()).unwrap();
+
+    runtime.delete_sources(&[session_id], now).unwrap();
+    assert_eq!(runtime.claim_source(&source, now).unwrap(), None);
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    assert_eq!(
+        runtime.list(ListMemoryRequest::default()).unwrap().data,
+        vec![]
+    );
+
+    drop(runtime);
+    let reopened = open_runtime(root.path());
+    assert_eq!(reopened.claim_source(&source, now).unwrap(), None);
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: deleting one of two supporting sessions retains inferred memory until the last evidence is removed.
+#[test]
+fn deleting_sources_retires_only_after_final_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (mut first, candidate) = fixture();
+    first.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&first, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &first, std::slice::from_ref(&candidate), now)
+        .unwrap();
+    let mut second = first.clone();
+    second.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    second.watermark = "source-2".into();
+    let claim = runtime.claim_source(&second, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &second, &[candidate], now)
+        .unwrap();
+
+    let first_id = devo_protocol::SessionId::try_from(first.session_id.as_str()).unwrap();
+    runtime.delete_sources(&[first_id], now).unwrap();
+    let remaining = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].state, MemoryState::Active);
+    assert_eq!(
+        remaining[0].provenance,
+        vec![MemoryProvenance {
+            source_session_id: Some(second.session_id.to_string()),
+            source_turn_id: Some(second.messages[0].turn_id.to_string()),
+            source_user_item_id: Some(second.messages[0].item_id.clone()),
+        }]
+    );
+
+    let second_id = devo_protocol::SessionId::try_from(second.session_id.as_str()).unwrap();
+    runtime.delete_sources(&[second_id], now).unwrap();
+    let retired = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].state, MemoryState::Retired);
+    let connection = runtime.connection.lock().unwrap();
+    let fts_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM memory_entries_fts", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(fts_count, 0);
+}
+
+/// Trace: L2-DES-MEM-001 Storage Model
+/// Verifies: expired raw candidates and completed job detail are removed without replaying the processed watermark.
+#[test]
+fn reopening_prunes_expired_detail_but_keeps_watermark_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (source, candidate) = fixture();
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    {
+        let connection = runtime.connection.lock().unwrap();
+        connection
+            .execute(
+                "UPDATE memory_candidates SET retention_until = '2020-01-01T00:00:00Z'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE memory_jobs SET updated_at = '2020-01-01T00:00:00Z' WHERE state = 'completed'",
+                [],
+            )
+            .unwrap();
+    }
+    drop(runtime);
+
+    let reopened = open_runtime(root.path());
+    let connection = reopened.connection.lock().unwrap();
+    let counts: (i64, i64) = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM memory_candidates),
+                    (SELECT COUNT(*) FROM memory_jobs WHERE state = 'completed')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (0, 0));
+    drop(connection);
+    assert_eq!(
+        reopened.status().unwrap().last_successful_scan_at,
+        Some(
+            chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+                .unwrap()
+                .to_utc()
+        )
+    );
+    assert_eq!(reopened.claim_source(&source, now).unwrap(), None);
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: retrying source deletion repairs a projection failure after the SQLite cleanup committed.
+#[test]
+fn retrying_source_deletion_repairs_projection_after_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (mut source, candidate) = fixture();
+    source.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    let projection_dir = root.path().join("user");
+    std::fs::remove_file(projection_dir.join("MEMORY.md")).unwrap();
+    std::fs::remove_dir(&projection_dir).unwrap();
+    std::fs::write(&projection_dir, "blocked").unwrap();
+    let source_id = devo_protocol::SessionId::try_from(source.session_id.as_str()).unwrap();
+
+    assert!(runtime.delete_sources(&[source_id], now).is_err());
+    std::fs::remove_file(&projection_dir).unwrap();
+    runtime.delete_sources(&[source_id], now).unwrap();
+    let projection = std::fs::read_to_string(projection_dir.join("MEMORY.md")).unwrap();
+    assert!(projection.contains("state: retired"));
+    assert!(!projection.contains(source.session_id.as_str()));
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: an unrelated broken projection does not block deletion of a source with no memory.
+#[tokio::test]
+async fn unrelated_projection_failure_does_not_block_source_deletion() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    runtime
+        .execute_command(MemoryCommand::Remember(remember_request("I prefer tabs")))
+        .await
+        .unwrap();
+    let projection_dir = root.path().join("user");
+    std::fs::remove_file(projection_dir.join("MEMORY.md")).unwrap();
+    std::fs::remove_dir(&projection_dir).unwrap();
+    std::fs::write(&projection_dir, "blocked").unwrap();
+
+    let source_id = devo_protocol::SessionId::new();
+    runtime.delete_sources(&[source_id], Utc::now()).unwrap();
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: fresh evidence can restore an entry retired only because its old source was deleted.
+#[test]
+fn fresh_source_reactivates_entry_retired_by_source_deletion() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let (mut first, candidate) = fixture();
+    first.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&first, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &first, std::slice::from_ref(&candidate), now)
+        .unwrap();
+    let first_id = devo_protocol::SessionId::try_from(first.session_id.as_str()).unwrap();
+    runtime.delete_sources(&[first_id], now).unwrap();
+
+    let mut second = first.clone();
+    second.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());
+    second.watermark = "source-2".into();
+    let claim = runtime.claim_source(&second, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &second, &[candidate], now)
+        .unwrap();
+    let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].state, MemoryState::Active);
+    assert_eq!(
+        entries[0].provenance,
+        vec![MemoryProvenance {
+            source_session_id: Some(second.session_id.to_string()),
+            source_turn_id: Some(second.messages[0].turn_id.to_string()),
+            source_user_item_id: Some(second.messages[0].item_id.clone()),
+        }]
+    );
+    let connection = runtime.connection.lock().unwrap();
+    let fts_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM memory_entries_fts", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(fts_count, 1);
+}

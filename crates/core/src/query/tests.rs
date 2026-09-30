@@ -1844,6 +1844,93 @@ async fn query_exposes_stable_tools_and_appends_subagent_warning() {
     );
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: merely offering hosted Web does not mark an ordinary text-only turn.
+#[tokio::test]
+async fn hosted_web_offered_without_use_does_not_mark_external_context() {
+    for web_search in [true, false] {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+            requests: Arc::clone(&requests),
+        });
+        let registry = Arc::new(ToolRegistry::new());
+        let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        session.push_message(Message::user("research this"));
+        let mut turn_config = TurnConfig::new(Model::default(), None);
+        if web_search {
+            turn_config.web_search = devo_config::ResolvedWebSearchConfig::Provider;
+        } else {
+            turn_config.web_fetch = devo_config::ResolvedWebFetchConfig::Provider;
+        }
+        let marks = Arc::new(AtomicUsize::new(0));
+        let marks_for_callback = Arc::clone(&marks);
+        let result = query(
+            &mut session,
+            &turn_config,
+            provider,
+            registry,
+            &runtime,
+            None,
+            QueryOptions {
+                on_hosted_external_context_use: Some(Arc::new(move || {
+                    marks_for_callback.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Ok(()) })
+                })),
+                ..QueryOptions::default()
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert_eq!(marks.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: a hosted call cannot complete when its provenance write fails.
+#[tokio::test]
+async fn hosted_web_marker_failure_aborts_observed_use() {
+    for web_search in [true, false] {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn ModelProviderSDK> = if web_search {
+            Arc::new(HostedWebSearchProvider {
+                requests: Arc::clone(&requests),
+            })
+        } else {
+            Arc::new(HostedWebFetchProvider {
+                requests: Arc::clone(&requests),
+            })
+        };
+        let registry = Arc::new(ToolRegistry::new());
+        let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        session.push_message(Message::user("research this"));
+        let mut turn_config = TurnConfig::new(Model::default(), None);
+        if web_search {
+            turn_config.web_search = devo_config::ResolvedWebSearchConfig::Provider;
+        } else {
+            turn_config.web_fetch = devo_config::ResolvedWebFetchConfig::Provider;
+        }
+        let result = query(
+            &mut session,
+            &turn_config,
+            provider,
+            registry,
+            &runtime,
+            None,
+            QueryOptions {
+                on_hosted_external_context_use: Some(Arc::new(|| {
+                    Box::pin(async { Err(anyhow::anyhow!("marker failed")) })
+                })),
+                ..QueryOptions::default()
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+}
 #[tokio::test]
 async fn query_adds_web_search_prompt_for_provider_hosted_search() {
     let requests = Arc::new(Mutex::new(Vec::new()));
