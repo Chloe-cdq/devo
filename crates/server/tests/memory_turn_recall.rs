@@ -12,6 +12,8 @@ mod memory_support;
 #[allow(dead_code)]
 mod support;
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: one safe persisted recall snapshot remains stable through a tool loop and a later forget.
 #[tokio::test]
 async fn root_turn_reuses_recall_after_forget_and_persists_safe_native_item() -> Result<()> {
     let data = memory_support::configured_data_root()?;
@@ -121,6 +123,8 @@ async fn root_turn_reuses_recall_after_forget_and_persists_safe_native_item() ->
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: recall storage failure yields an empty snapshot without failing the foreground turn.
 #[tokio::test]
 async fn recall_storage_failure_leaves_foreground_turn_successful() -> Result<()> {
     let data = memory_support::configured_data_root()?;
@@ -178,6 +182,8 @@ async fn recall_items(
         .collect())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: recall ranks eligible entries and excludes revoked or unrelated project memory.
 #[tokio::test]
 async fn recall_ranking_filters_states_revocations_and_other_projects() -> Result<()> {
     let data = memory_support::configured_data_root()?;
@@ -285,6 +291,8 @@ async fn recall_ranking_filters_states_revocations_and_other_projects() -> Resul
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: automatic recall enforces the entry and token limits.
 #[tokio::test]
 async fn automatic_recall_enforces_hard_caps_even_when_config_is_larger() -> Result<()> {
     let data = memory_support::configured_data_root()?;
@@ -335,6 +343,8 @@ async fn automatic_recall_enforces_hard_caps_even_when_config_is_larger() -> Res
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: untrusted recalled text cannot close the advisory block or become system policy.
 #[tokio::test]
 async fn recalled_content_cannot_close_the_advisory_block() -> Result<()> {
     let data = memory_support::configured_data_root()?;
@@ -371,6 +381,8 @@ async fn recalled_content_cannot_close_the_advisory_block() -> Result<()> {
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: durable turn recovery reuses the original snapshot after restart and memory changes.
 #[tokio::test(start_paused = true)]
 async fn recovered_root_turn_uses_original_snapshot_after_restart() -> Result<()> {
     let data = memory_support::configured_data_root()?;
@@ -474,6 +486,8 @@ async fn recovered_root_turn_uses_original_snapshot_after_restart() -> Result<()
 #[path = "support/memory_recall_gate.rs"]
 mod gate;
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: a mid-turn recall setting change affects only the next root turn.
 #[tokio::test]
 async fn recall_setting_change_applies_next_turn_without_mutating_active_snapshot() -> Result<()> {
     let data = memory_support::configured_data_root()?;
@@ -549,6 +563,8 @@ async fn recall_setting_change_applies_next_turn_without_mutating_active_snapsho
     Ok(())
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: rollback and replay preserve Native recall item sequence positions.
 #[tokio::test]
 async fn rollback_and_restart_preserve_native_recall_sequence_positions() -> Result<()> {
     let data = memory_support::configured_data_root()?;

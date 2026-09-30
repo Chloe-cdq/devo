@@ -5,6 +5,8 @@ use pretty_assertions::assert_eq;
 
 const PRIVATE_TEXT: &str = "Quoted memory: Use tabs. Private earlier conversation";
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: provider errors redact private details in default formatting and serialization.
 #[test]
 fn provider_error_default_representations_omit_sensitive_details() {
     let errors = [
@@ -78,6 +80,8 @@ fn provider_error_default_representations_omit_sensitive_details() {
     assert_eq!(leaks, Vec::new());
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: normalized provider failures retain diagnostics while default output remains private.
 #[test]
 fn normalization_is_log_safe_idempotent_and_preserves_diagnostics() {
     use devo_provider::diagnostic::{
@@ -167,6 +171,8 @@ fn normalization_is_log_safe_idempotent_and_preserves_diagnostics() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: normalization preserves structured recovery and retry metadata.
 #[test]
 fn normalization_preserves_structured_recovery_metadata() {
     use devo_provider::diagnostic::sanitize_error;
@@ -204,4 +210,122 @@ fn normalization_preserves_structured_recovery_metadata() {
             expected
         );
     }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: typed HTTP statuses win over private context text in retry classification and recovery guidance.
+#[tokio::test]
+async fn typed_http_status_outweighs_private_context() -> anyhow::Result<()> {
+    use devo_provider::diagnostic::{
+        ErrorClass, classify_error, sanitize_error, user_message_for_error,
+    };
+    use devo_provider::{
+        AUTH_HINT, MODEL_NOT_FOUND_HINT, NETWORK_PROXY_HINT, recovery_hint_for_anyhow,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let cases = [
+        (400, "Bad Request", ErrorClass::ParameterError, None),
+        (
+            401,
+            "Unauthorized",
+            ErrorClass::AuthenticationFailure,
+            Some(AUTH_HINT),
+        ),
+        (
+            404,
+            "Not Found",
+            ErrorClass::TaskNotFound,
+            Some(MODEL_NOT_FOUND_HINT),
+        ),
+        (
+            408,
+            "Request Timeout",
+            ErrorClass::NetworkError,
+            Some(NETWORK_PROXY_HINT),
+        ),
+        (429, "Too Many Requests", ErrorClass::RateLimit, None),
+        (503, "Service Unavailable", ErrorClass::ServerError, None),
+    ];
+    for (status, reason, class, hint) in cases {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let response_task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let read = socket.read(&mut buffer).await?;
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+            .write_all(format!("HTTP/1.1 {status} {reason}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").as_bytes())
+            .await?;
+            Ok::<_, std::io::Error>(())
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()?
+            .get(format!("http://{addr}"))
+            .send()
+            .await?;
+        let status_error = response.error_for_status().expect_err("HTTP failure");
+        response_task.await??;
+        let raw_error =
+            anyhow::Error::new(status_error).context(format!("api key: {PRIVATE_TEXT}"));
+        let expected = (class, hint.map(str::to_string));
+        assert_eq!(
+            (
+                classify_error(&raw_error),
+                recovery_hint_for_anyhow(&raw_error)
+            ),
+            expected
+        );
+        let normalized = sanitize_error(raw_error);
+        assert_eq!(
+            (
+                classify_error(&normalized),
+                recovery_hint_for_anyhow(&normalized)
+            ),
+            expected
+        );
+        assert!(user_message_for_error(&normalized).contains(PRIVATE_TEXT));
+        assert!(!format!("{normalized:?}").contains(PRIVATE_TEXT));
+    }
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: a typed decode failure cannot acquire an authentication hint from private context text.
+#[test]
+fn typed_decode_failure_ignores_private_context_for_recovery_hint() {
+    use devo_provider::diagnostic::{ErrorClass, classify_error, sanitize_error};
+    use devo_provider::recovery_hint_for_anyhow;
+
+    let decode_error =
+        serde_json::from_str::<serde_json::Value>("invalid").expect_err("invalid JSON must fail");
+    let raw_error = anyhow::Error::new(decode_error).context(format!("api key: {PRIVATE_TEXT}"));
+    let expected = (ErrorClass::NetworkError, None);
+    assert_eq!(
+        (
+            classify_error(&raw_error),
+            recovery_hint_for_anyhow(&raw_error)
+        ),
+        expected
+    );
+    let normalized = sanitize_error(raw_error);
+    assert_eq!(
+        (
+            classify_error(&normalized),
+            recovery_hint_for_anyhow(&normalized)
+        ),
+        expected
+    );
 }

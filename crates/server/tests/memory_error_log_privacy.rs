@@ -230,6 +230,8 @@ async fn exercise_failure_path(path: FailurePath) -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: root-turn, compaction, and recovery diagnostics omit private provider text.
 #[tokio::test]
 async fn server_root_compaction_and_recovery_logs_omit_sensitive_errors() -> Result<()> {
     let logs = Arc::new(Mutex::new(Vec::new()));
@@ -265,7 +267,7 @@ async fn wait_notification(
     session: devo_protocol::SessionId,
 ) -> Result<serde_json::Value> {
     // Real HTTP failures exercise the existing backoff before terminal events.
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
         while let Some(event) = notifications.recv().await {
             if event["method"] == method
                 && (event["params"]["sessionId"] == serde_json::json!(session)

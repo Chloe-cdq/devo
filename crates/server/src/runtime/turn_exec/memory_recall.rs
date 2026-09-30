@@ -117,6 +117,8 @@ mod tests {
     use anyhow::{Context, Result};
     use pretty_assertions::assert_eq;
 
+    /// Trace: L2-DES-MEM-001 Rev 4 DD-6
+    /// Verifies: a failed recall item append omits context and completion notification.
     #[tokio::test]
     async fn persistence_failure_omits_context_and_completed_notification() -> Result<()> {
         let data = configured_data_root()?;
@@ -164,6 +166,8 @@ mod tests {
         Ok(())
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4 DD-6
+    /// Verifies: replay sequence advances past a Native-only memory recall item.
     #[tokio::test]
     async fn restored_sequence_advances_past_native_only_recall() -> Result<()> {
         let data = configured_data_root()?;

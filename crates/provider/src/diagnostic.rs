@@ -146,16 +146,26 @@ pub fn classify_error(e: &anyhow::Error) -> ErrorClass {
         }
     }
 
-    if e.chain().any(|cause| {
-        cause.downcast_ref::<reqwest::Error>().is_some_and(|error| {
-            error.is_timeout()
-                || error.is_connect()
-                || error.is_decode()
-                || error.is_body()
-                || error.status() == Some(reqwest::StatusCode::REQUEST_TIMEOUT)
-        })
-    }) {
-        return ErrorClass::NetworkError;
+    for cause in e.chain() {
+        let Some(error) = cause.downcast_ref::<reqwest::Error>() else {
+            continue;
+        };
+        if error.is_status()
+            && let Some(status) = error.status()
+        {
+            return match status.as_u16() {
+                401 | 403 => ErrorClass::AuthenticationFailure,
+                404 => ErrorClass::TaskNotFound,
+                408 => ErrorClass::NetworkError,
+                429 => ErrorClass::RateLimit,
+                500..=599 => ErrorClass::ServerError,
+                400..=499 => ErrorClass::ParameterError,
+                _ => ErrorClass::Unretryable,
+            };
+        }
+        if error.is_timeout() || error.is_connect() || error.is_decode() || error.is_body() {
+            return ErrorClass::NetworkError;
+        }
     }
 
     if e.chain().any(|cause| {

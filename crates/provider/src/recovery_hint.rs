@@ -3,6 +3,7 @@
 //! Keeps actionable next-step copy in one place so query turn failures and
 //! onboarding validation can show the same guidance.
 
+use crate::diagnostic::ErrorClass;
 use crate::error::ProviderError;
 
 /// Network / proxy / timeout guidance.
@@ -51,17 +52,33 @@ pub fn recovery_hint_for_anyhow(error: &anyhow::Error) -> Option<String> {
             return provider_error.recovery_hint().map(str::to_string);
         }
         if let Some(reqwest_error) = cause.downcast_ref::<reqwest::Error>() {
-            if reqwest_error.status() == Some(reqwest::StatusCode::UNAUTHORIZED)
-                || reqwest_error.status() == Some(reqwest::StatusCode::FORBIDDEN)
-            {
-                return Some(AUTH_HINT.to_string());
+            if reqwest_error.is_status() {
+                return match crate::diagnostic::classify_error(error) {
+                    ErrorClass::AuthenticationFailure => Some(AUTH_HINT.to_string()),
+                    ErrorClass::TaskNotFound => Some(MODEL_NOT_FOUND_HINT.to_string()),
+                    ErrorClass::NetworkError => Some(NETWORK_PROXY_HINT.to_string()),
+                    ErrorClass::ContextTooLong
+                    | ErrorClass::ParameterError
+                    | ErrorClass::FileContentAnomaly
+                    | ErrorClass::FeatureUnavailable
+                    | ErrorClass::RateLimit
+                    | ErrorClass::NoApiPermission
+                    | ErrorClass::FileTooLarge
+                    | ErrorClass::ServerError
+                    | ErrorClass::Unretryable => None,
+                };
             }
-            if reqwest_error.is_timeout()
-                || reqwest_error.is_connect()
-                || reqwest_error.status() == Some(reqwest::StatusCode::REQUEST_TIMEOUT)
-            {
+            if reqwest_error.is_timeout() || reqwest_error.is_connect() {
                 return Some(NETWORK_PROXY_HINT.to_string());
             }
+            if reqwest_error.is_decode() || reqwest_error.is_body() {
+                return None;
+            }
+        }
+        if cause.downcast_ref::<std::io::Error>().is_some()
+            || cause.downcast_ref::<serde_json::Error>().is_some()
+        {
+            return None;
         }
     }
 

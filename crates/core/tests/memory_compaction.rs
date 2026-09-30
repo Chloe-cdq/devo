@@ -187,11 +187,15 @@ async fn verify_compaction_recall(trigger: CompactionTrigger) -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: automatic compaction receives the same advisory recall as the first model request.
 #[tokio::test]
 async fn auto_compaction_receives_the_same_recall_as_the_first_query() -> Result<()> {
     verify_compaction_recall(CompactionTrigger::Auto).await
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: context-limit compaction and its retry reuse the original advisory recall.
 #[tokio::test]
 async fn context_limit_compaction_and_retry_receive_the_original_recall() -> Result<()> {
     verify_compaction_recall(CompactionTrigger::ContextLimit).await
@@ -318,16 +322,22 @@ async fn verify_provider_log_privacy(mode: ProviderRequestMode) -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: stream diagnostics omit recalled memory and provider response bodies.
 #[tokio::test]
 async fn provider_stream_logs_omit_recall_and_response_bodies() -> Result<()> {
     verify_provider_log_privacy(ProviderRequestMode::Streaming).await
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: completion failure diagnostics omit recalled memory and response bodies.
 #[tokio::test]
 async fn provider_completion_error_logs_omit_recall_and_response_bodies() -> Result<()> {
     verify_provider_log_privacy(ProviderRequestMode::CompletionError).await
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: stream error diagnostics omit recalled memory and response bodies.
 #[tokio::test]
 async fn provider_stream_error_logs_omit_recall_and_response_bodies() -> Result<()> {
     verify_provider_log_privacy(ProviderRequestMode::StreamingError).await

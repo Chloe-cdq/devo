@@ -838,6 +838,8 @@ fn anthropic_response() -> &'static str {
 }
 
 /// All retained wire adapters must isolate HTTP failures in both SDK methods.
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: HTTP failure details remain user-visible while every adapter's default error output is private.
 #[tokio::test]
 async fn sdk_http_failures_keep_details_out_of_default_error_representations() {
     use devo_provider::diagnostic::user_message_for_error;
@@ -927,6 +929,8 @@ async fn sdk_http_failures_keep_details_out_of_default_error_representations() {
     }
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: decode failures isolate private values and unsafe source formatting.
 #[tokio::test]
 async fn sdk_decode_errors_isolate_private_values_and_unsafe_sources() {
     const PRIVATE_TEXT: &str = "Quoted memory: Use tabs. Private earlier conversation";

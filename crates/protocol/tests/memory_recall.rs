@@ -1,6 +1,8 @@
 use devo_protocol::native::item::ItemEnvelope;
 use pretty_assertions::assert_eq;
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
+/// Verifies: Native memory recall items retain a bounded inspection wire shape.
 #[test]
 fn memory_recall_item_preserves_bounded_inspection_wire_shape() {
     let wire = serde_json::json!({

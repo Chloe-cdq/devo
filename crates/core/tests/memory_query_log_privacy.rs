@@ -186,21 +186,29 @@ async fn verify_query_error_log_privacy(path: ErrorPath) -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: stream creation failures do not leak private provider text into logs.
 #[tokio::test]
 async fn query_stream_creation_failure_logs_omit_sensitive_error_bodies() -> Result<()> {
     verify_query_error_log_privacy(ErrorPath::StreamCreation).await
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: stream event failures do not leak private provider text into logs.
 #[tokio::test]
 async fn query_stream_event_failure_logs_omit_sensitive_error_bodies() -> Result<()> {
     verify_query_error_log_privacy(ErrorPath::StreamEvent).await
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: compaction failures do not leak private provider text into logs.
 #[tokio::test]
 async fn query_compaction_failure_logs_omit_sensitive_error_bodies() -> Result<()> {
     verify_query_error_log_privacy(ErrorPath::Compaction).await
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: compaction errors redact private text in default representations.
 #[test]
 fn compaction_error_default_representations_omit_private_text() {
     use devo_core::history::compaction::CompactionError;
