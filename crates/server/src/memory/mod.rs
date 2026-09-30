@@ -13,6 +13,7 @@ mod identity;
 mod migration;
 mod projection;
 mod queries;
+mod read;
 mod recall;
 mod revocation_lifecycle;
 #[cfg(test)]
@@ -53,7 +54,7 @@ pub use command_types::{
     MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
     MemorySourceContext, MemoryUserSessionSelection, PrepareMemoryRequest, PreparedMemory,
     PreparedMemoryForgetRequest, ProjectMemoryOperation, ProjectMemorySession,
-    ProjectMemorySessionActivity, SearchMemoryRequest, SessionMemorySource,
+    ProjectMemorySessionActivity, ReadMemoryRequest, SearchMemoryRequest, SessionMemorySource,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
@@ -236,6 +237,12 @@ impl MemoryRuntime {
                     }));
                 }
                 Ok(MemoryCommandResult::Search(self.search(request)?))
+            }
+            MemoryCommand::Read(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                Ok(MemoryCommandResult::Read(self.read(request)?))
             }
             MemoryCommand::Project {
                 candidates,

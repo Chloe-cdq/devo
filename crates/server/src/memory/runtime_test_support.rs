@@ -47,6 +47,7 @@ pub async fn prepare_forget(
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => Err(MemoryError::InvalidStoredValue(
             "forget preparation returned an unexpected result".to_string(),
         )),

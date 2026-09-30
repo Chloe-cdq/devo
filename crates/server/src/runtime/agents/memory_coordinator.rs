@@ -76,6 +76,7 @@ pub(super) async fn remember(
         | crate::memory::MemoryCommandResult::PreparedForget(_)
         | crate::memory::MemoryCommandResult::Forget(_)
         | crate::memory::MemoryCommandResult::List(_)
+        | crate::memory::MemoryCommandResult::Read(_)
         | crate::memory::MemoryCommandResult::Search(_) => Err(ToolCallError::InternalError(
             "memory_remember returned an unexpected result".to_string(),
         )),
@@ -182,6 +183,11 @@ pub(super) async fn search(
         .await
         .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
     let scope = params.scope.unwrap_or_default();
+    if summary.is_subagent() {
+        return Err(ToolCallError::Denied(
+            "sub-agents cannot read or mutate user memory".to_string(),
+        ));
+    }
     let workspace_root = if scope == devo_protocol::native::rpc_memory::MemoryScope::Project {
         summary.cwd
     } else {
@@ -209,6 +215,7 @@ pub(super) async fn search(
         | crate::memory::MemoryCommandResult::Remember(_)
         | crate::memory::MemoryCommandResult::PreparedForget(_)
         | crate::memory::MemoryCommandResult::Forget(_)
+        | crate::memory::MemoryCommandResult::Read(_)
         | crate::memory::MemoryCommandResult::List(_) => {
             return Err(ToolCallError::InternalError(
                 "memory_search returned an unexpected result".to_string(),
@@ -221,6 +228,53 @@ pub(super) async fn search(
         search_epoch,
     )?;
     Ok(result)
+}
+
+pub(super) async fn read(
+    runtime: Arc<ServerRuntime>,
+    invocation: MemoryToolInvocation,
+    entry_id: devo_protocol::native::ids::MemoryEntryId,
+) -> Result<devo_protocol::native::rpc_memory::MemoryReadEntry, ToolCallError> {
+    runtime
+        .current_user_item_text(
+            invocation.session_id,
+            invocation.turn_id,
+            &invocation.user_item_id,
+        )
+        .await
+        .map_err(|error| ToolCallError::InvalidInput(error.to_string()))?;
+    let summary = runtime
+        .session_summary_snapshot(invocation.session_id)
+        .await
+        .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
+    if summary.is_subagent() {
+        return Err(ToolCallError::Denied(
+            "sub-agents cannot read or mutate user memory".to_string(),
+        ));
+    }
+    let memory = runtime.memory.as_ref().ok_or_else(|| {
+        ToolCallError::NeedsConfiguration("memory runtime is unavailable".to_string())
+    })?;
+    match memory
+        .execute_command(crate::memory::MemoryCommand::Read(
+            crate::memory::ReadMemoryRequest {
+                entry_id,
+                workspace_root: summary.cwd,
+            },
+        ))
+        .await
+        .map_err(memory_tool_error)?
+    {
+        crate::memory::MemoryCommandResult::Read(entry) => Ok(entry),
+        crate::memory::MemoryCommandResult::Status(_)
+        | crate::memory::MemoryCommandResult::Remember(_)
+        | crate::memory::MemoryCommandResult::PreparedForget(_)
+        | crate::memory::MemoryCommandResult::Forget(_)
+        | crate::memory::MemoryCommandResult::List(_)
+        | crate::memory::MemoryCommandResult::Search(_) => Err(ToolCallError::InternalError(
+            "memory_read returned an unexpected result".to_string(),
+        )),
+    }
 }
 
 fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {

@@ -193,6 +193,19 @@ pub struct MemorySearchEntry {
 /// Result returned by the root-agent memory search tool.
 pub type MemorySearchResult = Page<MemorySearchEntry>;
 
+/// Bounded entry content and provenance summary for a root-agent stable-ID read.
+/// Storage identities, evidence records, and transcript text are not exposed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryReadEntry {
+    pub entry_id: MemoryEntryId,
+    pub scope: MemoryScope,
+    pub kind: MemoryKind,
+    pub state: MemoryState,
+    pub body: String,
+    pub source_summary: String,
+}
+
 /// Safe, aggregate memory health information exposed to Native clients.
 ///
 /// Counts intentionally exclude row contents and error details. The server

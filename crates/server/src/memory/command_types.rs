@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::{ItemId, MemoryEntryId};
 use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryForgetParams, MemoryForgetResult, MemoryKind, MemoryListResult,
-    MemoryOrigin, MemoryScope, MemorySearchResult, MemoryState, MemoryStatus,
+    MemoryOrigin, MemoryReadEntry, MemoryScope, MemorySearchResult, MemoryState, MemoryStatus,
 };
 use devo_protocol::native::session::MemorySetting;
 use devo_protocol::{SessionId, TurnId};
@@ -25,6 +25,8 @@ pub enum MemoryCommand {
     List(ListMemoryRequest),
     /// Return bounded recall-eligible candidates for the root-agent search tool.
     Search(SearchMemoryRequest),
+    /// Read bounded entry content and provenance within the caller's workspace.
+    Read(ReadMemoryRequest),
     /// Resolve Native Session candidates to one canonical Project scope and
     /// execute the requested management operation within that scope.
     Project {
@@ -85,6 +87,8 @@ pub enum MemoryCommandResult {
     List(MemoryListResult),
     /// Result of [`MemoryCommand::Search`].
     Search(MemorySearchResult),
+    /// Result of [`MemoryCommand::Read`].
+    Read(MemoryReadEntry),
 }
 
 /// Input passed through the server-owned memory command seam for an explicit
@@ -230,6 +234,13 @@ pub struct SearchMemoryRequest {
     pub scope: MemoryScope,
     pub kind: Option<MemoryKind>,
     pub state: Option<MemoryState>,
+    pub workspace_root: PathBuf,
+}
+
+/// Server-bound stable ID and current workspace for an on-demand read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadMemoryRequest {
+    pub entry_id: MemoryEntryId,
     pub workspace_root: PathBuf,
 }
 
