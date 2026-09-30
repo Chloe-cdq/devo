@@ -112,7 +112,7 @@ async fn exercise_failure_path(path: FailurePath) -> Result<()> {
     let data = tempfile::tempdir()?;
     std::fs::create_dir_all(data.path().join(".devo"))?;
     std::fs::write(
-        data.path().join(".devo/config.toml"),
+        data.path().join(".devo").join("config.toml"),
         "[memory]\nenabled = true\n",
     )?;
     let runtime = support::build_runtime_with_workspace_config(data.path(), provider)?;

@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::ProviderError;
-use crate::error::context_limit_error;
+use crate::error::{TypedFailureKind, context_limit_error, typed_failure_kind};
 
 #[derive(Debug, Deserialize)]
 struct OpenAIErrorEnvelope {
@@ -32,11 +32,11 @@ pub(super) fn provider_error_from_payload(
         .unwrap_or_else(|| "OpenAI-compatible provider returned an error".to_string());
     let status_code = payload.code.as_ref().and_then(status_code_from_value);
     let provider_name = Some("openai".to_string());
-    if let Some(error) = context_limit_error(
-        message.clone(),
+    let typed_kind = typed_failure_kind(
         payload.kind.as_deref(),
         payload.code.as_ref().and_then(Value::as_str),
-    ) {
+    );
+    if let Some(error) = context_limit_error(message.clone(), status_code, typed_kind) {
         return Some(error);
     }
 
@@ -73,20 +73,25 @@ pub(super) fn provider_error_from_payload(
             message,
             status_code,
         },
-        None if payload.kind.as_deref().is_some_and(is_server_error_kind) => {
+        None if typed_kind == Some(TypedFailureKind::Authentication) => {
+            ProviderError::AuthenticationError {
+                message,
+                provider_name,
+                status_code: None,
+            }
+        }
+        None if typed_kind == Some(TypedFailureKind::Server) => {
             ProviderError::ProviderServerError {
                 message,
                 status_code: None,
                 provider_name,
             }
         }
-        None if payload.kind.as_deref().is_some_and(is_rate_limit_kind) => {
-            ProviderError::RateLimitError {
-                message,
-                retry_after_seconds: None,
-                provider_name,
-            }
-        }
+        None if typed_kind == Some(TypedFailureKind::RateLimit) => ProviderError::RateLimitError {
+            message,
+            retry_after_seconds: None,
+            provider_name,
+        },
         None => ProviderError::UnknownError {
             message,
             status_code: None,
@@ -116,16 +121,6 @@ fn error_details(kind: Option<&str>, code: Option<&Value>) -> Option<String> {
         (None, Some(code)) => Some(format!("code={code}")),
         (None, None) => None,
     }
-}
-
-fn is_server_error_kind(kind: &str) -> bool {
-    let kind = kind.to_ascii_lowercase();
-    kind.contains("server_error") || kind.contains("internal_error")
-}
-
-fn is_rate_limit_kind(kind: &str) -> bool {
-    let kind = kind.to_ascii_lowercase();
-    kind.contains("rate_limit") || kind.contains("too_many_requests")
 }
 
 #[cfg(test)]
@@ -227,5 +222,79 @@ mod tests {
             error.user_message(),
             format!("context limit exceeded: {message}")
         );
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+    /// Verifies: typed SSE status and kind cannot become context-limit errors through echoed text.
+    #[test]
+    fn typed_sse_error_code_overrides_echoed_context_text() {
+        let request = ModelRequest {
+            model_slug: ModelProfileKey::Generic,
+            model: "provider-model".to_string(),
+            system: None,
+            messages: Vec::new(),
+            max_tokens: 16,
+            tools: None,
+            hosted_tools: Vec::new(),
+            sampling: Default::default(),
+            request_thinking: None,
+            reasoning_effort: None,
+            extra_body: None,
+        };
+        let error = provider_error_from_payload(
+            &json!({"error": {
+                "code": 401,
+                "type": "authentication_error",
+                "message": "invalid API key; echoed prompt says maximum context length"
+            }}),
+            &request,
+        )
+        .expect("provider error");
+        assert_eq!(
+            serde_json::to_value(&error).expect("serialize provider error"),
+            json!({
+                "error_kind": "authentication_error",
+                "message": "[redacted]",
+                "provider_name": "openai",
+                "status_code": 401
+            })
+        );
+        assert_eq!(
+            crate::diagnostic::classify_error(&anyhow::Error::new(error)),
+            crate::diagnostic::ErrorClass::AuthenticationFailure
+        );
+        for (kind, expected) in [
+            (
+                "authentication_error",
+                json!({
+                    "error_kind": "authentication_error",
+                    "message": "[redacted]",
+                    "provider_name": "openai",
+                    "status_code": null
+                }),
+            ),
+            (
+                "rate_limit_error",
+                json!({
+                    "error_kind": "rate_limit_error",
+                    "message": "[redacted]",
+                    "retry_after_seconds": null,
+                    "provider_name": "openai"
+                }),
+            ),
+        ] {
+            let error = provider_error_from_payload(
+                &json!({"error": {
+                    "type": kind,
+                    "message": "echoed prompt says maximum context length"
+                }}),
+                &request,
+            )
+            .expect("provider error");
+            assert_eq!(
+                serde_json::to_value(error).expect("serialize provider error"),
+                expected
+            );
+        }
     }
 }

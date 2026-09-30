@@ -2,7 +2,7 @@
 
 Before the first model request of a root turn, the server prepares one lexical snapshot using the current request and the workspace name. Session `memory_recall` is resolved against the global memory gate and default. Mid-turn setting and cwd changes affect the next turn.
 
-Only Active or explicitly Restored entries from User Memory and the resolved Project Memory scope are eligible. An outstanding revocation excludes an entry even if its stored lifecycle state is inconsistent. Retrieval uses quoted lexical terms through SQLite FTS; relevance is the number of distinct matching query terms. Common English function words are ignored. Relevance ranks first, Project scope breaks relevance ties, explicit origin and greater evidence count break remaining ties, then newer updates and ascending stable entry IDs provide deterministic ordering.
+Only Active or explicitly Restored entries from User Memory and the resolved Project Memory scope are eligible. An outstanding revocation excludes an entry even if its stored lifecycle state is inconsistent. Retrieval searches all distinct lexical terms through bounded SQLite FTS batches, deduplicates matching entries, and scores relevance against the complete term set. Common English function words are ignored. Relevance ranks first, Project scope breaks relevance ties, explicit origin and greater evidence count break remaining ties, then newer updates and ascending stable entry IDs provide deterministic ordering.
 
 The hard limits are 12 entries and approximately 2,000 tokens, including the advisory framing. Configuration can lower either limit. The token estimate uses UTF-8 bytes divided by four, rounded up. Each entry contributes a bounded content summary; entries that do not fit are skipped so smaller relevant entries can still fit.
 
@@ -27,7 +27,8 @@ normalize third-party SDK failures. Normalization discards unsafe source/context
 formatting, retains a safe structured cause, and captures diagnostic category and
 recovery guidance before isolating private text. Repeated normalization preserves
 the category; typed HTTP, I/O, and JSON/transport decode failures take precedence
-before the legacy SDK compatibility fallback. Retry and compaction decisions do
+before the legacy SDK compatibility fallback. SSE numeric error codes and known
+error types also outrank echoed message text. Retry and compaction decisions do
 not parse redacted formatting. Wrapping preserves structured recovery flags and
 retry-delay metadata.
 

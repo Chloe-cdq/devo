@@ -1,6 +1,6 @@
 //! Deterministic, bounded foreground recall. No model calls occur here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use devo_protocol::approx_tokens_from_byte_count;
@@ -69,18 +69,10 @@ impl MemoryRuntime {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        let terms = lexical_terms(&format!("{} {workspace_name}", request.query))
-            .into_iter()
-            .take(/*n*/ 64)
-            .collect::<BTreeSet<_>>();
+        let terms = lexical_terms(&format!("{} {workspace_name}", request.query));
         if terms.is_empty() {
             return Ok(prepared);
         }
-        let fts_query = terms
-            .iter()
-            .map(|term| format!("\"{term}\""))
-            .collect::<Vec<_>>()
-            .join(" OR ");
         let connection = self
             .connection
             .lock()
@@ -101,8 +93,15 @@ impl MemoryRuntime {
                      AND r.normalized_key = e.normalized_key
                      AND (r.restored_at IS NULL OR r.restored_at < r.revoked_at))",
         )?;
-        let rows = statement
-            .query_map(
+        let mut rows = BTreeMap::new();
+        let query_terms = terms.iter().collect::<Vec<_>>();
+        for batch in query_terms.chunks(64) {
+            let fts_query = batch
+                .iter()
+                .map(|term| format!("\"{term}\""))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            for row in statement.query_map(
                 rusqlite::params![fts_query, USER_SCOPE_ID, project.scope_id],
                 |row| {
                     Ok((
@@ -115,11 +114,14 @@ impl MemoryRuntime {
                         row.get::<_, i64>(/*idx*/ 6)?,
                     ))
                 },
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
+            )? {
+                let row = row?;
+                rows.entry(row.0.clone()).or_insert(row);
+            }
+        }
         drop(statement);
         let mut candidates = Vec::new();
-        for (id, scope, kind, body, origin, updated_at, evidence_count) in rows {
+        for (_, (id, scope, kind, body, origin, updated_at, evidence_count)) in rows {
             if contains_secret(&body) {
                 continue;
             }

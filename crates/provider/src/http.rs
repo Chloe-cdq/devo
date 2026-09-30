@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::warn;
 
-use crate::error::{ProviderError, context_limit_error};
+use crate::error::{ProviderError, context_limit_error, typed_failure_kind};
 use crate::timeout::connect_timeout;
 
 #[derive(Clone, Copy)]
@@ -192,9 +192,8 @@ pub(crate) async fn invalid_status_error(
         .as_ref()
         .and_then(|value| value.pointer("/error/code"))
         .and_then(Value::as_str);
-    if matches!(status.as_u16(), 400 | 413 | 422)
-        && let Some(error) = context_limit_error(message, error_kind, error_code)
-    {
+    let typed_kind = typed_failure_kind(error_kind, error_code);
+    if let Some(error) = context_limit_error(message, Some(status.as_u16()), typed_kind) {
         return anyhow::Error::new(error);
     }
     let message = format!(

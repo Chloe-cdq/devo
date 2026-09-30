@@ -135,7 +135,7 @@ async fn recall_storage_failure_leaves_foreground_turn_successful() -> Result<()
     let (connection, mut notifications, session) =
         memory_support::start_subscribed_session(&runtime, data.path(), /*request_id*/ 40).await?;
     memory_support::remember(&runtime, connection, /*request_id*/ 41, "Use tabs").await?;
-    let db = rusqlite::Connection::open(data.path().join("memory/memory.sqlite3"))?;
+    let db = rusqlite::Connection::open(data.path().join("memory").join("memory.sqlite3"))?;
     db.execute_batch("DROP TABLE memory_entries_fts;")?;
     memory_support::run_turn(
         &runtime,
@@ -210,7 +210,7 @@ async fn recall_ranking_filters_states_revocations_and_other_projects() -> Resul
         let entry =
             memory_support::remember(&runtime, connection, id, &format!("alpha {state} {id}"))
                 .await?;
-        let db = rusqlite::Connection::open(data.path().join("memory/memory.sqlite3"))?;
+        let db = rusqlite::Connection::open(data.path().join("memory").join("memory.sqlite3"))?;
         db.execute(
             "UPDATE memory_entries SET state = ?1 WHERE entry_id = ?2",
             rusqlite::params![state, entry.entry_id.as_str()],
@@ -227,7 +227,7 @@ async fn recall_ranking_filters_states_revocations_and_other_projects() -> Resul
         "alpha beta restored",
     )
     .await?;
-    let db = rusqlite::Connection::open(data.path().join("memory/memory.sqlite3"))?;
+    let db = rusqlite::Connection::open(data.path().join("memory").join("memory.sqlite3"))?;
     db.execute(
         "UPDATE memory_entries SET state = 'restored' WHERE entry_id = ?1",
         [restored.entry_id.as_str()],
@@ -297,7 +297,7 @@ async fn recall_ranking_filters_states_revocations_and_other_projects() -> Resul
 async fn automatic_recall_enforces_hard_caps_even_when_config_is_larger() -> Result<()> {
     let data = memory_support::configured_data_root()?;
     std::fs::write(
-        data.path().join(".devo/config.toml"),
+        data.path().join(".devo").join("config.toml"),
         "[memory]\nenabled = true\nmax_entries_per_turn = 100\nmax_prompt_tokens = 10000\n",
     )?;
     let provider = Arc::new(support::ScriptedProvider::new([
@@ -338,6 +338,48 @@ async fn automatic_recall_enforces_hard_caps_even_when_config_is_larger() -> Res
     assert!(
         entries.len() < 12,
         "token cap must restrict large summaries"
+    );
+    runtime.shutdown().await;
+    Ok(())
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-10
+/// Verifies: a relevant term remains searchable after more than 64 unrelated request terms.
+#[tokio::test]
+async fn long_request_keeps_later_relevant_terms_searchable() -> Result<()> {
+    let data = memory_support::configured_data_root()?;
+    let provider = Arc::new(support::ScriptedProvider::new([
+        support::ScriptedProvider::completed("ok"),
+    ]));
+    let runtime = support::build_runtime_with_workspace_config(data.path(), provider.clone())?;
+    let (connection, mut notifications, session) =
+        memory_support::start_subscribed_session(&runtime, data.path(), /*request_id*/ 120).await?;
+    let entry = memory_support::remember(
+        &runtime,
+        connection,
+        /*request_id*/ 121,
+        "zebra memory",
+    )
+    .await?;
+    let query = (0..64)
+        .map(|index| format!("a{index:02}"))
+        .chain(std::iter::once("zebra".to_string()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    memory_support::run_turn(&runtime, connection, session, &mut notifications, &query).await?;
+    let block =
+        recall_block(&provider.requests()[0]).context("later relevant term must be recalled")?;
+    assert!(block.contains("zebra memory"));
+    let items = recall_items(&runtime, connection, session).await?;
+    assert_eq!(
+        items[0]["entries"],
+        serde_json::json!([{
+            "entryId": entry.entry_id,
+            "scope": "user",
+            "kind": "fact",
+            "summary": "zebra memory",
+            "sourceSummary": "Explicit user memory (1 source)"
+        }])
     );
     runtime.shutdown().await;
     Ok(())

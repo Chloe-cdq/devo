@@ -224,11 +224,48 @@ impl ProviderError {
     }
 }
 
-pub(crate) fn context_limit_error(
-    message: String,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypedFailureKind {
+    ContextLimit,
+    Authentication,
+    RateLimit,
+    Server,
+}
+
+pub(crate) fn typed_failure_kind(
     error_kind: Option<&str>,
     error_code: Option<&str>,
+) -> Option<TypedFailureKind> {
+    [error_code, error_kind]
+        .into_iter()
+        .flatten()
+        .find_map(|value| {
+            let value = value.to_ascii_lowercase();
+            if value.contains("context_length_exceeded") || value.contains("context_too_long") {
+                Some(TypedFailureKind::ContextLimit)
+            } else if value.contains("authentication_error")
+                || value.contains("invalid_api_key")
+                || value.contains("unauthorized")
+            {
+                Some(TypedFailureKind::Authentication)
+            } else if value.contains("rate_limit") || value.contains("too_many_requests") {
+                Some(TypedFailureKind::RateLimit)
+            } else if value.contains("server_error") || value.contains("internal_error") {
+                Some(TypedFailureKind::Server)
+            } else {
+                None
+            }
+        })
+}
+
+pub(crate) fn context_limit_error(
+    message: String,
+    status_code: Option<u16>,
+    typed_kind: Option<TypedFailureKind>,
 ) -> Option<ProviderError> {
+    if status_code.is_some_and(|status| !matches!(status, 400 | 413 | 422)) {
+        return None;
+    }
     let normalized_message = message.to_ascii_lowercase();
     let message_matches = normalized_message.contains("maximum context length")
         || normalized_message.contains("context_length_exceeded")
@@ -236,19 +273,13 @@ pub(crate) fn context_limit_error(
         || (normalized_message.contains("context window")
             && (normalized_message.contains("exceeded")
                 || normalized_message.contains("too long")));
-    let metadata_matches = [error_kind, error_code]
-        .into_iter()
-        .flatten()
-        .map(str::to_ascii_lowercase)
-        .any(|value| {
-            value.contains("context_length_exceeded") || value.contains("context_too_long")
-        });
-
-    (message_matches || metadata_matches).then_some(ProviderError::ContextLimitError {
-        message: message.into(),
-        current_tokens: None,
-        limit: None,
-    })
+    (typed_kind == Some(TypedFailureKind::ContextLimit)
+        || (typed_kind.is_none() && message_matches))
+        .then_some(ProviderError::ContextLimitError {
+            message: message.into(),
+            current_tokens: None,
+            limit: None,
+        })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
