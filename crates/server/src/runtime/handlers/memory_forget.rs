@@ -52,9 +52,7 @@ impl ServerRuntime {
             Ok(source) => source,
             Err(response) => return response,
         };
-        let session_context = self
-            .memory_command_sessions(connection_id, &active_source.active_session_ids)
-            .await;
+        let session_context = active_source.session_context;
         let user_session = match active_source
             .source
             .as_ref()

@@ -58,6 +58,8 @@ export interface ExecutionConfig {
 	useWorktree: boolean
 	/** Permission preset controlling agent tool access */
 	permissionPreset: PermissionPreset
+	/** General Persistent Memory recall; omitted values inherit the server default. */
+	memoryRecall?: "inherit" | "on" | "off"
 }
 
 export interface AutomationConfig {

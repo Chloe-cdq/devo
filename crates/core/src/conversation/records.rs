@@ -540,6 +540,8 @@ pub enum SessionSettingsField {
     /// Per-session memory contribution setting, stored as a Native
     /// `MemorySetting`.
     MemoryContribution,
+    /// Immutable creation source; written only at creation and inherited by forks.
+    SessionSource,
 }
 
 /// Stores one field-level session settings change in the rollout file.

@@ -46,7 +46,13 @@ impl RolloutStore {
         session_id: SessionId,
         settings: crate::memory::SessionMemorySettings,
     ) -> Result<()> {
-        let mut updates = Vec::with_capacity(2);
+        let mut updates = Vec::with_capacity(3);
+        if !settings.source.is_interactive() {
+            updates.push((
+                SessionSettingsField::SessionSource,
+                serde_json::to_value(settings.source).expect("serialize session source"),
+            ));
+        }
         if settings.recall != MemorySetting::Inherit {
             updates.push((
                 SessionSettingsField::MemoryRecall,
@@ -75,6 +81,11 @@ impl ReplayState {
         crate::memory::SessionMemorySettings {
             recall: setting(SessionSettingsField::MemoryRecall),
             contribution: setting(SessionSettingsField::MemoryContribution),
+            source: self
+                .session_settings
+                .get(&SessionSettingsField::SessionSource)
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default(),
         }
     }
 }

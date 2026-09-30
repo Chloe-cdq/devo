@@ -207,3 +207,10 @@ fn embedded_server_notification_fields_match_wire_casing() {
         serde_json::json!(["restorePlanId", "sessionId"])
     );
 }
+
+#[test]
+fn generated_native_typescript_exports_memory_session_types() {
+    let output = devo_protocol::acp_ts::generate_protocol_typescript();
+    assert!(output.contains("export type MemorySetting ="));
+    assert!(output.contains("export type SessionSource ="));
+}

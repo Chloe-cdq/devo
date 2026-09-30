@@ -39,11 +39,13 @@ async fn project_command_rejects_unrelated_session_candidates() {
                     session_id: SessionId::new(),
                     workspace_root: Some(project_a.clone()),
                     activity: ProjectMemorySessionActivity::Active,
+                    source: Some(devo_protocol::native::session::SessionSource::Interactive),
                 },
                 ProjectMemorySession {
                     session_id: SessionId::new(),
                     workspace_root: Some(project_b),
                     activity: ProjectMemorySessionActivity::Inactive,
+                    source: Some(devo_protocol::native::session::SessionSource::Interactive),
                 },
             ],
             operation: ProjectMemoryOperation::Remember {
@@ -103,11 +105,13 @@ async fn project_command_uses_active_same_repository_session_for_provenance() {
                     session_id: main_session_id,
                     workspace_root: Some(repository_root.clone()),
                     activity: ProjectMemorySessionActivity::Inactive,
+                    source: Some(devo_protocol::native::session::SessionSource::Interactive),
                 },
                 ProjectMemorySession {
                     session_id: linked_session_id,
                     workspace_root: Some(linked_root),
                     activity: ProjectMemorySessionActivity::Active,
+                    source: Some(devo_protocol::native::session::SessionSource::Interactive),
                 },
             ],
             operation: ProjectMemoryOperation::Remember {

@@ -44,6 +44,7 @@ async fn memory_patch_waiting_for_resume_updates_the_resumed_actor() -> Result<(
     let expected = crate::memory::SessionMemorySettings {
         recall: MemorySetting::Off,
         contribution: MemorySetting::On,
+        source: Default::default(),
     };
     assert_eq!(
         handle
@@ -336,6 +337,7 @@ async fn ephemeral_memory_settings_survive_metadata_updates() -> Result<()> {
                 model_binding_id: None,
             },
             /*tool_registry*/ None,
+            devo_protocol::native::session::SessionSource::Interactive,
         )
         .await;
     let start_result = serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(

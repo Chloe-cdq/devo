@@ -115,6 +115,7 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: SessionStartParams,
         tool_registry: Option<Arc<devo_core::tools::ToolRegistry>>,
+        source: devo_protocol::native::session::SessionSource,
     ) -> serde_json::Value {
         let now = Utc::now();
         let session_id = SessionId::new();
@@ -212,6 +213,26 @@ impl ServerRuntime {
                 format!("failed to persist session metadata: {error}"),
             );
         }
+        if source == devo_protocol::native::session::SessionSource::Automation
+            && let Some(record) = &record
+            && self
+                .rollout_store
+                .append_session_settings_batch_at(
+                    &record.rollout_path,
+                    session_id,
+                    &[(
+                        devo_core::SessionSettingsField::SessionSource,
+                        serde_json::to_value(source).expect("serialize session source"),
+                    )],
+                )
+                .is_err()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                "failed to persist automation session source",
+            );
+        }
         crate::runtime::context_occupancy::apply_resolved_compaction_limit(
             &mut core_session.config,
             applied_compaction_limit as usize,
@@ -225,7 +246,10 @@ impl ServerRuntime {
             record,
             summary: summary.clone(),
             config,
-            memory_settings: Default::default(),
+            memory_settings: crate::memory::SessionMemorySettings {
+                source,
+                ..Default::default()
+            },
             memory_settings_version: 1,
             core: core_session,
             stream: Arc::new(tokio::sync::Mutex::new(
@@ -1091,6 +1115,7 @@ impl ServerRuntime {
         devo_protocol::native::session::Session {
             id: devo_protocol::native::ids::SessionId::from_string(session_id.to_string()),
             version: 1,
+            source: Default::default(),
             cwd: metadata.cwd.clone(),
             additional_directories: metadata.additional_directories.clone(),
             parent: metadata.parent_session_id.and_then(|parent| {
@@ -1230,7 +1255,8 @@ impl ServerRuntime {
                     model: None,
                     model_binding_id: None,
                 },
-                None,
+                /*tool_registry*/ None,
+                params.source,
             )
             .await;
         if let Ok(success) =
@@ -1275,7 +1301,7 @@ impl ServerRuntime {
 
     /// Reads the rollout-backed canonical session snapshot; `None` when the
     /// rollout is missing or unreadable.
-    async fn native_session_snapshot(
+    pub(crate) async fn native_session_snapshot(
         &self,
         session_id: SessionId,
     ) -> Option<devo_protocol::native::session::Session> {

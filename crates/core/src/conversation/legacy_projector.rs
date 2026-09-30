@@ -425,6 +425,7 @@ impl LegacyProjector {
         let session = Session {
             id: SessionId::from_legacy_uuid(legacy_uuid(record.id)?),
             version: 1,
+            source: Default::default(),
             cwd: record.cwd.clone(),
             additional_directories: record.additional_directories.clone(),
             parent,
