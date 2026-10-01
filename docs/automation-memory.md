@@ -37,7 +37,9 @@ means `interactive`, preserving existing clients' behavior. Native session
 snapshots expose the automation source. Source is creation identity; it is not a
 mutable `SessionSettingsPatch` field. The server records it as an internal
 `SessionSettings` field line named `sessionSource` before registering the actor.
-Replay, whole-record metadata refreshes, and forks preserve automation identity.
+Replay, whole-record metadata refreshes, forks, and persistent subagents preserve
+automation identity. Persistent subagents record their inherited memory settings
+before actor registration, so cold Native access retains the one-way boundary.
 The existing ACP wire surface is unchanged.
 
 `SessionMemorySource.source` carries that durable source to the memory module's

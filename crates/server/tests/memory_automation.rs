@@ -577,3 +577,119 @@ async fn interactive_project_mutations_survive_idle_automation_selector() -> Res
     runtime.shutdown().await;
     Ok(())
 }
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-1/DD-2/DD-8
+/// Verifies: a cold persistent automation child cannot mutate either General Memory scope.
+#[tokio::test]
+async fn automation_child_native_mutations_are_rejected_after_restart() -> Result<()> {
+    let data = memory_support::configured_data_root()?;
+    let provider = Arc::new(support::ScriptedProvider::pending());
+    let runtime = support::build_runtime_with_workspace_config(data.path(), provider.clone())?;
+    let (connection, _, parent) = automation_session(&runtime, data.path()).await?;
+    let child = support::spawn_child_with(
+        &runtime,
+        connection,
+        parent,
+        "Automation Run Memory: private last-run watermark",
+        Some("all"),
+    )
+    .await?;
+    support::wait_for_stream_calls(&provider, /*expected*/ 1).await?;
+    runtime.shutdown().await;
+    drop(runtime);
+
+    let runtime = support::build_runtime_with_workspace_config(
+        data.path(),
+        Arc::new(support::ScriptedProvider::new([])),
+    )?;
+    let (interactive, _, _) =
+        memory_support::start_subscribed_session(&runtime, data.path(), /*request_id*/ 10).await?;
+    let (connection, _) = support::initialize_connection(&runtime).await?;
+    // Select the cold child without resuming it or loading a session actor.
+    let subscribed = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({
+                "id": 11, "method": "subscription/create", "params": {
+                    "selectors": [{"kind": "session", "sessionId": child.child_session_id}],
+                    "includeSnapshot": false
+                }
+            }),
+        )
+        .await
+        .context("subscribe cold child")?;
+    anyhow::ensure!(
+        subscribed.get("result").is_some(),
+        "subscription failed: {subscribed}"
+    );
+
+    for scope in ["user", "project"] {
+        let seed = runtime.handle_incoming(interactive, serde_json::json!({
+            "id": 12, "method": "memory/remember", "params": {"text": "Interactive fact", "scope": scope}
+        })).await.context("seed memory")?;
+        anyhow::ensure!(seed.get("result").is_some(), "seed failed: {seed}");
+        let before = runtime
+            .handle_incoming(
+                interactive,
+                serde_json::json!({
+                    "id": 13, "method": "memory/list", "params": {"scope": scope}
+                }),
+            )
+            .await
+            .context("list before")?;
+        anyhow::ensure!(before.get("result").is_some(), "list failed: {before}");
+        let child_read = runtime
+            .handle_incoming(
+                connection,
+                serde_json::json!({
+                    "id": 14, "method": "memory/list", "params": {"scope": scope}
+                }),
+            )
+            .await
+            .context("child list")?;
+        assert_eq!(child_read["result"], before["result"]);
+
+        for (method, params) in [
+            (
+                "memory/remember",
+                serde_json::json!({"text": "Private last-run watermark", "scope": scope}),
+            ),
+            (
+                "memory/forget",
+                serde_json::json!({"entryId": seed["result"]["entryId"], "scope": scope}),
+            ),
+            (
+                "memory/forget",
+                serde_json::json!({"text": "Interactive fact", "scope": scope}),
+            ),
+        ] {
+            let response = runtime
+                .handle_incoming(
+                    connection,
+                    serde_json::json!({
+                        "id": 15, "method": method, "params": params
+                    }),
+                )
+                .await
+                .context("child mutation")?;
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("automation")),
+                "cold automation child must reject {scope} {method}: {response}"
+            );
+        }
+        let after = runtime
+            .handle_incoming(
+                interactive,
+                serde_json::json!({
+                    "id": 16, "method": "memory/list", "params": {"scope": scope}
+                }),
+            )
+            .await
+            .context("list after")?;
+        assert_eq!(after["result"], before["result"]);
+    }
+    runtime.shutdown().await;
+    Ok(())
+}

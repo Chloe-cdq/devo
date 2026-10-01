@@ -213,24 +213,21 @@ impl ServerRuntime {
                 format!("failed to persist session metadata: {error}"),
             );
         }
-        if source == devo_protocol::native::session::SessionSource::Automation
-            && let Some(record) = &record
-            && self
-                .rollout_store
-                .append_session_settings_batch_at(
-                    &record.rollout_path,
-                    session_id,
-                    &[(
-                        devo_core::SessionSettingsField::SessionSource,
-                        serde_json::to_value(source).expect("serialize session source"),
-                    )],
-                )
-                .is_err()
+        let memory_settings = crate::memory::SessionMemorySettings {
+            source,
+            ..Default::default()
+        };
+        if let Some(record) = &record
+            && let Err(error) = self.rollout_store.append_initial_memory_settings_at(
+                &record.rollout_path,
+                session_id,
+                memory_settings,
+            )
         {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
-                "failed to persist automation session source",
+                format!("failed to persist initial memory settings: {error}"),
             );
         }
         crate::runtime::context_occupancy::apply_resolved_compaction_limit(
@@ -246,10 +243,7 @@ impl ServerRuntime {
             record,
             summary: summary.clone(),
             config,
-            memory_settings: crate::memory::SessionMemorySettings {
-                source,
-                ..Default::default()
-            },
+            memory_settings,
             memory_settings_version: 1,
             core: core_session,
             stream: Arc::new(tokio::sync::Mutex::new(

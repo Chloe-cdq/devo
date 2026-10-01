@@ -67,6 +67,8 @@ class Transport implements DevoNativeTransport {
 }
 
 describe("automation memory Native adapter", () => {
+	// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-1/DD-2, L2-DES-APP-008 Rev 5
+	// Verifies: Native session creation carries automation identity before any turn.
 	test("creation sends the automation source before any turn", async () => {
 		const transport = new Transport();
 		const client = createDevoClient({ directory: process.cwd(), transport });
@@ -83,6 +85,8 @@ describe("automation memory Native adapter", () => {
 		});
 	});
 
+	// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-2, L2-DES-CONV-002 Rev 2 DD-6
+	// Verifies: memory preferences use canonical partial session settings patches.
 	test("recall and contribution use canonical partial settings patches", async () => {
 		const transport = new Transport();
 		const client = createDevoClient({ directory: process.cwd(), transport });

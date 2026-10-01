@@ -208,6 +208,8 @@ fn embedded_server_notification_fields_match_wire_casing() {
     );
 }
 
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-2, L2-DES-APP-008 Rev 5
+/// Verifies: Native TypeScript exports recall settings and immutable execution source types.
 #[test]
 fn generated_native_typescript_exports_memory_session_types() {
     let output = devo_protocol::acp_ts::generate_protocol_typescript();

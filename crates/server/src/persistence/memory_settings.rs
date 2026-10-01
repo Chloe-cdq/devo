@@ -38,9 +38,9 @@ impl RolloutStore {
         self.append_lines(rollout_path, &lines)
     }
 
-    /// Persists non-default memory settings when a new session inherits an
-    /// existing session snapshot, such as a fork.
-    pub(crate) fn append_inherited_memory_settings_at(
+    /// Persists non-default memory settings and source before a newly created
+    /// session, fork, or persistent subagent is registered.
+    pub(crate) fn append_initial_memory_settings_at(
         &self,
         rollout_path: &Path,
         session_id: SessionId,

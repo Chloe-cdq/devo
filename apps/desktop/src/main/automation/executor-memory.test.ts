@@ -61,6 +61,8 @@ const { createConfig, readConfig } = await import("./registry");
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe("automation one-way memory execution", () => {
+	// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-1/DD-2
+	// Verifies: source and recall persist before separately quoted private advisory input.
 	test("marks identity and persists recall before sending separate private advisory input", async () => {
 		for (const memoryRecall of ["on", "off", "inherit"] as const) {
 			calls.length = 0;
@@ -102,6 +104,8 @@ describe("automation one-way memory execution", () => {
 		}
 	});
 
+	// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-2
+	// Verifies: configured automation recall survives registry persistence.
 	test("configured recall survives creation on disk", () => {
 		const id = createConfig({
 			name: "Memory enabled",
