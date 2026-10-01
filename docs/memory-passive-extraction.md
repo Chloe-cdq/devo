@@ -70,8 +70,9 @@ database. Extraction checks that same durable intent before claiming a source
 and before starting a commit. A transaction already in progress can finish
 after intent is recorded; search, list, recall, and forget selectors withhold
 inferred memory until idempotent cleanup fences the source and removes its
-evidence. Markdown projections may lag this fence until cleanup repairs them.
-Explicit memory remains available. The idempotent
+evidence. Public entry results also omit provenance while any source intent is
+pending; explicit memory remains available. Markdown projections may lag this
+fence until cleanup repairs them. The idempotent
 memory transaction permanently fences the source, removes its candidates, job
 details, evidence, and proposal-claim support, and recomputes conflicts from
 surviving support. An inferred entry is retired when its last evidence disappears.

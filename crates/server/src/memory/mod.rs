@@ -231,7 +231,7 @@ impl MemoryRuntime {
         }
         let identity = identity::resolve_project_memory_identity(&request.workspace_root)
             .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
-        let user_entries = self
+        let mut user_entries = self
             .list_recallable(ListMemoryRequest {
                 scope: Some(MemoryScope::User),
                 state: Some(MemoryState::Active),
@@ -240,6 +240,11 @@ impl MemoryRuntime {
                 ..ListMemoryRequest::default()
             })?
             .data;
+        if self.has_pending_source_deletions() {
+            for entry in &mut user_entries {
+                entry.provenance.clear();
+            }
+        }
         Ok(PreparedMemory {
             project_scope_id: Some(identity.scope_id),
             user_entries,
@@ -251,7 +256,7 @@ impl MemoryRuntime {
         &self,
         command: MemoryCommand,
     ) -> Result<MemoryCommandResult, MemoryError> {
-        match command {
+        let mut result = match command {
             MemoryCommand::Status => Ok(MemoryCommandResult::Status(self.status()?)),
             MemoryCommand::Remember(request) => {
                 if !self.config.enabled {
@@ -271,7 +276,7 @@ impl MemoryRuntime {
                 if !self.config.enabled {
                     return Err(MemoryError::Disabled);
                 }
-                Ok(MemoryCommandResult::Forget(self.forget(request)?))
+                self.forget(request).map(MemoryCommandResult::Forget)
             }
             MemoryCommand::List(request) => {
                 if !self.config.enabled {
@@ -341,7 +346,35 @@ impl MemoryRuntime {
                     })?)),
                 }
             }
+        };
+        if self.has_pending_source_deletions() {
+            match &mut result {
+                Ok(MemoryCommandResult::Remember(entry)) => entry.provenance.clear(),
+                Ok(MemoryCommandResult::List(page)) => {
+                    for entry in &mut page.data {
+                        entry.provenance.clear();
+                    }
+                }
+                Ok(MemoryCommandResult::Forget(forget)) => {
+                    if let Some(entry) = &mut forget.forgotten {
+                        entry.provenance.clear();
+                    }
+                    for entry in &mut forget.candidates {
+                        entry.provenance.clear();
+                    }
+                }
+                Err(MemoryError::ForgetCommitted { result: forget, .. }) => {
+                    if let Some(entry) = &mut forget.forgotten {
+                        entry.provenance.clear();
+                    }
+                    for entry in &mut forget.candidates {
+                        entry.provenance.clear();
+                    }
+                }
+                _ => {}
+            }
         }
+        result
     }
 
     fn resolve_project_memory_source(

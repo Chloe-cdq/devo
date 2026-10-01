@@ -446,7 +446,7 @@ pub(super) fn load_entry(
     else {
         return Ok(None);
     };
-    let provenance = load_provenance(connection, &entry_id, &origin)?;
+    let provenance = load_provenance(connection, &entry_id)?;
     Ok(Some(MemoryEntry {
         entry_id: MemoryEntryId::from_string(entry_id.to_string()),
         scope: parse_scope(&scope_type)?,
@@ -492,19 +492,21 @@ fn load_scope_entries(
 fn load_provenance(
     connection: &Connection,
     entry_id: &str,
-    origin: &str,
 ) -> Result<Vec<devo_protocol::native::rpc_memory::MemoryProvenance>, MemoryError> {
     let mut statement = connection.prepare(
         "SELECT session_id, turn_id, source_user_item_id
          FROM memory_evidence
          WHERE entry_id = ?1
-           AND (?2 = 'explicit_user' OR NOT EXISTS (
+           AND NOT EXISTS (
              SELECT 1 FROM memory_excluded_sources AS excluded
-             WHERE excluded.source_session_id = memory_evidence.session_id))
+             WHERE excluded.source_session_id = memory_evidence.session_id)
+           AND NOT EXISTS (
+             SELECT 1 FROM memory_deleted_sources AS deleted
+             WHERE deleted.source_session_id = memory_evidence.session_id)
          ORDER BY observed_at ASC, evidence_id ASC",
     )?;
     let rows = statement
-        .query_map(rusqlite::params![entry_id, origin], |row| {
+        .query_map([entry_id], |row| {
             Ok(devo_protocol::native::rpc_memory::MemoryProvenance {
                 source_session_id: row.get(0)?,
                 source_turn_id: row.get(1)?,

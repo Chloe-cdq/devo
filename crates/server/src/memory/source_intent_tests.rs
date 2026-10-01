@@ -10,7 +10,10 @@ use super::command_types::{PreparedMemoryForgetScope, PreparedMemoryForgetTarget
 use super::extraction::ExtractionCandidate;
 use super::runtime_test_support::{open_runtime, remember_request};
 use super::source::{ExtractableSource, SourceMessage};
-use super::{PreparedMemoryForgetRequest, USER_SCOPE_ID};
+use super::{
+    ListMemoryRequest, MemoryCommand, MemoryCommandResult, PrepareMemoryRequest,
+    PreparedMemoryForgetRequest, USER_SCOPE_ID,
+};
 
 fn source() -> (ExtractableSource, ExtractionCandidate) {
     let turn_id = TurnId::new();
@@ -152,6 +155,113 @@ fn forget_hides_inferred_entries_while_source_intent_is_pending() {
         explicit_result.forgotten.unwrap().origin,
         MemoryOrigin::ExplicitUser
     );
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: a pending source deletion hides provenance in every public entry response while explicit memory remains visible.
+#[tokio::test]
+async fn pending_deletion_hides_explicit_entry_provenance() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
+    let mut runtime = open_runtime(&root.path().join("memory"));
+    runtime.attach_deletion_ledger(Arc::clone(&db));
+    let source_id = devo_protocol::SessionId::new();
+    let mut request = remember_request("I prefer tabs");
+    request.source.session_id = source_id;
+    let entry = runtime.remember(request).unwrap();
+    assert_eq!(entry.provenance.len(), 1);
+    db.record_memory_source_deletions(&[source_id]).unwrap();
+
+    let listed = runtime
+        .execute_command(MemoryCommand::List(ListMemoryRequest::default()))
+        .await
+        .unwrap();
+    let MemoryCommandResult::List(listed) = listed else {
+        panic!("expected memory list");
+    };
+    assert_eq!(listed.data.len(), 1);
+    assert_eq!(listed.data[0].entry_id, entry.entry_id);
+    assert!(listed.data[0].provenance.is_empty());
+
+    let recalled = runtime
+        .prepare_turn(PrepareMemoryRequest {
+            workspace_root: root.path().to_path_buf(),
+            session_recall: MemorySetting::On,
+        })
+        .await
+        .unwrap();
+    assert_eq!(recalled.user_entries.len(), 1);
+    assert!(recalled.user_entries[0].provenance.is_empty());
+
+    let forgotten = runtime
+        .execute_command(MemoryCommand::Forget(PreparedMemoryForgetRequest {
+            target: PreparedMemoryForgetTarget::Exact(entry.entry_id),
+            scope: PreparedMemoryForgetScope {
+                scope: MemoryScope::User,
+                scope_id: USER_SCOPE_ID.into(),
+            },
+            source_session_id: source_id,
+        }))
+        .await
+        .unwrap();
+    let MemoryCommandResult::Forget(forgotten) = forgotten else {
+        panic!("expected memory forget");
+    };
+    assert!(forgotten.forgotten.unwrap().provenance.is_empty());
+
+    let mut request = remember_request("Keep keyboard shortcuts");
+    request.source.session_id = source_id;
+    let remembered = runtime
+        .execute_command(MemoryCommand::Remember(request))
+        .await
+        .unwrap();
+    let MemoryCommandResult::Remember(entry) = remembered else {
+        panic!("expected memory remember");
+    };
+    assert!(entry.provenance.is_empty());
+    let projection = root.path().join("memory/user/MEMORY.md");
+    std::fs::remove_file(&projection).unwrap();
+    std::fs::create_dir(&projection).unwrap();
+    let failed_projection = runtime
+        .execute_command(MemoryCommand::Forget(PreparedMemoryForgetRequest {
+            target: PreparedMemoryForgetTarget::Exact(entry.entry_id),
+            scope: PreparedMemoryForgetScope {
+                scope: MemoryScope::User,
+                scope_id: USER_SCOPE_ID.into(),
+            },
+            source_session_id: source_id,
+        }))
+        .await;
+    let Err(super::MemoryError::ForgetCommitted { result, .. }) = failed_projection else {
+        panic!("expected committed forget with failed projection");
+    };
+    assert!(result.forgotten.unwrap().provenance.is_empty());
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: excluded external evidence stays auditable but is not returned with explicit memory.
+#[test]
+fn external_source_exclusion_hides_explicit_entry_provenance() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let source_id = devo_protocol::SessionId::new();
+    let mut request = remember_request("I prefer tabs");
+    request.source.session_id = source_id;
+    let entry = runtime.remember(request).unwrap();
+    assert_eq!(entry.provenance.len(), 1);
+
+    runtime.exclude_sources(&[source_id], Utc::now()).unwrap();
+    let listed = runtime.list(ListMemoryRequest::default()).unwrap().data;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].entry_id, entry.entry_id);
+    assert!(listed[0].provenance.is_empty());
+    let evidence_count: i64 = runtime
+        .connection
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM memory_evidence", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(evidence_count, 1);
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7/DD-13.
