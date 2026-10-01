@@ -83,6 +83,7 @@ async fn remember(runtime: &MemoryRuntime, body: &str) -> MemoryEntry {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("remember result"),
     }
 }

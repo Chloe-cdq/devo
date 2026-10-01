@@ -25,10 +25,17 @@ impl MemoryRuntime {
 
     pub(super) fn search(
         &self,
-        request: SearchMemoryRequest,
+        mut request: SearchMemoryRequest,
     ) -> Result<MemorySearchResult, MemoryError> {
         const SEARCH_LIMIT: u32 = 20;
         const MAX_SUMMARY_CHARS: usize = 240;
+
+        request.query = request.query.trim().to_string();
+        if request.query.is_empty() || request.query.chars().count() > 1024 {
+            return Err(MemoryError::InvalidRequest(
+                "memory search query must contain 1 to 1024 characters".into(),
+            ));
+        }
 
         let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
         let mut pending_source_deletion = self.has_pending_source_deletions();
@@ -81,6 +88,7 @@ impl MemoryRuntime {
             return Ok(Page {
                 data: entries
                     .into_iter()
+                    .filter(|entry| !super::entries::contains_secret(&entry.body))
                     .map(|entry| {
                         let mut summary = entry
                             .body

@@ -52,6 +52,13 @@ impl ServerRuntime {
         let prepared_memory = self
             .prepare_turn_memory(state, turn_id, input, &input_mode)
             .await;
+        if let Some(snapshot) = self.active_spawn_snapshot_for_session(session_id).await {
+            snapshot.prepared_memory.send_replace(
+                super::super::session_actor::state::TurnMemoryPreparation::Ready(
+                    prepared_memory.clone(),
+                ),
+            );
+        }
         let agent_tool_policy = state.agent_tool_policy;
         let session_tool_registry = self.tool_registry_for_actor_state(state);
         let runtime_context = Arc::clone(&state.runtime_context);

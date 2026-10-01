@@ -433,6 +433,22 @@ impl ServerRuntime {
         self.register_active_stream(session_id, Arc::clone(&working.state.stream))
             .await;
 
+        // Replayed tools can delegate before the model query resumes. Restore
+        // the original recall now so delegation observes a ready snapshot.
+        let prepared_memory = self
+            .prepare_turn_memory(
+                &working.state,
+                turn.turn_id,
+                "",
+                &TurnInputMode::ApprovalResume,
+            )
+            .await;
+        if let Some(snapshot) = self.active_spawn_snapshot_for_session(session_id).await {
+            snapshot.prepared_memory.send_replace(
+                super::super::session_actor::state::TurnMemoryPreparation::Ready(prepared_memory),
+            );
+        }
+
         if !self
             .turn_has_tool_result(session_id, turn.turn_id, approval_id)
             .await

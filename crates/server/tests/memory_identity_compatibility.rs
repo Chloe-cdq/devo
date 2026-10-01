@@ -85,6 +85,7 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected = MemoryEntry {
@@ -136,6 +137,7 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected_after_repeat = MemoryEntry {
@@ -174,6 +176,7 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
@@ -282,6 +285,7 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected = MemoryEntry {
@@ -340,6 +344,7 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
@@ -423,6 +428,7 @@ async fn explicit_remember_preserves_incompatible_legacy_key_collision() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected_remembered = MemoryEntry {
@@ -455,6 +461,7 @@ async fn explicit_remember_preserves_incompatible_legacy_key_collision() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
@@ -559,6 +566,7 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected prepared forget"),
     };
     let forgotten = match runtime
@@ -571,6 +579,7 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     let expected_forgotten = MemoryEntry {
@@ -632,6 +641,7 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(

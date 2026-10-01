@@ -40,6 +40,7 @@ impl ServerRuntime {
                 | Ok(MemoryCommandResult::PreparedForget(_))
                 | Ok(MemoryCommandResult::Forget(_))
                 | Ok(MemoryCommandResult::List(_))
+                | Ok(MemoryCommandResult::Read(_))
                 | Ok(MemoryCommandResult::Search(_)) => {
                     tracing::error!("memory status command returned an unexpected result");
                     unavailable_memory_status(configured_enabled)
@@ -201,6 +202,7 @@ impl ServerRuntime {
             | Ok(MemoryCommandResult::PreparedForget(_))
             | Ok(MemoryCommandResult::Forget(_))
             | Ok(MemoryCommandResult::List(_))
+            | Ok(MemoryCommandResult::Read(_))
             | Ok(MemoryCommandResult::Search(_)) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
@@ -288,6 +290,7 @@ impl ServerRuntime {
             | Ok(MemoryCommandResult::Remember(_))
             | Ok(MemoryCommandResult::PreparedForget(_))
             | Ok(MemoryCommandResult::Forget(_))
+            | Ok(MemoryCommandResult::Read(_))
             | Ok(MemoryCommandResult::Search(_)) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,

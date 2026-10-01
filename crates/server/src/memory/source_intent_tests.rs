@@ -379,3 +379,136 @@ fn deletion_intent_does_not_wait_for_blocked_memory_commit() {
     assert_eq!(state, "retired");
     assert_eq!(evidence, 0);
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7/DD-13, Built-in Agent Tools.
+/// Verifies: on-demand reads obey pending source intents without hiding explicit memory bodies.
+#[tokio::test]
+async fn pending_source_intents_fence_on_demand_reads() {
+    for record_intent in [
+        crate::db::Database::record_memory_source_deletions,
+        crate::db::Database::record_external_context_sources,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
+        let mut runtime = open_runtime(&root.path().join("memory"));
+        runtime.attach_deletion_ledger(Arc::clone(&db));
+        let (mut source, candidate) = source();
+        let source_id = devo_protocol::SessionId::new();
+        source.session_id = SessionId::from_legacy_uuid(source_id.into());
+        let now = Utc::now();
+        let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+        runtime
+            .commit_extraction(&claim, &source, &[candidate], now)
+            .unwrap();
+        let inferred = runtime
+            .list(ListMemoryRequest::default())
+            .unwrap()
+            .data
+            .remove(0);
+        let inferred_request = super::ReadMemoryRequest {
+            entry_id: inferred.entry_id.clone(),
+            workspace_root: root.path().to_path_buf(),
+        };
+        assert_eq!(
+            runtime
+                .execute_command(MemoryCommand::Read(inferred_request.clone()))
+                .await
+                .unwrap(),
+            MemoryCommandResult::Read(devo_protocol::native::rpc_memory::MemoryReadEntry {
+                entry_id: inferred.entry_id,
+                scope: MemoryScope::User,
+                kind: MemoryKind::Preference,
+                state: devo_protocol::native::rpc_memory::MemoryState::Active,
+                body: "I prefer tabs".into(),
+                source_summary: "Inferred session memory (1 source)".into(),
+            })
+        );
+        let mut request = remember_request("Keep keyboard shortcuts");
+        request.source.session_id = source_id;
+        let explicit = runtime.remember(request).unwrap();
+        record_intent(&db, &[source_id]).unwrap();
+
+        let result = runtime
+            .execute_command(MemoryCommand::Read(inferred_request))
+            .await;
+        assert!(matches!(result, Err(super::MemoryError::InvalidRequest(_))));
+        assert_eq!(
+            runtime
+                .execute_command(MemoryCommand::Read(super::ReadMemoryRequest {
+                    entry_id: explicit.entry_id.clone(),
+                    workspace_root: root.path().to_path_buf(),
+                }))
+                .await
+                .unwrap(),
+            MemoryCommandResult::Read(devo_protocol::native::rpc_memory::MemoryReadEntry {
+                entry_id: explicit.entry_id,
+                scope: MemoryScope::User,
+                kind: MemoryKind::Preference,
+                state: devo_protocol::native::rpc_memory::MemoryState::Active,
+                body: "Keep keyboard shortcuts".into(),
+                source_summary: "Explicit user memory".into(),
+            })
+        );
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7/DD-13, Built-in Agent Tools, Privacy and Authority.
+/// Verifies: search retains query validation and secret filtering alongside the source-intent fence.
+#[test]
+fn search_preserves_validation_and_filters_during_source_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
+    let mut runtime = open_runtime(&root.path().join("memory"));
+    runtime.attach_deletion_ledger(Arc::clone(&db));
+    let (mut source, candidate) = source();
+    let source_id = devo_protocol::SessionId::new();
+    source.session_id = SessionId::from_legacy_uuid(source_id.into());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    let explicit = runtime
+        .remember(remember_request("Keep tabs for scripts"))
+        .unwrap();
+    let secret = runtime
+        .remember(remember_request("Keep tabs for snippets"))
+        .unwrap();
+    runtime
+        .connection
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE memory_entries SET body = 'tabs api_key=private-value' WHERE entry_id = ?1",
+            [secret.entry_id.as_str()],
+        )
+        .unwrap();
+    db.record_memory_source_deletions(&[source_id]).unwrap();
+    let mut request = super::SearchMemoryRequest {
+        query: "  tabs  ".into(),
+        scope: MemoryScope::User,
+        kind: None,
+        state: None,
+        workspace_root: root.path().to_path_buf(),
+    };
+    assert_eq!(
+        runtime.search(request.clone()).unwrap(),
+        devo_protocol::native::page::Page {
+            data: vec![devo_protocol::native::rpc_memory::MemorySearchEntry {
+                entry_id: explicit.entry_id,
+                scope: MemoryScope::User,
+                kind: MemoryKind::Preference,
+                state: devo_protocol::native::rpc_memory::MemoryState::Active,
+                summary: "Keep tabs for scripts".into(),
+            }],
+            next_cursor: None,
+        }
+    );
+    for query in [" \n ".into(), "界".repeat(1025)] {
+        request.query = query;
+        assert!(matches!(
+            runtime.search(request.clone()),
+            Err(super::MemoryError::InvalidRequest(_))
+        ));
+    }
+}

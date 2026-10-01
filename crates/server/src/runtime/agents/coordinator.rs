@@ -391,4 +391,12 @@ impl AgentToolCoordinator for ServerRuntime {
     ) -> Result<devo_protocol::native::rpc_memory::MemorySearchResult, ToolCallError> {
         memory_coordinator::search(self, invocation, params).await
     }
+
+    async fn memory_read(
+        self: Arc<Self>,
+        invocation: devo_core::tools::MemoryToolInvocation,
+        entry_id: devo_protocol::native::ids::MemoryEntryId,
+    ) -> Result<devo_protocol::native::rpc_memory::MemoryReadEntry, ToolCallError> {
+        memory_coordinator::read(self, invocation, entry_id).await
+    }
 }

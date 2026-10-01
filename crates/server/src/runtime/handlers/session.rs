@@ -246,6 +246,7 @@ impl ServerRuntime {
             config,
             memory_settings,
             memory_settings_version: 1,
+            inherited_memory: None,
             core: core_session,
             stream: Arc::new(tokio::sync::Mutex::new(
                 crate::runtime::session_actor::state::SessionStreamState::default(),
@@ -584,6 +585,16 @@ impl ServerRuntime {
                 );
             };
             index_metadata = handle.summary().await;
+        }
+        if let Some(parent_session_id) = index_metadata
+            .as_ref()
+            .and_then(|summary| summary.agent_path.as_ref().and(summary.parent_session_id))
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                format!("subagent sessions cannot be updated directly; update the parent session {parent_session_id} instead"),
+            );
         }
         // Ephemeral degrade: no rollout → no field lines and an index-built
         // snapshot; durable → history-backed snapshot with version checks.

@@ -82,6 +82,7 @@ const SUBAGENT_AGENT_COORDINATION_TOOLS: &[&str] = &[
     "memory_remember",
     "memory_forget",
     "memory_search",
+    "memory_read",
 ];
 
 const SUBAGENT_AGENT_COORDINATION_TOOL_ALIASES: &[&str] = &[
@@ -113,6 +114,7 @@ const SUBAGENT_AGENT_COORDINATION_TOOL_ALIASES: &[&str] = &[
     "memory-remember",
     "memory-forget",
     "memory-search",
+    "memory-read",
 ];
 
 impl ToolSearchResult {

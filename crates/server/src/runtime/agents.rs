@@ -55,6 +55,25 @@ impl ServerRuntime {
                 ))
             })?
         };
+        let mut memory_preparation = parent_snapshot.prepared_memory.subscribe();
+        drop(parent_snapshot.prepared_memory);
+        let inherited_memory = {
+            use super::session_actor::state::TurnMemoryPreparation;
+            let prepared = memory_preparation
+                .wait_for(|state| matches!(state, TurnMemoryPreparation::Ready(_)))
+                .await
+                .map_err(|_| {
+                    ToolCallError::ExecutionFailed(
+                        "parent turn ended before memory preparation completed".to_string(),
+                    )
+                })?;
+            match &*prepared {
+                TurnMemoryPreparation::Ready(context) => context.clone(),
+                TurnMemoryPreparation::Pending => {
+                    unreachable!("wait_for requires a ready snapshot")
+                }
+            }
+        };
         let stable_items = if fork_turns == "all" {
             parent_snapshot.stable_items
         } else {
@@ -218,7 +237,8 @@ impl ServerRuntime {
             turn_approval_cache: crate::execution::ApprovalGrantCache::default(),
             session_context_recorded: false,
         };
-        let child_state = SessionActorState::from_runtime_session(child_session);
+        let mut child_state = SessionActorState::from_runtime_session(child_session);
+        child_state.inherited_memory = inherited_memory;
         self.insert_session_actor(child_state).await;
         self.agent_mailboxes
             .lock()

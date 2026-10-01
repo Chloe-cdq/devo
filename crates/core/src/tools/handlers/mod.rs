@@ -11,6 +11,7 @@ mod invalid;
 mod lsp;
 mod mcp;
 mod memory;
+mod memory_read;
 mod memory_search;
 mod plan;
 mod question;
@@ -36,6 +37,7 @@ pub use mcp::{McpToolHandler, mcp_search_text, mcp_tool_spec};
 pub use memory::{
     MemoryForgetHandler, MemoryRememberHandler, memory_forget_spec, memory_remember_spec,
 };
+pub use memory_read::{MemoryReadHandler, memory_read_spec};
 pub use memory_search::{MemorySearchHandler, memory_search_spec};
 pub use plan::PlanHandler;
 pub use question::QuestionHandler;
@@ -144,6 +146,7 @@ fn build_registry_from_builder(
     builder.push_spec(memory_remember_spec());
     builder.push_spec(memory_forget_spec());
     builder.push_spec(memory_search_spec());
+    builder.push_spec(memory_read_spec());
     builder.push_spec(goal_update_spec());
     builder.push_spec(tool_search_spec());
 
@@ -156,6 +159,7 @@ fn build_registry_from_builder(
     builder.register_handler("memory_remember", Arc::new(MemoryRememberHandler::new()));
     builder.register_handler("memory_forget", Arc::new(MemoryForgetHandler::new()));
     builder.register_handler("memory_search", Arc::new(MemorySearchHandler::new()));
+    builder.register_handler("memory_read", Arc::new(MemoryReadHandler::default()));
     for (kind, name) in handlers {
         let handler: Arc<dyn ToolHandler> = match kind {
             ToolHandlerKind::ShellCommand => Arc::new(ShellCommandHandler::new()),

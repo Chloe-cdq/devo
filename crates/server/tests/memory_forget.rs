@@ -37,6 +37,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => {
             panic!("expected remembered entry")
         }
@@ -75,6 +76,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => {
             panic!("expected restored entry")
         }
@@ -117,6 +119,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected active list"),
     };
     assert_eq!(
@@ -144,6 +147,7 @@ async fn explicit_remember_restores_revoked_identity_and_records_lineage() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected restored list"),
     };
     assert_eq!(
@@ -207,6 +211,7 @@ async fn explicit_remember_restores_a_tombstone_without_an_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let lifecycle: (String, Option<String>) = connection
@@ -242,6 +247,7 @@ async fn explicit_remember_restores_a_tombstone_without_an_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected restored list"),
     };
     assert_eq!(
@@ -269,6 +275,7 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
@@ -288,6 +295,7 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     let forgotten = result
@@ -324,6 +332,7 @@ async fn exact_forget_commits_revocation_before_returning_retired_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected retired list"),
     };
     assert_eq!(
@@ -376,6 +385,7 @@ async fn exact_forget_prepares_project_scope_from_workspace() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
@@ -396,6 +406,7 @@ async fn exact_forget_prepares_project_scope_from_workspace() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     let forgotten = result.forgotten.clone().expect("forgotten project entry");
@@ -436,6 +447,7 @@ async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
 
@@ -466,6 +478,7 @@ async fn exact_forget_rejects_project_entry_from_unrelated_workspace() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected Project list"),
     };
     assert_eq!(
@@ -493,6 +506,7 @@ async fn exact_forget_does_not_parse_scope_after_preparation() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let prepared = prepare_forget(
@@ -536,6 +550,7 @@ async fn exact_forget_returns_the_entry_committed_after_preparation() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let prepared = prepare_forget(
@@ -554,6 +569,7 @@ async fn exact_forget_returns_the_entry_committed_after_preparation() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected refreshed entry"),
     };
     assert_eq!(refreshed.entry_id, remembered.entry_id);
@@ -568,6 +584,7 @@ async fn exact_forget_returns_the_entry_committed_after_preparation() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     assert_eq!(
@@ -598,6 +615,7 @@ async fn ambiguous_text_forget_returns_candidates_without_mutation() {
             | MemoryCommandResult::PreparedForget(_)
             | MemoryCommandResult::List(_)
             | MemoryCommandResult::Status(_)
+            | MemoryCommandResult::Read(_)
             | MemoryCommandResult::Search(_) => panic!("expected remembered candidate"),
         };
         expected_candidates.push(remembered);
@@ -619,6 +637,7 @@ async fn ambiguous_text_forget_returns_candidates_without_mutation() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Remember(_)
         | MemoryCommandResult::Status(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     expected_candidates.sort_by_key(|entry| entry.entry_id.to_string());

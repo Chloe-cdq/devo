@@ -20,6 +20,13 @@ use crate::turn::TurnMetadata;
 
 use super::turn_inline::TurnInlineState;
 
+/// One recall preparation lane shared across admission and turn checkout.
+#[derive(Clone)]
+pub(crate) enum TurnMemoryPreparation {
+    Pending,
+    Ready(Option<Arc<str>>),
+}
+
 /// Immutable parent snapshot used by `spawn_agent` during an active parent turn.
 #[derive(Clone)]
 pub(crate) struct SpawnSnapshot {
@@ -31,6 +38,7 @@ pub(crate) struct SpawnSnapshot {
     pub(crate) parent_tool_registry: Option<Arc<ToolRegistry>>,
     pub(crate) memory_settings: crate::memory::SessionMemorySettings,
     pub(crate) memory_settings_version: u64,
+    pub(crate) prepared_memory: tokio::sync::watch::Sender<TurnMemoryPreparation>,
     pub(crate) runtime_context: Arc<SessionRuntimeContext>,
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
     pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
@@ -77,6 +85,8 @@ pub(crate) struct SessionActorState {
     pub(crate) config: SessionConfig,
     pub(crate) memory_settings: crate::memory::SessionMemorySettings,
     pub(crate) memory_settings_version: u64,
+    /// Immutable memory inherited at delegation; root actors retain no turn snapshot.
+    pub(crate) inherited_memory: Option<Arc<str>>,
     pub(crate) core: SessionState,
     pub(crate) stream: Arc<TokioMutex<SessionStreamState>>,
     pub(crate) active_turn: Option<TurnMetadata>,
@@ -117,6 +127,17 @@ impl SessionActorState {
     }
 
     pub(crate) fn spawn_snapshot(&self) -> SpawnSnapshot {
+        let memory = if self.summary.is_subagent()
+            || self
+                .active_turn
+                .as_ref()
+                .is_none_or(|turn| turn.kind == devo_core::TurnKind::ManualCompaction)
+        {
+            TurnMemoryPreparation::Ready(self.inherited_memory.clone())
+        } else {
+            TurnMemoryPreparation::Pending
+        };
+        let (prepared_memory, _) = tokio::sync::watch::channel(memory);
         let fork_turns_all = true;
         let stable_items = if fork_turns_all {
             let active_turn_id = self.active_turn.as_ref().map(|turn| turn.turn_id);
@@ -141,6 +162,7 @@ impl SessionActorState {
             parent_tool_registry: self.tool_registry.clone(),
             memory_settings: self.memory_settings,
             memory_settings_version: self.memory_settings_version,
+            prepared_memory,
             runtime_context: Arc::clone(&self.runtime_context),
             pending_turn_queue: Arc::clone(&self.pending_turn_queue),
             steer_input_queue: Arc::clone(&self.steer_input_queue),
@@ -160,6 +182,7 @@ impl SessionActorState {
             config: session.config,
             memory_settings: session.memory_settings,
             memory_settings_version: session.memory_settings_version,
+            inherited_memory: None,
             core,
             stream: Arc::new(TokioMutex::new(SessionStreamState {
                 deferred_assistant: session.deferred_assistant,

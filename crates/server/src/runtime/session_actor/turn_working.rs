@@ -41,6 +41,7 @@ impl SessionActorState {
                 steer_input_queue: std::sync::Arc::clone(&self.steer_input_queue),
                 memory_settings: self.memory_settings,
                 memory_settings_version: self.memory_settings_version,
+                inherited_memory: self.inherited_memory.clone(),
                 agent_tool_policy: self.agent_tool_policy,
                 max_turns: self.max_turns,
                 next_item_seq: self.next_item_seq,
