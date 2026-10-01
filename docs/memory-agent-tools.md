@@ -27,8 +27,10 @@ Subagents inherit the parent's prepared advisory snapshot independently of
 `fork_turns`. Store changes and recall settings updates after preparation do not
 alter that snapshot. Follow-up child turns retain it; a child never prepares a
 fresh recall. Delegation during root recall preparation waits for the snapshot;
-prepared-empty snapshots, including manual compaction, do not wait. Memory tools
-and aliases are hidden and rejected at execution,
+prepared-empty snapshots, including manual compaction, do not wait.
+Restarted approval continuations restore and publish that turn's persisted
+snapshot before replaying tools, including when the original snapshot was empty.
+Memory tools and aliases are hidden and rejected at execution,
 and the server coordinator rejects independent child read/search requests.
 Delegated sessions, including ephemeral sessions, cannot update recall or
 contribution settings. Passive source enqueue remains a server-owned seam with
