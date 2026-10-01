@@ -1363,50 +1363,6 @@ mod tests {
         (db, dir)
     }
 
-    /// Trace: L2-DES-MEM-001 Rev 4 DD-7/DD-13.
-    /// Verifies: a memory commit and source-intent recording have one serial order.
-    #[test]
-    fn memory_source_commit_guard_serializes_intent_recording() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let (db, _dir) = test_db();
-        let db = Arc::new(db);
-        let source = SessionId::new();
-        let source_text = source.to_string();
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let guarding = {
-            let db = Arc::clone(&db);
-            std::thread::spawn(move || {
-                db.with_memory_source_intent(&source_text, |blocked| {
-                    assert!(!blocked);
-                    entered_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                    Ok(())
-                })
-                .unwrap();
-            })
-        };
-        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let (recorded_tx, recorded_rx) = mpsc::channel();
-        let recording = {
-            let db = Arc::clone(&db);
-            std::thread::spawn(move || {
-                db.record_memory_source_deletions(&[source]).unwrap();
-                recorded_tx.send(()).unwrap();
-            })
-        };
-        let waited = recorded_rx
-            .recv_timeout(Duration::from_millis(100))
-            .is_err();
-        release_tx.send(()).unwrap();
-        guarding.join().unwrap();
-        recording.join().unwrap();
-        assert!(waited);
-        assert!(db.has_memory_source_intent(&source.to_string()).unwrap());
-    }
-
     /// Trace: L2-DES-MEM-001 Rev 4 DD-13.
     /// Verifies: a contended source-intent lookup does not block the Tokio worker.
     #[test]

@@ -277,22 +277,7 @@ impl MemoryRuntime {
                 lease_until = NULL, retry_at = NULL, updated_at = ?1 WHERE job_id = ?2 AND lease_owner = ?3",
             rusqlite::params![timestamp, claim.id, claim.owner],
         )?;
-        if let Some(db) = self.deletion_ledger.as_ref() {
-            let committed =
-                db.with_memory_source_intent(source.session_id.as_str(), |blocked| {
-                    if blocked {
-                        Ok(false)
-                    } else {
-                        transaction.commit()?;
-                        Ok(true)
-                    }
-                })?;
-            if !committed {
-                return Ok(());
-            }
-        } else {
-            transaction.commit()?;
-        }
+        transaction.commit()?;
         for (scope, scope_id) in scopes {
             if let Err(error) = self.refresh_projection(&connection, scope, &scope_id) {
                 connection.execute(

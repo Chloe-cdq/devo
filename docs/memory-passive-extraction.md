@@ -67,9 +67,11 @@ Deleting a source session first records durable deletion intent in the session
 index, then removes its rollout and session metadata even if memory storage or
 projection is unavailable. Cleanup is queued without waiting for the memory
 database. Extraction checks that same durable intent before claiming a source
-and before committing an in-flight result. Until reconciliation finishes,
-inferred memory is withheld from server reads; explicit memory remains
-available. The idempotent
+and before starting a commit. A transaction already in progress can finish
+after intent is recorded; search, list, recall, and forget selectors withhold
+inferred memory until idempotent cleanup fences the source and removes its
+evidence. Markdown projections may lag this fence until cleanup repairs them.
+Explicit memory remains available. The idempotent
 memory transaction permanently fences the source, removes its candidates, job
 details, evidence, and proposal-claim support, and recomputes conflicts from
 surviving support. An inferred entry is retired when its last evidence disappears.

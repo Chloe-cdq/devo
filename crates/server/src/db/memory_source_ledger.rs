@@ -71,18 +71,14 @@ impl Database {
 
     pub fn has_memory_source_intent(&self, source: &str) -> Result<bool> {
         let conn = self.conn.lock().expect("database mutex poisoned");
-        Ok(memory_source_intent(&conn, source)?)
-    }
-
-    /// Holds the session-index lock through a memory commit, so an intent
-    /// cannot be recorded between the final check and that commit.
-    pub(crate) fn with_memory_source_intent<T>(
-        &self,
-        source: &str,
-        action: impl FnOnce(bool) -> rusqlite::Result<T>,
-    ) -> rusqlite::Result<T> {
-        let conn = self.conn.lock().expect("database mutex poisoned");
-        action(memory_source_intent(&conn, source)?)
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pending_memory_source_deletions
+                WHERE source_session_id = ?1)
+              OR EXISTS(SELECT 1 FROM memory_external_context_sources
+                WHERE source_session_id = ?1)",
+            [source],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn pending_external_context_sources(&self) -> Result<Vec<SessionId>> {
@@ -135,15 +131,4 @@ impl Database {
         transaction.commit()?;
         Ok(())
     }
-}
-
-fn memory_source_intent(conn: &rusqlite::Connection, source: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pending_memory_source_deletions
-            WHERE source_session_id = ?1)
-          OR EXISTS(SELECT 1 FROM memory_external_context_sources
-            WHERE source_session_id = ?1)",
-        [source],
-        |row| row.get(0),
-    )
 }
