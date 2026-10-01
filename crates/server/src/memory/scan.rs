@@ -27,7 +27,38 @@ pub(crate) struct ScanContext {
     pub(crate) activity: Arc<dyn SourceActivity>,
 }
 
+pub(crate) enum MemorySourceWork {
+    Scan(ScanContext),
+    Reconcile,
+}
+
 impl MemoryRuntime {
+    /// Owns passive source scheduling and durable source-intent reconciliation.
+    pub(crate) fn enqueue_source(self: &Arc<Self>, work: MemorySourceWork) {
+        match work {
+            MemorySourceWork::Scan(context) => {
+                let memory = Arc::clone(self);
+                tokio::spawn(async move {
+                    let repair = Arc::clone(&memory);
+                    if let Err(error) = tokio::task::spawn_blocking(move || {
+                        repair.reconcile_source_intents();
+                    })
+                    .await
+                    {
+                        tracing::warn!(%error, "memory source reconciliation task failed");
+                    }
+                    if let Err(error) = memory.run_background_scan(context).await {
+                        tracing::warn!(%error, error_class = "storage_error", "background memory scan failed");
+                    }
+                });
+            }
+            MemorySourceWork::Reconcile => {
+                let memory = Arc::clone(self);
+                let _ = std::thread::spawn(move || memory.reconcile_source_intents());
+            }
+        }
+    }
+
     pub(crate) async fn run_background_scan(
         self: Arc<Self>,
         context: ScanContext,
@@ -115,10 +146,8 @@ impl MemoryRuntime {
                 break;
             }
             let session_id = index.metadata.session_id;
-            if context
-                .db
-                .has_external_context_source(&session_id.to_string())?
-            {
+            let source_id = session_id.to_string();
+            if self.source_has_intent(&source_id) {
                 continue;
             }
             let Some(path) = index.rollout_path else {
@@ -135,7 +164,7 @@ impl MemoryRuntime {
             let Some(source) = source else {
                 continue;
             };
-            if source.session_id.as_str() != session_id.to_string() {
+            if source.session_id.as_str() != source_id.as_str() {
                 continue;
             }
             let memory = Arc::clone(&self);
@@ -165,9 +194,7 @@ impl MemoryRuntime {
             };
             loop {
                 if context.activity.is_active(session_id).await
-                    || context
-                        .db
-                        .has_external_context_source(&session_id.to_string())?
+                    || self.source_has_intent(&source_id)
                     || !self.quota_allows(provider.as_ref())
                 {
                     let memory = Arc::clone(&self);
@@ -244,9 +271,7 @@ impl MemoryRuntime {
                         .flatten();
                     let still_eligible = latest.as_ref().is_some_and(source_still_eligible)
                         && !context.activity.is_active(session_id).await
-                        && !context
-                            .db
-                            .has_external_context_source(&session_id.to_string())?;
+                        && !self.source_has_intent(&source_id);
                     let candidates = if still_eligible {
                         candidates
                     } else {

@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "memory_scan_latency_tests.rs"]
+mod latency_tests;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use devo_core::tools::ToolRegistry;
@@ -297,6 +300,28 @@ async fn scan(runtime: &Arc<ServerRuntime>, root: &std::path::Path) -> Result<()
 }
 
 /// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
+/// Verifies: projection repair cannot clear a durable deletion fence while source metadata still exists.
+#[tokio::test]
+async fn reconciliation_keeps_deletion_intent_until_session_is_gone() -> Result<()> {
+    let (root, runtime, _) = setup(/*sources*/ 1, /*permits*/ 1)?;
+    let source_id = runtime.deps.db.list_root_sessions()?[0].session_id;
+    scan(&runtime, root.path()).await?;
+    runtime
+        .deps
+        .db
+        .record_memory_source_deletions(&[source_id])?;
+
+    runtime.memory.as_ref().unwrap().reconcile_source_intents();
+
+    assert!(runtime.deps.db.get_session(&source_id)?.is_some());
+    assert_eq!(
+        runtime.deps.db.pending_memory_source_deletions()?,
+        vec![source_id]
+    );
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
 /// Verifies: deleting a processed source retires its inferred entry and removes source detail.
 #[tokio::test]
 async fn deleting_processed_source_removes_its_memory() -> Result<()> {
@@ -321,6 +346,7 @@ async fn deleting_processed_source_removes_its_memory() -> Result<()> {
             .map_err(anyhow::Error::msg)?,
         vec![source_id]
     );
+    memory.reconcile_source_intents();
     let after = memory
         .execute_command(crate::memory::MemoryCommand::List(
             crate::memory::ListMemoryRequest::default(),
@@ -378,6 +404,7 @@ async fn deleting_source_during_extraction_prevents_late_commit() -> Result<()> 
         panic!("list result")
     };
     assert_eq!(entries.data, vec![]);
+    memory.reconcile_source_intents();
     let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
     let job_count: i64 = connection.query_row(
         "SELECT COUNT(*) FROM memory_jobs WHERE source_session_id = ?1",
@@ -413,10 +440,7 @@ async fn source_delete_retries_after_projection_write_failure() -> Result<()> {
         vec![source_id]
     );
     std::fs::remove_file(&projection_dir)?;
-    super::session_deletion::retry_pending_memory_source_deletions(
-        runtime.memory.as_ref().unwrap(),
-        &runtime.deps.db,
-    );
+    runtime.memory.as_ref().unwrap().reconcile_source_intents();
     assert_eq!(runtime.deps.db.pending_memory_source_deletions()?, vec![]);
     let projection = std::fs::read_to_string(projection_dir.join("MEMORY.md"))?;
     assert!(projection.contains("state: retired"));
@@ -453,7 +477,7 @@ async fn source_delete_survives_memory_storage_error() -> Result<()> {
         [],
     )?;
     let memory = runtime.memory.as_ref().unwrap();
-    super::session_deletion::retry_pending_memory_source_deletions(memory, &runtime.deps.db);
+    memory.reconcile_source_intents();
     assert_eq!(runtime.deps.db.pending_memory_source_deletions()?, vec![]);
     let result = memory
         .execute_command(crate::memory::MemoryCommand::List(
@@ -484,10 +508,14 @@ async fn external_context_ledger_blocks_scan_without_rollout_marker() -> Result<
     scan(&runtime, root.path()).await?;
 
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        runtime.deps.db.pending_external_context_sources()?,
-        vec![source_id]
-    );
+    runtime.memory.as_ref().unwrap().reconcile_source_intents();
+    let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+    let excluded: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM memory_excluded_sources WHERE source_session_id = ?1)",
+        [source_id.to_string()],
+        |row| row.get(0),
+    )?;
+    assert!(excluded);
     Ok(())
 }
 

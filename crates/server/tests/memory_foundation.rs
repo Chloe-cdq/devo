@@ -30,8 +30,8 @@ use devo_server::ClientTransportKind;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
 use devo_server::memory::{
-    EnqueueOutcome, MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime,
-    PrepareMemoryRequest, PreparedMemory, SessionMemorySource,
+    MemoryCommand, MemoryCommandResult, MemoryError, MemoryRuntime, PrepareMemoryRequest,
+    PreparedMemory,
 };
 use futures::Stream;
 use futures::stream;
@@ -99,7 +99,7 @@ fn memory_config_defaults_are_disabled_and_global_gate_wins() {
 }
 
 /// Trace: L2-DES-CONV-002 Rev 2 DD-6, L2-DES-MEM-001 Rev 3 DD-2
-/// Verifies: independent per-session recall and contribution controls resolve at the runtime seam.
+/// Verifies: per-session recall controls resolve at the runtime seam.
 #[tokio::test]
 async fn enabled_memory_runtime_resolves_each_session_control_independently() {
     let data_root = TempDir::new().expect("memory data root");
@@ -148,34 +148,6 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
             .expect("prepare disabled recall"),
         PreparedMemory::default()
     );
-
-    assert_eq!(
-        runtime
-            .enqueue_source(SessionMemorySource {
-                session_contribution: MemorySetting::Inherit,
-            })
-            .await
-            .expect("enqueue inherited contribution"),
-        EnqueueOutcome { accepted: false }
-    );
-    assert_eq!(
-        runtime
-            .enqueue_source(SessionMemorySource {
-                session_contribution: MemorySetting::On,
-            })
-            .await
-            .expect("enqueue enabled contribution"),
-        EnqueueOutcome { accepted: true }
-    );
-    assert_eq!(
-        runtime
-            .enqueue_source(SessionMemorySource {
-                session_contribution: MemorySetting::Off,
-            })
-            .await
-            .expect("enqueue disabled contribution"),
-        EnqueueOutcome { accepted: false }
-    );
 }
 
 /// Trace: L2-DES-MEM-001 Rev 3 DD-2/DD-4/DD-8
@@ -214,13 +186,6 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             .await
             .expect("prepare disabled memory"),
         PreparedMemory::default()
-    );
-    assert_eq!(
-        runtime
-            .enqueue_source(SessionMemorySource::default())
-            .await
-            .expect("enqueue disabled memory source"),
-        EnqueueOutcome { accepted: false }
     );
 
     drop(runtime);

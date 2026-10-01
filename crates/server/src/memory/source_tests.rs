@@ -221,6 +221,7 @@ fn clean_failed_turn_followed_by_success_is_eligible() {
     assert!(read_source(&write_lines(&dir, &lines)).unwrap().is_some());
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-6.
 /// Verifies: a pending native item from a failed turn cannot taint a later clean turn.
 #[test]
 fn failed_native_item_does_not_taint_later_completed_turn() {

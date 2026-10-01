@@ -3,6 +3,8 @@
 When General Persistent Memory is enabled, creating a persistent normal root
 session schedules a background scan. Startup and foreground turns do not wait
 for discovery, extraction, retries, or projection repair.
+The session runtime submits scan and cleanup work through the memory module's
+source entry point; the memory module owns extraction and source reconciliation.
 
 A scan admits at most `memory.max_sources_per_scan` sources (default 2).
 Sources must be persistent root sessions, idle for at least
@@ -63,8 +65,11 @@ visible through Native `memory/status` using content-free error classes.
 
 Deleting a source session first records durable deletion intent in the session
 index, then removes its rollout and session metadata even if memory storage or
-projection is unavailable. Until reconciliation finishes, inferred memory is
-withheld from server reads; explicit memory remains available. The idempotent
+projection is unavailable. Cleanup is queued without waiting for the memory
+database. Extraction checks that same durable intent before claiming a source
+and before committing an in-flight result. Until reconciliation finishes,
+inferred memory is withheld from server reads; explicit memory remains
+available. The idempotent
 memory transaction permanently fences the source, removes its candidates, job
 details, evidence, and proposal-claim support, and recomputes conflicts from
 surviving support. An inferred entry is retired when its last evidence disappears.
@@ -91,7 +96,9 @@ scoped conservative claim identities and stable entry-ID bindings independently
 of candidate history. Equivalent explicit display changes keep those bindings;
 an explicit resolution can select either retained claim. Entry merges redirect
 bindings in the same transaction before removing duplicates. Candidate-history
-pruning cannot remove live conflict authority. Admission checks all retained
+pruning cannot remove live conflict authority. One live-claim view defines
+which retained source support has authority for admission, withholding, and
+source-change reconciliation. Admission checks all retained
 memberships of the scoped conservative claim before creating an inferred entry,
 including opposing claims that have no entry binding. Renaming a model proposal
 key cannot discard a known conflict or explicit authority. Explicit writes,

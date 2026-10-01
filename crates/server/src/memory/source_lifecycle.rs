@@ -9,6 +9,48 @@ use super::stored_values::parse_scope;
 use super::{MemoryError, MemoryRuntime};
 
 impl MemoryRuntime {
+    /// Applies durable session-index intents to memory storage. Failed intents
+    /// remain in the index for the next startup or scan.
+    pub(crate) fn reconcile_source_intents(&self) {
+        let Some(db) = self.deletion_ledger.as_ref() else {
+            return;
+        };
+        match db.pending_memory_source_deletions() {
+            Ok(pending) if !pending.is_empty() => {
+                if let Err(error) = self.delete_sources(&pending, Utc::now()) {
+                    tracing::warn!(%error, "memory source deletion remains pending");
+                } else {
+                    let mut completed = Vec::new();
+                    for source in pending {
+                        match db.get_session(&source) {
+                            Ok(None) => completed.push(source),
+                            Ok(Some(_)) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, %source, "failed to inspect deleted session");
+                            }
+                        }
+                    }
+                    if let Err(error) = db.finish_memory_source_deletions(&completed) {
+                        tracing::warn!(%error, "failed to finish memory source deletion ledger");
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "failed to read memory source deletion ledger"),
+        }
+        match db.pending_external_context_sources() {
+            Ok(pending) if !pending.is_empty() => {
+                if let Err(error) = self.exclude_sources(&pending, Utc::now()) {
+                    tracing::warn!(%error, "external-context source exclusion remains pending");
+                } else if let Err(error) = db.finish_external_context_sources(&pending) {
+                    tracing::warn!(%error, "failed to finish external-context source ledger");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "failed to read external-context source ledger"),
+        }
+    }
+
     /// Excludes externally informed sessions without erasing their audit evidence.
     pub(crate) fn exclude_sources(
         &self,

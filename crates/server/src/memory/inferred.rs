@@ -25,10 +25,7 @@ impl MemoryRuntime {
         {
             return Ok(());
         }
-        if self.deletion_ledger.as_ref().is_some_and(|db| {
-            db.has_external_context_source(source.session_id.as_str())
-                .unwrap_or(true)
-        }) {
+        if self.source_has_intent(source.session_id.as_str()) {
             return Ok(());
         }
         let timestamp = now.to_rfc3339_opts(SecondsFormat::Millis, /*use_z*/ true);

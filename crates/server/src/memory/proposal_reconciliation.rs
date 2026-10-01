@@ -32,16 +32,9 @@ pub(super) fn reconcile_entry_after_source_change(
 ) -> Result<(), MemoryError> {
     let has_live_claim: bool = transaction.query_row(
         "SELECT EXISTS(
-            SELECT 1 FROM memory_proposal_claims AS claim
+            SELECT 1 FROM memory_live_proposal_claims AS claim
             WHERE claim.entry_id = ?1
-              AND (claim.legacy_unattributed = 1 OR EXISTS (
-                SELECT 1 FROM memory_proposal_claim_sources AS support
-                WHERE support.scope_type = claim.scope_type
-                  AND support.scope_id = claim.scope_id
-                  AND support.proposal_key = claim.proposal_key
-                  AND support.canonical_key = claim.canonical_key
-                  AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
-                    WHERE excluded.source_session_id = support.source_session_id))))",
+            )",
         [entry_id],
         |row| row.get(0),
     )?;
@@ -51,30 +44,14 @@ pub(super) fn reconcile_entry_after_source_change(
 
     let contested: bool = transaction.query_row(
         "SELECT EXISTS(
-            SELECT 1 FROM memory_proposal_claims AS owned
-            JOIN memory_proposal_claims AS competing
+            SELECT 1 FROM memory_live_proposal_claims AS owned
+            JOIN memory_live_proposal_claims AS competing
               ON competing.scope_type = owned.scope_type
              AND competing.scope_id = owned.scope_id
              AND competing.proposal_key = owned.proposal_key
             LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
             WHERE owned.entry_id = ?1
               AND competing.canonical_key != owned.canonical_key
-              AND (owned.legacy_unattributed = 1 OR EXISTS (
-                SELECT 1 FROM memory_proposal_claim_sources AS support
-                WHERE support.scope_type = owned.scope_type
-                  AND support.scope_id = owned.scope_id
-                  AND support.proposal_key = owned.proposal_key
-                  AND support.canonical_key = owned.canonical_key
-                  AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
-                    WHERE excluded.source_session_id = support.source_session_id)))
-              AND (competing.legacy_unattributed = 1 OR EXISTS (
-                SELECT 1 FROM memory_proposal_claim_sources AS support
-                WHERE support.scope_type = competing.scope_type
-                  AND support.scope_id = competing.scope_id
-                  AND support.proposal_key = competing.proposal_key
-                  AND support.canonical_key = competing.canonical_key
-                  AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
-                    WHERE excluded.source_session_id = support.source_session_id)))
               AND (competing.entry_id IS NULL OR (
                 competitor.scope_type = owned.scope_type
                 AND competitor.scope_id = owned.scope_id

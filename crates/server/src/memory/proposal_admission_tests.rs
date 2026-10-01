@@ -1,6 +1,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
 /// Verifies: an excluded claim in one group cannot conflict with clean support in another.
 #[test]
 fn excluding_cross_group_claim_restores_clean_inferred_entry() {
@@ -41,6 +42,7 @@ fn excluding_cross_group_claim_restores_clean_inferred_entry() {
     assert_recallable(&runtime, &entries);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
 /// Verifies: a new clean group can reactivate an identity after its old group is excluded.
 #[test]
 fn clean_cross_group_claim_reactivates_retired_inferred_entry() {
@@ -77,6 +79,7 @@ fn clean_cross_group_claim_reactivates_retired_inferred_entry() {
     assert_recallable(&runtime, &entries);
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
 /// Verifies: deleting an owned claim still checks clean support in another group.
 #[test]
 fn deleting_cross_group_owned_claim_restores_surviving_inferred_entry() {

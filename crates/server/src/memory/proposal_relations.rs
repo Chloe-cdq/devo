@@ -53,6 +53,25 @@ pub(super) fn create_schema(transaction: &Transaction<'_>) -> Result<(), MemoryE
     Ok(())
 }
 
+/// The sole definition of whether retained proposal support still has authority.
+pub(super) fn create_live_view(transaction: &Transaction<'_>) -> Result<(), MemoryError> {
+    transaction.execute_batch(
+        "CREATE VIEW IF NOT EXISTS memory_live_proposal_claims AS
+         SELECT claim.* FROM memory_proposal_claims AS claim
+         WHERE claim.legacy_unattributed = 1 OR EXISTS (
+             SELECT 1 FROM memory_proposal_claim_sources AS support
+             WHERE support.scope_type = claim.scope_type
+               AND support.scope_id = claim.scope_id
+               AND support.proposal_key = claim.proposal_key
+               AND support.canonical_key = claim.canonical_key
+               AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
+                 WHERE excluded.source_session_id = support.source_session_id)
+               AND NOT EXISTS (SELECT 1 FROM memory_deleted_sources AS deleted
+                 WHERE deleted.source_session_id = support.source_session_id))",
+    )?;
+    Ok(())
+}
+
 pub(super) fn record_claim(
     transaction: &Transaction<'_>,
     claim: ProposalClaim<'_>,
@@ -160,29 +179,14 @@ pub(super) fn admit_inferred(
         ));
     }
     let competitor = transaction.query_row(
-        "SELECT COALESCE(entry.origin, 'inferred_session') FROM memory_proposal_claims AS competing
+        "SELECT COALESCE(entry.origin, 'inferred_session') FROM memory_live_proposal_claims AS competing
          LEFT JOIN memory_entries AS entry ON entry.entry_id = competing.entry_id
          WHERE competing.scope_type = ?1 AND competing.scope_id = ?2
             AND competing.canonical_key != ?3
             AND competing.proposal_key IN (
-                SELECT owned.proposal_key FROM memory_proposal_claims AS owned
+                SELECT owned.proposal_key FROM memory_live_proposal_claims AS owned
                 WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.canonical_key = ?3
-                  AND (owned.legacy_unattributed = 1 OR EXISTS (
-                    SELECT 1 FROM memory_proposal_claim_sources AS support
-                    WHERE support.scope_type = owned.scope_type
-                      AND support.scope_id = owned.scope_id
-                      AND support.proposal_key = owned.proposal_key
-                      AND support.canonical_key = owned.canonical_key
-                      AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
-                        WHERE excluded.source_session_id = support.source_session_id))))
-            AND (competing.legacy_unattributed = 1 OR EXISTS (
-                SELECT 1 FROM memory_proposal_claim_sources AS support
-                WHERE support.scope_type = competing.scope_type
-                  AND support.scope_id = competing.scope_id
-                  AND support.proposal_key = competing.proposal_key
-                  AND support.canonical_key = competing.canonical_key
-                  AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
-                    WHERE excluded.source_session_id = support.source_session_id)))
+            )
             AND (competing.entry_id IS NULL OR (entry.scope_type = ?1 AND entry.scope_id = ?2
                 AND entry.state IN ('active', 'restored', 'conflicted')))
          ORDER BY CASE entry.origin WHEN 'explicit_user' THEN 0 ELSE 1 END
@@ -288,30 +292,14 @@ fn withhold_competing_inferred(
     // evidence, keys, and timestamps are unchanged.
     let contested_keys = {
         let mut statement = transaction.prepare(
-            "SELECT DISTINCT owned.canonical_key FROM memory_proposal_claims AS owned
-             JOIN memory_proposal_claims AS competing
+            "SELECT DISTINCT owned.canonical_key FROM memory_live_proposal_claims AS owned
+             JOIN memory_live_proposal_claims AS competing
                 ON competing.scope_type = owned.scope_type
                 AND competing.scope_id = owned.scope_id
                 AND competing.proposal_key = owned.proposal_key
              LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
              WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.proposal_key = ?3
                 AND competing.canonical_key != owned.canonical_key
-                AND (owned.legacy_unattributed = 1 OR EXISTS (
-                    SELECT 1 FROM memory_proposal_claim_sources AS support
-                    WHERE support.scope_type = owned.scope_type
-                      AND support.scope_id = owned.scope_id
-                      AND support.proposal_key = owned.proposal_key
-                      AND support.canonical_key = owned.canonical_key
-                      AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
-                        WHERE excluded.source_session_id = support.source_session_id)))
-                AND (competing.legacy_unattributed = 1 OR EXISTS (
-                    SELECT 1 FROM memory_proposal_claim_sources AS support
-                    WHERE support.scope_type = competing.scope_type
-                      AND support.scope_id = competing.scope_id
-                      AND support.proposal_key = competing.proposal_key
-                      AND support.canonical_key = competing.canonical_key
-                      AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
-                        WHERE excluded.source_session_id = support.source_session_id)))
                 AND (competing.entry_id IS NULL OR (
                     competitor.scope_type = ?1 AND competitor.scope_id = ?2
                     AND competitor.state IN ('active', 'restored', 'conflicted')))",

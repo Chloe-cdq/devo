@@ -59,13 +59,7 @@ impl ServerRuntime {
             .map_err(|error| error.to_string())?;
         }
         if let Some(memory) = &self.memory {
-            let memory = std::sync::Arc::clone(memory);
-            let db = std::sync::Arc::clone(&self.deps.db);
-            tokio::task::spawn_blocking(move || {
-                super::super::session_deletion::reconcile_external_context_sources(&memory, &db);
-            })
-            .await
-            .map_err(|error| error.to_string())?;
+            memory.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
         }
         Ok(())
     }

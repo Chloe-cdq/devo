@@ -26,6 +26,8 @@ mod runtime_test_support;
 pub(crate) mod scan;
 mod schema;
 mod source;
+#[cfg(test)]
+mod source_intent_tests;
 mod source_lifecycle;
 mod stored_values;
 #[cfg(test)]
@@ -59,11 +61,11 @@ use thiserror::Error;
 #[cfg(test)]
 pub(crate) use command_types::MemoryInferredRememberRequest;
 pub use command_types::{
-    EnqueueOutcome, ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
+    ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
     MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
     MemorySourceContext, MemoryUserSessionSelection, PrepareMemoryRequest, PreparedMemory,
     PreparedMemoryForgetRequest, ProjectMemoryOperation, ProjectMemorySession,
-    ProjectMemorySessionActivity, SearchMemoryRequest, SessionMemorySource,
+    ProjectMemorySessionActivity, SearchMemoryRequest,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
@@ -202,6 +204,15 @@ impl MemoryRuntime {
         })
     }
 
+    fn source_has_intent(&self, source: &str) -> bool {
+        self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_memory_source_intent(source).unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to check memory source intent");
+                true
+            })
+        })
+    }
+
     /// Prepares an immutable memory snapshot for a turn.
     pub async fn prepare_turn(
         &self,
@@ -224,20 +235,6 @@ impl MemoryRuntime {
         Ok(PreparedMemory {
             project_scope_id: Some(identity.scope_id),
             user_entries,
-        })
-    }
-
-    /// Accepts a session source for later extraction work. Disabled memory
-    /// never queues a source.
-    pub async fn enqueue_source(
-        &self,
-        source: SessionMemorySource,
-    ) -> Result<EnqueueOutcome, MemoryError> {
-        Ok(EnqueueOutcome {
-            accepted: self
-                .config
-                .resolve_contribution(source.session_contribution)
-                == MemorySetting::On,
         })
     }
 

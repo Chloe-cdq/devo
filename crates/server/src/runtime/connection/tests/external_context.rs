@@ -149,6 +149,7 @@ async fn failed_external_marker_write_keeps_source_excluded() -> Result<()> {
     Ok(())
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-6.
 /// Verifies: a failed middle marker cannot leave an unloaded ancestor eligible.
 #[tokio::test]
 async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> Result<()> {

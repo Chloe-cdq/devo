@@ -69,6 +69,18 @@ impl Database {
         )?)
     }
 
+    pub fn has_memory_source_intent(&self, source: &str) -> Result<bool> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pending_memory_source_deletions
+                WHERE source_session_id = ?1)
+              OR EXISTS(SELECT 1 FROM memory_external_context_sources
+                WHERE source_session_id = ?1)",
+            [source],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn pending_external_context_sources(&self) -> Result<Vec<SessionId>> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut statement = conn.prepare(

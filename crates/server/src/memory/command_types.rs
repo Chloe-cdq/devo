@@ -248,18 +248,3 @@ pub struct PreparedMemory {
     pub project_scope_id: Option<String>,
     pub user_entries: Vec<MemoryEntry>,
 }
-
-/// A completed session source eligible for future memory extraction.
-#[derive(Debug, Clone, Default)]
-pub struct SessionMemorySource {
-    /// Raw per-session contribution preference read when a background scan
-    /// evaluates this source session.
-    pub session_contribution: MemorySetting,
-}
-
-/// Outcome of attempting to enqueue a session source.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EnqueueOutcome {
-    /// Whether this source was accepted for processing.
-    pub accepted: bool,
-}
