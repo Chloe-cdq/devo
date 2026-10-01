@@ -181,7 +181,7 @@ async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> 
     let child_id = SessionId::new();
     assert!(
         runtime
-            .mark_external_context_used(None, child_id, Some(parent_id))
+            .mark_external_context_used(/*rollout_path*/ None, child_id, Some(parent_id))
             .await
             .is_err()
     );
