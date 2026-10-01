@@ -125,10 +125,10 @@ impl ServerRuntime {
         session_id: SessionId,
         turn_id: TurnId,
         snapshot: Arc<SpawnSnapshot>,
-    ) {
+    ) -> Arc<SpawnSnapshot> {
         self.active_turns
             .register_spawn_snapshot(session_id, turn_id, snapshot)
-            .await;
+            .await
     }
 
     pub(crate) async fn clear_turn_spawn_snapshot(&self, session_id: SessionId, turn_id: TurnId) {

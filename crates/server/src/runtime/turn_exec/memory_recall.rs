@@ -20,7 +20,7 @@ impl ServerRuntime {
         input_mode: &TurnInputMode,
     ) -> Option<Arc<str>> {
         if state.summary.is_subagent() {
-            return None;
+            return state.inherited_memory.clone();
         }
         let session_id = state.session_id();
         if matches!(
@@ -106,6 +106,10 @@ impl ServerRuntime {
         (!context.is_empty()).then(|| Arc::from(context))
     }
 }
+
+#[cfg(test)]
+#[path = "memory_admission_tests.rs"]
+mod admission_tests;
 
 #[cfg(test)]
 mod tests {
@@ -206,6 +210,134 @@ mod tests {
             .hydrate_runtime_session(session_id, &record.rollout_path)
             .await?;
         assert_eq!(restored.next_item_seq, recall.seq + 1);
+        runtime.shutdown().await;
+        Ok(())
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4 DD-6
+    /// Verifies: Native delegation cannot freeze a root snapshot before recall preparation completes.
+    #[tokio::test]
+    async fn delegation_waits_for_parent_memory_preparation() -> Result<()> {
+        use crate::runtime::session_actor::state::TurnMemoryPreparation;
+        use crate::support::{
+            StreamScript, start_turn_with_approval_policy, wait_for_stream_calls,
+        };
+        use devo_core::tools::AgentToolCoordinator;
+        let data = configured_data_root()?;
+        let provider = Arc::new(ScriptedProvider::new([
+            StreamScript::Pending,
+            ScriptedProvider::completed("child"),
+        ]));
+        let runtime = build_runtime_with_workspace_config(data.path(), provider.clone())?;
+        let (connection, _notifications, parent) =
+            start_subscribed_session(&runtime, data.path(), /*request_id*/ 180).await?;
+        remember(&runtime, connection, /*request_id*/ 181, "Use tabs").await?;
+        start_turn_with_approval_policy(&runtime, connection, parent, "Use tabs", Some("never"))
+            .await?;
+        wait_for_stream_calls(&provider, /*expected*/ 1).await?;
+        let mut pending = runtime
+            .active_spawn_snapshot_for_session(parent)
+            .await
+            .context("active snapshot")?;
+        let turn_id = pending.parent_active_turn_id.context("parent turn")?;
+        let original = match &*pending.prepared_memory.borrow() {
+            TurnMemoryPreparation::Ready(context) => context.clone(),
+            TurnMemoryPreparation::Pending => panic!("provider request requires prepared memory"),
+        };
+        let readiness = pending.prepared_memory.clone();
+        readiness.send_replace(TurnMemoryPreparation::Pending);
+        pending.prepared_memory = tokio::sync::watch::channel(TurnMemoryPreparation::Pending).0;
+        runtime
+            .register_turn_spawn_snapshot(parent, turn_id, Arc::new(pending))
+            .await;
+        let spawn = runtime
+            .clone()
+            .spawn_agent(devo_protocol::SpawnAgentParams {
+                session_id: parent,
+                message: "Use tabs".into(),
+                fork_turns: Some("none".into()),
+                max_turns: None,
+                tool_policy: devo_protocol::AgentToolPolicy::Inherit,
+                ephemeral: true,
+            });
+        tokio::pin!(spawn);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(/*millis*/ 50), &mut spawn)
+                .await
+                .is_err(),
+            "delegation must wait for the pending parent snapshot"
+        );
+        readiness.send_replace(TurnMemoryPreparation::Ready(original.clone()));
+        tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), spawn).await??;
+        wait_for_stream_calls(&provider, /*expected*/ 2).await?;
+        let request = provider.requests().last().context("child request")?.clone();
+        let inherited = crate::support::message_texts(&request)
+            .into_iter()
+            .find(|text| text.contains("<advisory_memory>"));
+        assert_eq!(inherited.as_deref(), original.as_deref());
+        runtime.shutdown().await;
+        Ok(())
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4 DD-6
+    /// Verifies: manual compaction, which never prepares recall, permits prepared-empty delegation.
+    #[tokio::test]
+    async fn delegation_during_manual_compaction_has_no_recall_wait() -> Result<()> {
+        use crate::support::{
+            StreamScript, start_turn_with_approval_policy, wait_for_stream_calls,
+        };
+        use devo_core::tools::AgentToolCoordinator;
+        let data = configured_data_root()?;
+        let provider = Arc::new(ScriptedProvider::new([
+            StreamScript::Pending,
+            ScriptedProvider::completed("child"),
+        ]));
+        let runtime = build_runtime_with_workspace_config(data.path(), provider.clone())?;
+        let (connection, _notifications, parent) =
+            start_subscribed_session(&runtime, data.path(), /*request_id*/ 190).await?;
+        start_turn_with_approval_policy(&runtime, connection, parent, "parent", Some("never"))
+            .await?;
+        wait_for_stream_calls(&provider, /*expected*/ 1).await?;
+        let handle = runtime.session(parent).await.context("parent actor")?;
+        let record = handle.record().await.flatten().context("parent record")?;
+        let restored = runtime
+            .hydrate_runtime_session(parent, &record.rollout_path)
+            .await?;
+        let mut state = SessionActorState::from_runtime_session(restored);
+        let mut compaction = runtime
+            .active_turns
+            .active_turn_metadata(parent)
+            .await
+            .context("active turn")?;
+        compaction.kind = devo_core::TurnKind::ManualCompaction;
+        let turn_id = compaction.turn_id;
+        state.active_turn = Some(compaction);
+        runtime.clear_turn_spawn_snapshot(parent, turn_id).await;
+        runtime
+            .register_turn_spawn_snapshot(parent, turn_id, Arc::new(state.spawn_snapshot()))
+            .await;
+        let spawn = runtime
+            .clone()
+            .spawn_agent(devo_protocol::SpawnAgentParams {
+                session_id: parent,
+                message: "child".into(),
+                fork_turns: Some("none".into()),
+                max_turns: None,
+                tool_policy: devo_protocol::AgentToolPolicy::Inherit,
+                ephemeral: true,
+            });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), spawn).await;
+        assert!(
+            result.is_ok(),
+            "manual compaction has no pending recall preparation"
+        );
+        result??;
+        wait_for_stream_calls(&provider, /*expected*/ 2).await?;
+        assert!(
+            crate::support::message_texts(provider.requests().last().context("child request")?)
+                .iter()
+                .all(|text| !text.contains("<advisory_memory>"))
+        );
         runtime.shutdown().await;
         Ok(())
     }

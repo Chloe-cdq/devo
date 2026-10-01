@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use devo_protocol::native::ids::ItemId;
+use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryForgetParams;
 use devo_protocol::native::rpc_memory::MemoryForgetResult;
+use devo_protocol::native::rpc_memory::MemoryReadEntry;
 use devo_protocol::native::rpc_memory::MemoryRememberParams;
 use devo_protocol::native::rpc_memory::MemorySearchParams;
 use devo_protocol::native::rpc_memory::MemorySearchResult;
@@ -146,6 +148,17 @@ pub trait AgentToolCoordinator: Send + Sync {
     ) -> Result<MemorySearchResult, ToolCallError> {
         Err(ToolCallError::ExecutionFailed(
             "memory_search is unavailable in this runtime".to_string(),
+        ))
+    }
+
+    /// Reads one safe entry after validating root-session and workspace authority.
+    async fn memory_read(
+        self: Arc<Self>,
+        _invocation: MemoryToolInvocation,
+        _entry_id: MemoryEntryId,
+    ) -> Result<MemoryReadEntry, ToolCallError> {
+        Err(ToolCallError::ExecutionFailed(
+            "memory_read is unavailable in this runtime".to_string(),
         ))
     }
 }

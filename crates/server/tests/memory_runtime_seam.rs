@@ -128,6 +128,7 @@ async fn project_command_uses_active_same_repository_session_for_provenance() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
+        | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Search(_) => {
             panic!("unexpected Project remember result")
         }
