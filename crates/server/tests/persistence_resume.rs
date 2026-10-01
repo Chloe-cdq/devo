@@ -2298,6 +2298,12 @@ async fn interrupt_mid_stream_does_not_duplicate_last_item_on_resume() -> Result
     // Native projects every terminal turn state through turn/completed.
     wait_for_notification_method(&mut notifications_rx, "turn/completed").await?;
 
+    // turn/completed precedes background title persistence. Finish that writer
+    // and shut down the old runtime before simulating a restart on the same log.
+    wait_for_title_update(&mut notifications_rx, "Gated title").await?;
+    runtime.shutdown().await;
+    drop(runtime);
+
     // Rebuild runtime (simulates restart) and resume the session.
     let gated2 = Arc::new(GatedProvider::new());
     let rebuilt = build_runtime_with_provider(data_root.path(), Arc::clone(&gated2) as _)?;
