@@ -548,9 +548,15 @@ pub(super) async fn run_session_actor(
                 let _ = reply.send(true);
             }
             SessionCommand::ReplaceState {
-                state: new_state,
+                state: mut new_state,
                 reply,
             } => {
+                // History rebuilds retain the actor's delegation identity and frozen memory.
+                new_state.summary.parent_session_id = state.summary.parent_session_id;
+                new_state.summary.agent_path = state.summary.agent_path.take();
+                new_state.summary.agent_nickname = state.summary.agent_nickname.take();
+                new_state.summary.agent_role = state.summary.agent_role.take();
+                new_state.inherited_memory = state.inherited_memory.take();
                 state = *new_state;
                 let _ = reply.send(());
             }
