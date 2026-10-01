@@ -63,6 +63,8 @@ pub struct ProjectMemorySession {
     /// unavailable. Command execution applies the global gate before rejecting it.
     pub workspace_root: Option<PathBuf>,
     pub activity: ProjectMemorySessionActivity,
+    /// Durable creation source; unavailable facts cannot authorize mutations.
+    pub source: Option<devo_protocol::native::session::SessionSource>,
 }
 
 /// Whether a Project candidate owns an active turn or is only selected.
@@ -266,6 +268,8 @@ pub struct PreparedMemory {
 /// A completed session source eligible for future memory extraction.
 #[derive(Debug, Clone, Default)]
 pub struct SessionMemorySource {
+    /// Durable creation source. Automation transcripts are never eligible.
+    pub source: devo_protocol::native::session::SessionSource,
     /// Raw per-session contribution preference read when a background scan
     /// evaluates this source session.
     pub session_contribution: MemorySetting,

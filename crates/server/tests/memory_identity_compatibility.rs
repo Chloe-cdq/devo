@@ -554,6 +554,7 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
                     session_id: source.session_id,
                     workspace_root: Some(source.workspace_root),
                     activity: ProjectMemorySessionActivity::Active,
+                    source: Some(devo_protocol::native::session::SessionSource::Interactive),
                 }],
             },
         }))

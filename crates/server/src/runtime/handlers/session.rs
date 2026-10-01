@@ -115,6 +115,7 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: SessionStartParams,
         tool_registry: Option<Arc<devo_core::tools::ToolRegistry>>,
+        source: devo_protocol::native::session::SessionSource,
     ) -> serde_json::Value {
         let now = Utc::now();
         let session_id = SessionId::new();
@@ -212,6 +213,23 @@ impl ServerRuntime {
                 format!("failed to persist session metadata: {error}"),
             );
         }
+        let memory_settings = crate::memory::SessionMemorySettings {
+            source,
+            ..Default::default()
+        };
+        if let Some(record) = &record
+            && let Err(error) = self.rollout_store.append_initial_memory_settings_at(
+                &record.rollout_path,
+                session_id,
+                memory_settings,
+            )
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                format!("failed to persist initial memory settings: {error}"),
+            );
+        }
         crate::runtime::context_occupancy::apply_resolved_compaction_limit(
             &mut core_session.config,
             applied_compaction_limit as usize,
@@ -225,7 +243,7 @@ impl ServerRuntime {
             record,
             summary: summary.clone(),
             config,
-            memory_settings: Default::default(),
+            memory_settings,
             memory_settings_version: 1,
             inherited_memory: None,
             core: core_session,
@@ -1102,6 +1120,7 @@ impl ServerRuntime {
         devo_protocol::native::session::Session {
             id: devo_protocol::native::ids::SessionId::from_string(session_id.to_string()),
             version: 1,
+            source: Default::default(),
             cwd: metadata.cwd.clone(),
             additional_directories: metadata.additional_directories.clone(),
             parent: metadata.parent_session_id.and_then(|parent| {
@@ -1241,7 +1260,8 @@ impl ServerRuntime {
                     model: None,
                     model_binding_id: None,
                 },
-                None,
+                /*tool_registry*/ None,
+                params.source,
             )
             .await;
         if let Ok(success) =
@@ -1286,7 +1306,7 @@ impl ServerRuntime {
 
     /// Reads the rollout-backed canonical session snapshot; `None` when the
     /// rollout is missing or unreadable.
-    async fn native_session_snapshot(
+    pub(crate) async fn native_session_snapshot(
         &self,
         session_id: SessionId,
     ) -> Option<devo_protocol::native::session::Session> {

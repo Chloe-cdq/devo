@@ -126,6 +126,13 @@ impl ServerRuntime {
             self.rollout_store
                 .append_session_meta(&record)
                 .map_err(|error| ToolCallError::InternalError(error.to_string()))?;
+            self.rollout_store
+                .append_initial_memory_settings_at(
+                    &record.rollout_path,
+                    child_session_id,
+                    parent_memory_settings,
+                )
+                .map_err(|error| ToolCallError::InternalError(error.to_string()))?;
             Some(record)
         };
 

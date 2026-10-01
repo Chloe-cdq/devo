@@ -38,15 +38,21 @@ impl RolloutStore {
         self.append_lines(rollout_path, &lines)
     }
 
-    /// Persists non-default memory settings when a new session inherits an
-    /// existing session snapshot, such as a fork.
-    pub(crate) fn append_inherited_memory_settings_at(
+    /// Persists non-default memory settings and source before a newly created
+    /// session, fork, or persistent subagent is registered.
+    pub(crate) fn append_initial_memory_settings_at(
         &self,
         rollout_path: &Path,
         session_id: SessionId,
         settings: crate::memory::SessionMemorySettings,
     ) -> Result<()> {
-        let mut updates = Vec::with_capacity(2);
+        let mut updates = Vec::with_capacity(3);
+        if !settings.source.is_interactive() {
+            updates.push((
+                SessionSettingsField::SessionSource,
+                serde_json::to_value(settings.source).expect("serialize session source"),
+            ));
+        }
         if settings.recall != MemorySetting::Inherit {
             updates.push((
                 SessionSettingsField::MemoryRecall,
@@ -75,6 +81,11 @@ impl ReplayState {
         crate::memory::SessionMemorySettings {
             recall: setting(SessionSettingsField::MemoryRecall),
             contribution: setting(SessionSettingsField::MemoryContribution),
+            source: self
+                .session_settings
+                .get(&SessionSettingsField::SessionSource)
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default(),
         }
     }
 }

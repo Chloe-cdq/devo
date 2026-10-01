@@ -45,6 +45,9 @@ pub struct Session {
     /// Cut turn for a user fork (`through` that turn); absent for tip forks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_turn_id: Option<TurnId>,
+    /// Creation source. Automation sessions can consume memory but never contribute.
+    #[serde(default, skip_serializing_if = "SessionSource::is_interactive")]
+    pub source: SessionSource,
     pub ephemeral: bool,
     pub created_at: DateTime<Utc>,
 
@@ -89,6 +92,21 @@ pub struct Session {
     /// Redundant aggregate of turn usages for list views; the ledger wins on
     /// any disagreement.
     pub usage: SessionUsage,
+}
+
+/// Immutable creation source used to enforce one-way automation memory access.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionSource {
+    #[default]
+    Interactive,
+    Automation,
+}
+
+impl SessionSource {
+    pub fn is_interactive(&self) -> bool {
+        matches!(self, Self::Interactive)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

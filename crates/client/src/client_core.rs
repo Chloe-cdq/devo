@@ -418,6 +418,7 @@ impl ServerClientCore {
             devo_protocol::native::rpc_session::SessionNewParams {
                 cwd,
                 idempotency_key,
+                source: devo_protocol::native::session::SessionSource::Interactive,
             },
         )
         .await

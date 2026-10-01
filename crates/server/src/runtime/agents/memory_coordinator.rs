@@ -27,6 +27,19 @@ impl MemoryMutationContext {
                 "sub-agents cannot mutate user memory".to_string(),
             ));
         }
+        let handle = runtime
+            .session(invocation.session_id)
+            .await
+            .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
+        let settings = handle
+            .memory_settings()
+            .await
+            .ok_or_else(|| ToolCallError::InvalidInput("session not found".to_string()))?;
+        if settings.settings.source == devo_protocol::native::session::SessionSource::Automation {
+            return Err(ToolCallError::Denied(
+                "automation sessions cannot mutate General Persistent Memory".to_string(),
+            ));
+        }
         Ok(Self {
             memory,
             source: crate::memory::MemorySourceContext {
@@ -129,6 +142,7 @@ pub(super) async fn forget(
                     session_id: source_session_id,
                     workspace_root: Some(context.source.workspace_root),
                     activity: crate::memory::ProjectMemorySessionActivity::Active,
+                    source: Some(devo_protocol::native::session::SessionSource::Interactive),
                 }],
             },
         },

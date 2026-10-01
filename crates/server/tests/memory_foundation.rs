@@ -157,6 +157,7 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
         runtime
             .enqueue_source(SessionMemorySource {
                 session_contribution: MemorySetting::Inherit,
+                ..Default::default()
             })
             .await
             .expect("enqueue inherited contribution"),
@@ -166,6 +167,7 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
         runtime
             .enqueue_source(SessionMemorySource {
                 session_contribution: MemorySetting::On,
+                ..Default::default()
             })
             .await
             .expect("enqueue enabled contribution"),
@@ -175,6 +177,7 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
         runtime
             .enqueue_source(SessionMemorySource {
                 session_contribution: MemorySetting::Off,
+                ..Default::default()
             })
             .await
             .expect("enqueue disabled contribution"),

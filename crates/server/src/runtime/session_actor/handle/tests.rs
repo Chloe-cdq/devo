@@ -39,6 +39,7 @@ fn memory_settings_notification_does_not_depend_on_mailbox_capacity() {
             settings: crate::memory::SessionMemorySettings {
                 recall: MemorySetting::Off,
                 contribution: MemorySetting::On,
+                source: Default::default(),
             },
             version: 2,
         }
