@@ -61,6 +61,8 @@ pub struct ProjectMemorySession {
     /// unavailable. Command execution applies the global gate before rejecting it.
     pub workspace_root: Option<PathBuf>,
     pub activity: ProjectMemorySessionActivity,
+    /// Durable creation source; unavailable facts cannot authorize mutations.
+    pub source: Option<devo_protocol::native::session::SessionSource>,
 }
 
 /// Whether a Project candidate owns an active turn or is only selected.
@@ -236,6 +238,8 @@ pub struct SearchMemoryRequest {
 /// Input for turn preparation.
 #[derive(Debug, Clone)]
 pub struct PrepareMemoryRequest {
+    /// Current root-turn request used for lexical relevance.
+    pub query: String,
     pub workspace_root: PathBuf,
     /// Raw per-session recall preference. The runtime resolves `inherit` using
     /// its configured global default before preparing a snapshot.
@@ -246,5 +250,6 @@ pub struct PrepareMemoryRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PreparedMemory {
     pub project_scope_id: Option<String>,
-    pub user_entries: Vec<MemoryEntry>,
+    pub entries: Vec<devo_protocol::native::rpc_memory::MemoryRecallEntry>,
+    pub snapshot_revision: String,
 }

@@ -74,10 +74,6 @@ pub(super) async fn completion_stream(
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
     let body = build_request(&request, true);
     let logging = crate::request::request_logging(request.extra_body.as_ref());
-    let logged_body = match logging {
-        RequestLogging::Foreground => &body,
-        RequestLogging::Background => &Value::Null,
-    };
     tracing::debug!(
         provider = "openai",
         api_base = %provider.base_url,
@@ -85,7 +81,6 @@ pub(super) async fn completion_stream(
         messages = request.messages.len(),
         tools = request.tools.as_ref().map_or(0, Vec::len),
         max_tokens = request.max_tokens,
-        http_body = %logged_body,
         "sending openai streaming request"
     );
 
@@ -137,10 +132,6 @@ pub(super) async fn completion_stream(
                     tracing::trace!(
                         event = %message.event,
                         data_len = message.data.len(),
-                        data = %match logging {
-                            RequestLogging::Foreground => message.data.as_str(),
-                            RequestLogging::Background => "<redacted>",
-                        },
                         "openai chat completions raw stream event"
                     );
                     if message.data == "[DONE]" {
@@ -199,7 +190,7 @@ pub(super) async fn completion_stream(
 
 fn stream_error(message: String) -> ProviderError {
     ProviderError::StreamError {
-        message,
+        message: message.into(),
         bytes_received: None,
     }
 }

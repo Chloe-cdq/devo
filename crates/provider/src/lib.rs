@@ -5,6 +5,7 @@
 //! work with normalized protocol events.
 
 pub mod anthropic;
+pub mod diagnostic;
 mod dsml;
 pub mod error;
 mod hosted_tools;
@@ -15,6 +16,7 @@ mod quota;
 pub mod recovery_hint;
 mod request;
 pub mod router;
+mod sensitive_error_text;
 mod sse;
 mod text_normalization;
 pub mod timeout;
@@ -27,3 +29,4 @@ pub use recovery_hint::{
 };
 pub(crate) use request::{merge_extra_body, request_headers};
 pub use router::*;
+pub use sensitive_error_text::SensitiveErrorText;

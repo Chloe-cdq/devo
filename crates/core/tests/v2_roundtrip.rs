@@ -570,6 +570,7 @@ fn inverse_rejects_prefixed_canonical_ids() {
         session: Box::new(devo_protocol::native::session::Session {
             id: devo_protocol::native::ids::SessionId::new(),
             version: 1,
+            source: Default::default(),
             cwd: PathBuf::from("/tmp"),
             additional_directories: Vec::new(),
             parent: None,

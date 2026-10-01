@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::warn;
 
-use crate::error::{ProviderError, context_limit_error};
+use crate::error::{ProviderError, context_limit_error, typed_failure_kind};
 use crate::request::RequestLogging;
 use crate::timeout::connect_timeout;
 
@@ -172,12 +172,12 @@ pub(crate) async fn invalid_status_error(
         let provider_name = Some(provider.to_owned());
         let error = match status_code {
             401 | 403 => ProviderError::AuthenticationError {
-                message: "Background provider request authentication failed".to_string(),
+                message: "Background provider request authentication failed".into(),
                 provider_name,
                 status_code: Some(status_code),
             },
             429 => ProviderError::RateLimitError {
-                message: "Background provider request was rate limited".to_string(),
+                message: "Background provider request was rate limited".into(),
                 retry_after_seconds: response
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
@@ -186,16 +186,16 @@ pub(crate) async fn invalid_status_error(
                 provider_name,
             },
             500..=599 => ProviderError::ProviderServerError {
-                message: "Background provider request failed".to_string(),
+                message: "Background provider request failed".into(),
                 status_code: Some(status_code),
                 provider_name,
             },
             400..=499 => ProviderError::InvalidRequestError {
-                message: "Background provider request was rejected".to_string(),
-                details: Some(format!("HTTP status {status_code}")),
+                message: "Background provider request was rejected".into(),
+                details: Some(format!("HTTP status {status_code}").into()),
             },
             _ => ProviderError::UnknownError {
-                message: "Background provider request failed".to_string(),
+                message: "Background provider request failed".into(),
                 status_code: Some(status_code),
             },
         };
@@ -210,8 +210,8 @@ pub(crate) async fn invalid_status_error(
         model,
         operation,
         status = %status,
-        http_body = %request_body,
-        response_body = %response_body,
+        request_bytes = request_body.to_string().len(),
+        response_bytes = response_body.len(),
         "provider request failed"
     );
     let response_value = serde_json::from_str::<Value>(&response_body).ok();
@@ -229,12 +229,49 @@ pub(crate) async fn invalid_status_error(
         .as_ref()
         .and_then(|value| value.pointer("/error/code"))
         .and_then(Value::as_str);
-    if let Some(error) = context_limit_error(message, error_kind, error_code) {
+    let typed_kind = typed_failure_kind(error_kind, error_code);
+    if let Some(error) = context_limit_error(message, Some(status.as_u16()), typed_kind) {
         return anyhow::Error::new(error);
     }
-    anyhow::anyhow!(
+    let message = format!(
         "{provider} {operation} error for model {model}: Invalid status code: {status}; response body: {response_body}"
-    )
+    ).into();
+    let provider_name = Some(provider.to_string());
+    let status_code = Some(status.as_u16());
+    let error = match status.as_u16() {
+        401 | 403 => ProviderError::AuthenticationError {
+            message,
+            provider_name,
+            status_code,
+        },
+        404 => ProviderError::ModelNotFoundError {
+            message,
+            model_name: Some(model.into()),
+        },
+        408 => ProviderError::ProviderTimeoutError {
+            message,
+            provider_name,
+        },
+        429 => ProviderError::RateLimitError {
+            message,
+            retry_after_seconds: None,
+            provider_name,
+        },
+        500..=599 => ProviderError::ProviderServerError {
+            message,
+            status_code,
+            provider_name,
+        },
+        400..=499 => ProviderError::InvalidRequestError {
+            message,
+            details: None,
+        },
+        _ => ProviderError::UnknownError {
+            message,
+            status_code,
+        },
+    };
+    anyhow::Error::new(error)
 }
 
 fn parse_custom_headers(headers: Option<String>) -> Result<HeaderMap> {

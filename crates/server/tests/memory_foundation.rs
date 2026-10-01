@@ -115,6 +115,7 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
     assert_eq!(
         runtime
             .prepare_turn(PrepareMemoryRequest {
+                query: "remember this fact".into(),
                 workspace_root: data_root.path().to_path_buf(),
                 session_recall: MemorySetting::Inherit,
             })
@@ -124,6 +125,7 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
     );
     let prepared_enabled = runtime
         .prepare_turn(PrepareMemoryRequest {
+            query: "remember this fact".into(),
             workspace_root: data_root.path().to_path_buf(),
             session_recall: MemorySetting::On,
         })
@@ -131,6 +133,7 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
         .expect("prepare enabled recall");
     let prepared_enabled_again = runtime
         .prepare_turn(PrepareMemoryRequest {
+            query: "remember this fact".into(),
             workspace_root: data_root.path().to_path_buf(),
             session_recall: MemorySetting::On,
         })
@@ -141,6 +144,7 @@ async fn enabled_memory_runtime_resolves_each_session_control_independently() {
     assert_eq!(
         runtime
             .prepare_turn(PrepareMemoryRequest {
+                query: "remember this fact".into(),
                 workspace_root: data_root.path().to_path_buf(),
                 session_recall: MemorySetting::Off,
             })
@@ -180,6 +184,7 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
     assert_eq!(
         runtime
             .prepare_turn(PrepareMemoryRequest {
+                query: "remember this fact".into(),
                 workspace_root: data_root.path().to_path_buf(),
                 session_recall: MemorySetting::Inherit,
             })

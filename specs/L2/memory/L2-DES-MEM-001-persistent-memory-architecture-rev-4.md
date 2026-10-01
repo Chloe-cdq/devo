@@ -150,7 +150,7 @@ Reset clears one scope and advances `ignore_sources_before` for that scope. Auto
 
 ### DD-10: Recall is lexical, bounded, stable per turn, and advisory
 
-At the start of each root turn, before the first model call, `prepare_turn` executes one SQLite FTS/lexical query using the current user request plus stable project/session metadata. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` and explicitly `Restored` entries are automatically recalled; other lifecycle states are excluded.
+At the start of each root turn, before the first model call, `prepare_turn` executes one lexical retrieval using the current user request plus stable project/session metadata. Bounded SQLite FTS query batches cover all distinct request terms; matching entries are deduplicated and scored against the complete term set. Deterministic ranking combines lexical relevance, scope priority, entry state, origin, and recency. Only `Active` and explicitly `Restored` entries are automatically recalled; other lifecycle states are excluded.
 
 The result is capped at 12 entries and approximately 2,000 tokens. It is rendered as a distinct advisory memory context block, never concatenated into system policy, project instructions, or `AGENTS.md`. The block explicitly states that current instructions and observed repository state take precedence.
 
@@ -436,3 +436,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 3 | 2026-09-23 | Assistant | Proposed | Separates trusted-entrypoint authorization, claim extraction, and deterministic textual equivalence; proposes conservative structured-token identity, canonical-entry updates, and schema-v5 migration for human review. |
 | 3 | 2026-09-23 | Human | Approval | Approved in the Codex task: "批准 **L2-DES-MEM-001 revision 3**". |
 | 4 | 2026-09-24 | Human + Assistant | Concurrency and revocation revision | Human-approved durable forget design adds server-global RAII deletion leases, pending candidate binding, mutation epochs, cancellation semantics, and transactional revocation lifecycle preservation on v4-to-v5 migration. |
+| 4 | 2026-09-30 | Assistant | Local clarification | Clarifies that one root-turn lexical retrieval may use bounded FTS batches so every distinct request term remains eligible without changing the prepared snapshot or output limits. |

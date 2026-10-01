@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use devo_protocol::{ModelRequest, ProviderWireApi, StreamEvent};
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
 use crate::error::ProviderError;
 use crate::provider::ModelProviderSDK;
@@ -98,7 +98,11 @@ impl ProviderRouter for SingleProviderRouter {
         self.provider
             .completion_stream(request)
             .await
-            .map_err(unknown_provider_error)
+            .map(|stream| {
+                Box::pin(stream.map(|item| item.map_err(crate::diagnostic::sanitize_error)))
+                    as Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>
+            })
+            .map_err(crate::diagnostic::normalize_error)
     }
 
     async fn complete(
@@ -109,7 +113,7 @@ impl ProviderRouter for SingleProviderRouter {
         self.provider
             .completion(request)
             .await
-            .map_err(unknown_provider_error)
+            .map_err(crate::diagnostic::normalize_error)
     }
 
     fn initialization_error(&self, _route: &ProviderRoute) -> Option<ProviderError> {
@@ -158,7 +162,7 @@ impl MultiProviderRouter {
                 .ok_or_else(|| ProviderError::UnknownError {
                     message: format!(
                         "provider route not configured: provider `{provider_id}` with wire API `{wire_api}`"
-                    ),
+                    ).into(),
                     status_code: None,
                 }),
         }
@@ -176,7 +180,11 @@ impl ProviderRouter for MultiProviderRouter {
         self.provider_for_route(&route)?
             .completion_stream(request)
             .await
-            .map_err(unknown_provider_error)
+            .map(|stream| {
+                Box::pin(stream.map(|item| item.map_err(crate::diagnostic::sanitize_error)))
+                    as Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>
+            })
+            .map_err(crate::diagnostic::normalize_error)
     }
 
     async fn complete(
@@ -187,7 +195,7 @@ impl ProviderRouter for MultiProviderRouter {
         self.provider_for_route(&route)?
             .completion(request)
             .await
-            .map_err(unknown_provider_error)
+            .map_err(crate::diagnostic::normalize_error)
     }
 
     fn initialization_error(&self, route: &ProviderRoute) -> Option<ProviderError> {
@@ -205,16 +213,6 @@ impl ProviderRouter for MultiProviderRouter {
 
     fn name(&self) -> &str {
         "multi-provider"
-    }
-}
-
-fn unknown_provider_error(error: anyhow::Error) -> ProviderError {
-    match error.downcast::<ProviderError>() {
-        Ok(error) => error,
-        Err(error) => ProviderError::UnknownError {
-            message: error.to_string(),
-            status_code: None,
-        },
     }
 }
 
@@ -385,7 +383,7 @@ mod tests {
             .expect_err("missing route should fail");
 
         assert_eq!(
-            error.to_string(),
+            error.user_message(),
             "unknown provider error: provider route not configured: provider `missing` with wire API `anthropic_messages`"
         );
     }

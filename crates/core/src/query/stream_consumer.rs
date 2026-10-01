@@ -31,6 +31,7 @@ use devo_provider::ModelProviderSDK;
 use super::event::EventCallback;
 use super::event::QueryEvent;
 use super::event::emit_query_event;
+use super::provider_retry::classify_error;
 
 /// Structured result of one successful provider stream attempt.
 pub(crate) struct AssembledModelTurn {
@@ -69,11 +70,12 @@ pub(crate) async fn run_provider_attempt(
     let stream = match provider.completion_stream(request).await {
         Ok(stream) => stream,
         Err(error) => {
+            let error = devo_provider::diagnostic::sanitize_error(error);
             warn!(
                 provider = provider.name(),
                 model = %model_slug,
                 turn = session.turn_count,
-                error = ?error,
+                error_class = ?classify_error(&error),
                 "failed to create provider stream"
             );
             return Err(ProviderAttemptError::Create(error));
@@ -292,11 +294,12 @@ async fn consume_provider_stream(
                         emit_query_event(on_event, QueryEvent::UsageDelta { usage }).await;
                     }
                     Err(error) => {
+                        let error = devo_provider::diagnostic::sanitize_error(error);
                         warn!(
                             provider = provider_name,
                             model = %model_slug,
                             turn = session.turn_count,
-                            error = ?error,
+                            error_class = ?classify_error(&error),
                             "stream error"
                         );
                         if !acc.assistant_text.is_empty()

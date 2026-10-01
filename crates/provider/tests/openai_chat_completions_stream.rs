@@ -42,10 +42,14 @@ async fn chat_stream_reports_error_payload_returned_with_http_200() {
         serde_json::to_value(provider_error).expect("serialize provider error"),
         json!({
             "error_kind": "provider_server_error",
-            "message": "Internal server error",
+            "message": "[redacted]",
             "status_code": 500,
             "provider_name": "openai"
         })
+    );
+    assert_eq!(
+        provider_error.user_message(),
+        "provider server error (Some(500)): Internal server error"
     );
     assert!(stream.next().await.is_none());
 }
@@ -81,10 +85,14 @@ async fn chat_stream_classifies_http_400_context_length_error() {
         serde_json::to_value(provider_error).expect("serialize provider error"),
         json!({
             "error_kind": "context_limit_error",
-            "message": message,
+            "message": "[redacted]",
             "current_tokens": null,
             "limit": null
         })
+    );
+    assert_eq!(
+        provider_error.user_message(),
+        format!("context limit exceeded: {message}")
     );
 }
 

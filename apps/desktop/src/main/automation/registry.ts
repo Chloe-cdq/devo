@@ -141,6 +141,7 @@ export function createConfig(input: CreateAutomationInput): string {
 			approvalPolicy: input.execution?.approvalPolicy ?? "never",
 			useWorktree: input.execution?.useWorktree ?? true,
 			permissionPreset: input.execution?.permissionPreset ?? "default",
+			memoryRecall: input.execution?.memoryRecall,
 		},
 	}
 

@@ -382,8 +382,25 @@ impl MemoryRuntime {
 }
 
 fn classify_provider_failure(error: &anyhow::Error) -> JobFailure {
-    if let Some(error) = error.downcast_ref::<ProviderError>() {
-        return match error {
+    if let Some(provider_error) = error.downcast_ref::<ProviderError>() {
+        return match provider_error {
+            ProviderError::Diagnostic(_) => {
+                use devo_provider::diagnostic::ErrorClass;
+                match devo_provider::diagnostic::classify_error(error) {
+                    ErrorClass::AuthenticationFailure => JobFailure::Credentials,
+                    ErrorClass::RateLimit | ErrorClass::ServerError | ErrorClass::NetworkError => {
+                        JobFailure::TransientProvider
+                    }
+                    ErrorClass::ContextTooLong
+                    | ErrorClass::ParameterError
+                    | ErrorClass::FileContentAnomaly
+                    | ErrorClass::FeatureUnavailable
+                    | ErrorClass::TaskNotFound
+                    | ErrorClass::NoApiPermission
+                    | ErrorClass::FileTooLarge
+                    | ErrorClass::Unretryable => JobFailure::PermanentProvider,
+                }
+            }
             ProviderError::AuthenticationError { .. } => JobFailure::Credentials,
             ProviderError::RateLimitError { .. }
             | ProviderError::ProviderServerError { .. }

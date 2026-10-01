@@ -20,6 +20,7 @@ mod proposal_relations;
 #[cfg(test)]
 mod proposal_relations_tests;
 mod queries;
+mod recall;
 mod revocation_lifecycle;
 #[cfg(test)]
 mod runtime_test_support;
@@ -79,6 +80,7 @@ const MAX_LIST_LIMIT: u32 = 100;
 pub(crate) struct SessionMemorySettings {
     pub(crate) recall: MemorySetting,
     pub(crate) contribution: MemorySetting,
+    pub(crate) source: devo_protocol::native::session::SessionSource,
 }
 
 impl Default for SessionMemorySettings {
@@ -86,6 +88,7 @@ impl Default for SessionMemorySettings {
         Self {
             recall: MemorySetting::Inherit,
             contribution: MemorySetting::Inherit,
+            source: Default::default(),
         }
     }
 }
@@ -221,36 +224,6 @@ impl MemoryRuntime {
         })
     }
 
-    /// Prepares an immutable memory snapshot for a turn.
-    pub async fn prepare_turn(
-        &self,
-        request: PrepareMemoryRequest,
-    ) -> Result<PreparedMemory, MemoryError> {
-        if self.config.resolve_recall(request.session_recall) != MemorySetting::On {
-            return Ok(PreparedMemory::default());
-        }
-        let identity = identity::resolve_project_memory_identity(&request.workspace_root)
-            .map_err(|error| MemoryError::ProjectIdentity(error.to_string()))?;
-        let mut user_entries = self
-            .list_recallable(ListMemoryRequest {
-                scope: Some(MemoryScope::User),
-                state: Some(MemoryState::Active),
-                limit: Some(self.config.max_entries_per_turn),
-                workspace_root: request.workspace_root.clone(),
-                ..ListMemoryRequest::default()
-            })?
-            .data;
-        if self.has_pending_source_deletions() {
-            for entry in &mut user_entries {
-                entry.provenance.clear();
-            }
-        }
-        Ok(PreparedMemory {
-            project_scope_id: Some(identity.scope_id),
-            user_entries,
-        })
-    }
-
     /// Executes one memory command through the public runtime seam.
     pub async fn execute_command(
         &self,
@@ -311,22 +284,37 @@ impl MemoryRuntime {
                         }
                     };
                 }
-                let (selected_session_id, workspace_root) =
-                    self.resolve_project_memory_source(candidates)?;
+                let bound_source = match &operation {
+                    ProjectMemoryOperation::Remember { source, .. } => {
+                        source.session_id.map(|id| {
+                            candidates
+                                .iter()
+                                .find(|candidate| candidate.session_id == id)
+                                .and_then(|candidate| candidate.source)
+                        })
+                    }
+                    ProjectMemoryOperation::List { .. } => None,
+                };
+                let selected = self.resolve_project_memory_source(candidates)?;
+                let selected_session_id = selected.session_id;
+                let workspace_root = selected.workspace_root;
                 match operation {
-                    ProjectMemoryOperation::Remember { text, kind, source } => Ok(
-                        MemoryCommandResult::Remember(self.remember(MemoryRememberRequest {
-                            text,
-                            scope: MemoryScope::Project,
-                            kind,
-                            source: MemorySourceContext {
-                                user_item_id: source.user_item_id,
-                                session_id: source.session_id.unwrap_or(selected_session_id),
-                                turn_id: source.turn_id,
-                                workspace_root,
+                    ProjectMemoryOperation::Remember { text, kind, source } => {
+                        ensure_interactive_memory_source(bound_source.unwrap_or(selected.source))?;
+                        Ok(MemoryCommandResult::Remember(self.remember(
+                            MemoryRememberRequest {
+                                text,
+                                scope: MemoryScope::Project,
+                                kind,
+                                source: MemorySourceContext {
+                                    user_item_id: source.user_item_id,
+                                    session_id: source.session_id.unwrap_or(selected_session_id),
+                                    turn_id: source.turn_id,
+                                    workspace_root,
+                                },
                             },
-                        })?),
-                    ),
+                        )?))
+                    }
                     ProjectMemoryOperation::List {
                         kind,
                         state,
@@ -380,7 +368,7 @@ impl MemoryRuntime {
     fn resolve_project_memory_source(
         &self,
         candidates: Vec<ProjectMemorySession>,
-    ) -> Result<(SessionId, PathBuf), MemoryError> {
+    ) -> Result<ResolvedProjectMemorySession, MemoryError> {
         let candidates = candidates
             .into_iter()
             .map(|candidate| {
@@ -393,12 +381,12 @@ impl MemoryRuntime {
                     session_id: candidate.session_id,
                     workspace_root,
                     activity: candidate.activity,
+                    source: candidate.source,
                     scope_id: identity.scope_id,
                 })
             })
             .collect::<Result<Vec<_>, MemoryError>>()?;
-        let selected = select_project_memory_session(candidates)?;
-        Ok((selected.session_id, selected.workspace_root))
+        select_project_memory_session(candidates)
     }
 
     /// Records one observation from the server-owned passive extraction path.
@@ -450,6 +438,19 @@ struct ResolvedProjectMemorySession {
     workspace_root: PathBuf,
     activity: ProjectMemorySessionActivity,
     scope_id: String,
+    source: Option<devo_protocol::native::session::SessionSource>,
+}
+
+pub(crate) fn ensure_interactive_memory_source(
+    source: Option<devo_protocol::native::session::SessionSource>,
+) -> Result<(), MemoryError> {
+    if source == Some(devo_protocol::native::session::SessionSource::Interactive) {
+        Ok(())
+    } else {
+        Err(MemoryError::InvalidRequest(
+            "automation, ambiguous, or unavailable sessions cannot mutate General Persistent Memory".into(),
+        ))
+    }
 }
 
 fn select_project_memory_session(
@@ -457,7 +458,7 @@ fn select_project_memory_session(
 ) -> Result<ResolvedProjectMemorySession, MemoryError> {
     let mut selected: Option<ResolvedProjectMemorySession> = None;
     for candidate in candidates {
-        if let Some(current) = selected.as_ref() {
+        if let Some(current) = selected.as_mut() {
             if current.scope_id != candidate.scope_id {
                 return Err(MemoryError::AmbiguousProjectScope);
             }
@@ -465,6 +466,9 @@ fn select_project_memory_session(
                 && current.activity == ProjectMemorySessionActivity::Inactive
             {
                 selected = Some(candidate);
+            } else if current.activity == candidate.activity && current.source != candidate.source {
+                // Equal-priority mixed sources cannot establish execution provenance.
+                current.source = None;
             }
         } else {
             selected = Some(candidate);

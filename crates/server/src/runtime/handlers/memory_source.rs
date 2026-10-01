@@ -3,8 +3,8 @@ use super::super::*;
 use crate::memory::MemorySourceBinding;
 
 pub(super) struct ActiveMemoryMutationSource {
-    pub(super) active_session_ids: Vec<devo_protocol::SessionId>,
     pub(super) source: Option<MemorySourceBinding>,
+    pub(super) session_context: crate::runtime::memory_scope::MemoryCommandSessions,
 }
 
 impl ServerRuntime {
@@ -54,9 +54,12 @@ impl ServerRuntime {
         } else {
             None
         };
+        let session_context = self
+            .memory_command_sessions(connection_id, &active_session_ids)
+            .await;
         Ok(ActiveMemoryMutationSource {
-            active_session_ids,
             source,
+            session_context,
         })
     }
 }

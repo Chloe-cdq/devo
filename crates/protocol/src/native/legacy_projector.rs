@@ -217,6 +217,7 @@ pub fn legacy_wire_from_native_item(item: &Item) -> Option<(ItemKind, serde_json
         | Item::SubAgent { .. }
         | Item::BackgroundTask { .. }
         | Item::GoalProgress { .. }
+        | Item::MemoryRecall { .. }
         | Item::Warning { .. } => None,
     }
 }

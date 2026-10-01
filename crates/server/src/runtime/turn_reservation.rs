@@ -159,7 +159,8 @@ mod tests {
                     model: None,
                     model_binding_id: None,
                 },
-                None,
+                /*tool_registry*/ None,
+                devo_protocol::native::session::SessionSource::Interactive,
             )
             .await;
         let response: SuccessResponse<SessionStartResult> =

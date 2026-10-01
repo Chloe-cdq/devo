@@ -462,7 +462,7 @@ fn hosted_web_fetch_output(item: &Value) -> Option<Value> {
 
 fn stream_error(message: String) -> ProviderError {
     ProviderError::StreamError {
-        message,
+        message: message.into(),
         bytes_received: None,
     }
 }
@@ -505,51 +505,55 @@ fn parse_status_reason(value: &str) -> StopReason {
 #[async_trait]
 impl ModelProviderSDK for OpenAIResponsesProvider {
     async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
-        let body = build_request(&request, false);
-        let logging = crate::request::request_logging(request.extra_body.as_ref());
-        debug!(
-            provider = "openai-responses",
-            api_base = %self.base_url,
-            model = %request.model,
-            messages = request.messages.len(),
-            tools = request.tools.as_ref().map_or(0, Vec::len),
-            max_tokens = request.max_tokens,
-            "sending openai responses completion request"
-        );
+        async {
+            let body = build_request(&request, false);
+            let logging = crate::request::request_logging(request.extra_body.as_ref());
+            debug!(
+                provider = "openai-responses",
+                api_base = %self.base_url,
+                model = %request.model,
+                messages = request.messages.len(),
+                tools = request.tools.as_ref().map_or(0, Vec::len),
+                max_tokens = request.max_tokens,
+                "sending openai responses completion request"
+            );
 
-        let request_generation = self.quota.begin_request();
-        let response = self
-            .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
-            .send()
-            .await
-            .context("failed to send openai responses request")?;
-        self.quota.update(
-            request_generation,
-            response.headers(),
-            QuotaHeaderFamily::OpenAI,
-        );
-        let response = match response.error_for_status_ref() {
-            Ok(_) => response,
-            Err(_) => {
-                let status = response.status();
-                return Err(invalid_status_error(
-                    "openai-responses",
-                    &request.model,
-                    "request",
-                    status,
-                    response,
-                    &body,
-                    logging,
-                )
-                .await);
-            }
-        };
+            let request_generation = self.quota.begin_request();
+            let response = self
+                .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
+                .send()
+                .await
+                .context("failed to send openai responses request")?;
+            self.quota.update(
+                request_generation,
+                response.headers(),
+                QuotaHeaderFamily::OpenAI,
+            );
+            let response = match response.error_for_status_ref() {
+                Ok(_) => response,
+                Err(_) => {
+                    let status = response.status();
+                    return Err(invalid_status_error(
+                        "openai-responses",
+                        &request.model,
+                        "request",
+                        status,
+                        response,
+                        &body,
+                        logging,
+                    )
+                    .await);
+                }
+            };
 
-        let value: Value = response
-            .json()
-            .await
-            .context("failed to decode openai responses response")?;
-        parse_response(value)
+            let value: Value = response
+                .json()
+                .await
+                .context("failed to decode openai responses response")?;
+            parse_response(value)
+        }
+        .await
+        .map_err(crate::diagnostic::sanitize_error)
     }
 
     async fn completion_stream(
@@ -576,7 +580,8 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
             self.quota.clone(),
             QuotaHeaderFamily::OpenAI,
         )
-        .context("failed to create openai responses event source")?;
+        .context("failed to create openai responses event source")
+        .map_err(crate::diagnostic::sanitize_error)?;
         let stream = async_stream::try_stream! {
             let mut text_buf = String::new();
             let mut reasoning_buf = String::new();
@@ -961,7 +966,9 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
             yield StreamEvent::MessageDone { response };
         };
 
-        Ok(Box::pin(stream))
+        Ok(Box::pin(futures::StreamExt::map(stream, |item| {
+            item.map_err(crate::diagnostic::sanitize_error)
+        })))
     }
 
     fn remaining_quota_percent(&self) -> Option<u8> {

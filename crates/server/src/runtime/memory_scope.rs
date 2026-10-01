@@ -43,7 +43,18 @@ impl ServerRuntime {
         }
         let mut sessions = Vec::with_capacity(session_ids.len());
         for session_id in session_ids {
+            let source = if let Some(handle) = self.session(session_id).await {
+                handle
+                    .memory_settings()
+                    .await
+                    .map(|snapshot| snapshot.settings.source)
+            } else {
+                self.native_session_snapshot(session_id)
+                    .await
+                    .map(|session| session.source)
+            };
             sessions.push(ProjectMemorySession {
+                source,
                 session_id,
                 workspace_root: self
                     .session_summary_snapshot(session_id)

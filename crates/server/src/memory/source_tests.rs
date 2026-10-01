@@ -810,3 +810,14 @@ fn user_steering_corrections_remain_in_extraction_input() {
         assert_eq!(source, expected);
     }
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-1/DD-2/DD-7.
+/// Verifies: canonical automation identity excludes an otherwise contribution-enabled source.
+#[test]
+fn automation_source_with_contribution_on_is_excluded() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = v2(&legacy(dir.path()));
+    lines[0]["session"]["source"] = json!("automation");
+    lines.push(json!({"v":2,"kind":"internal","timestamp":"2026-07-01T13:00:00Z","sessionId":SESSION,"turnId":null,"seq":0,"entry":{"type":"sessionSettings","schemaVersion":1,"field":"memoryContribution","value":"on","epoch":1}}));
+    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+}

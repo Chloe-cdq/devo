@@ -117,7 +117,7 @@ fn build_runtime_with_default_tools(
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7.
-/// Verifies: a failed rollout marker write still leaves a durable, non-destructive source exclusion.
+/// Verifies: a failed rollout marker write leaves a durable source exclusion after reconciliation.
 #[tokio::test]
 async fn failed_external_marker_write_keeps_source_excluded() -> Result<()> {
     let root = TempDir::new()?;
@@ -136,9 +136,17 @@ async fn failed_external_marker_write_keeps_source_excluded() -> Result<()> {
             .await
             .is_err()
     );
-    assert_eq!(
-        runtime.deps.db.pending_external_context_sources()?,
-        vec![session_id]
+    runtime
+        .memory
+        .as_ref()
+        .context("memory runtime")?
+        .reconcile_source_intents();
+    assert!(
+        runtime
+            .deps
+            .db
+            .pending_external_context_sources()?
+            .is_empty()
     );
     assert!(
         runtime

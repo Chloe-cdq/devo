@@ -424,7 +424,7 @@ async fn background_failures_keep_retry_classification_through_provider_router()
     ];
     let mut observed = Vec::new();
     let mut expected = Vec::new();
-    for (status, wanted) in cases {
+    for (status, mut wanted) in cases {
         let (url, capture) = server(vec![response(
             status,
             "application/json",
@@ -439,6 +439,15 @@ async fn background_failures_keep_retry_classification_through_provider_router()
             .complete(ProviderRoute::Default, background)
             .await
             .expect_err("background failure");
+        assert!(
+            error
+                .user_message()
+                .contains(wanted["message"].as_str().unwrap())
+        );
+        wanted["message"] = serde_json::json!("[redacted]");
+        if wanted.get("details").is_some() {
+            wanted["details"] = serde_json::json!("[redacted]");
+        }
         observed.push(serde_json::to_value(error).expect("serialize error"));
         expected.push(wanted);
         capture.await.expect("server task");

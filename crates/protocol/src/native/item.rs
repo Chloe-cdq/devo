@@ -302,6 +302,13 @@ pub enum Item {
     },
 
     // ── System ──
+    /// Expandable advisory recall record, independent of model prompt history.
+    MemoryRecall {
+        #[schemars(rename = "snapshotRevision")]
+        #[ts(rename = "snapshotRevision")]
+        snapshot_revision: String,
+        entries: Vec<super::rpc_memory::MemoryRecallEntry>,
+    },
     ContextCompaction {
         trigger: CompactionTrigger,
         before: ContextUsage,

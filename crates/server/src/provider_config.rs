@@ -129,7 +129,7 @@ impl UnavailableProvider {
     fn new(error: anyhow::Error) -> Self {
         let error = error.downcast::<ProviderError>().unwrap_or_else(|error| {
             ProviderError::InvalidRequestError {
-                message: error.to_string(),
+                message: error.to_string().into(),
                 details: None,
             }
         });
@@ -297,7 +297,7 @@ fn resolve_provider_api_key(
         ProviderError::AuthenticationError {
             message: format!(
                 "provider `{provider_id}` references missing credential `{credential_id}` in user auth.json"
-            ),
+            ).into(),
             provider_name: Some(provider_id.into()),
             status_code: None,
         }

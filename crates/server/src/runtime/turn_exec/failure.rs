@@ -31,7 +31,7 @@ pub(super) fn turn_error_payload_from_error(error: &devo_core::AgentError) -> Tu
     };
     TurnErrorPayload {
         code: code.to_string(),
-        message: error.to_string(),
+        message: error.user_message(),
         recovery_hint,
     }
 }
@@ -47,7 +47,7 @@ mod tests {
     fn preserves_structured_provider_error_code() {
         let error = devo_core::AgentError::Provider(anyhow::Error::new(
             ProviderError::ProviderServerError {
-                message: "Internal server error".to_string(),
+                message: "Internal server error".into(),
                 status_code: Some(500),
                 provider_name: Some("openai".to_string()),
             },
@@ -69,7 +69,7 @@ mod tests {
     fn provider_timeout_includes_network_recovery_hint() {
         let error = devo_core::AgentError::Provider(anyhow::Error::new(
             ProviderError::ProviderTimeoutError {
-                message: "stream idle timeout".to_string(),
+                message: "stream idle timeout".into(),
                 provider_name: Some("openai".to_string()),
             },
         ));
@@ -78,7 +78,7 @@ mod tests {
             turn_error_payload_from_error(&error),
             TurnErrorPayload {
                 code: "PROVIDER_TIMEOUT_ERROR".to_string(),
-                message: "model provider error: provider timeout: stream idle timeout".to_string(),
+                message: "model provider error: provider timeout: stream idle timeout".into(),
                 recovery_hint: Some(NETWORK_PROXY_HINT.to_string()),
             }
         );

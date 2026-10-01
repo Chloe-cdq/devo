@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use devo_protocol::{Model, ModelRequest, RequestMessage, ResponseContent, SamplingControls};
+use devo_protocol::{
+    Model, ModelRequest, RequestContent, RequestMessage, ResponseContent, SamplingControls,
+};
 use devo_provider::ModelProviderSDK;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -19,6 +21,7 @@ pub struct DefaultHistorySummarizer {
     model_slug: String,
     request_model: String,
     max_tokens: usize,
+    prepared_memory: Option<Arc<str>>,
 }
 
 impl DefaultHistorySummarizer {
@@ -29,21 +32,25 @@ impl DefaultHistorySummarizer {
             model_slug: model.slug.clone(),
             request_model: model.slug.clone(),
             max_tokens,
+            prepared_memory: None,
         }
     }
 
-    /// Convenience constructor for a catalog slug and provider wire model.
+    /// Construct with provider routing and optional immutable root-turn recall.
+    /// Recall is added only to model requests, outside the history being compacted.
     pub fn with_models(
         provider: Arc<dyn ModelProviderSDK>,
         model_slug: impl Into<String>,
         request_model: impl Into<String>,
         max_tokens: usize,
+        prepared_memory: Option<Arc<str>>,
     ) -> Self {
         Self {
             provider,
             model_slug: model_slug.into(),
             request_model: request_model.into(),
             max_tokens,
+            prepared_memory,
         }
     }
 }
@@ -72,9 +79,20 @@ fn should_keep_summary_line(line: &str) -> bool {
 impl HistorySummarizer for DefaultHistorySummarizer {
     async fn summarize(
         &self,
-        messages: Vec<RequestMessage>,
+        mut messages: Vec<RequestMessage>,
         cancel_token: Option<&CancellationToken>,
     ) -> Result<String, CompactionError> {
+        if let Some(memory) = &self.prepared_memory {
+            messages.insert(
+                /*index*/ 0,
+                RequestMessage {
+                    role: "user".into(),
+                    content: vec![RequestContent::Text {
+                        text: memory.to_string(),
+                    }],
+                },
+            );
+        }
         let request = ModelRequest {
             model_slug: devo_protocol::ModelProfileKey::CatalogSlug(self.model_slug.clone()),
             model: self.request_model.clone(),
@@ -88,14 +106,11 @@ impl HistorySummarizer for DefaultHistorySummarizer {
             reasoning_effort: None,
             extra_body: None,
         };
-        let request_preview = serde_json::to_string_pretty(&request).unwrap_or_else(|error| {
-            format!("<failed to serialize compaction request for logging: {error}>")
-        });
+        // Recall and conversation bodies must stay out of diagnostic logs.
         debug!(
             model = %self.request_model,
             message_count = request.messages.len(),
             max_tokens = request.max_tokens,
-            compaction_request = %request_preview,
             "sending LLM compaction request"
         );
 
@@ -115,13 +130,14 @@ impl HistorySummarizer for DefaultHistorySummarizer {
         let response = match response {
             Ok(r) => r,
             Err(e) => {
-                let err_msg = e.to_string();
-                if err_msg.contains("context_length_exceeded")
-                    || err_msg.contains("maximum context length")
+                if devo_provider::diagnostic::classify_error(&e)
+                    == devo_provider::diagnostic::ErrorClass::ContextTooLong
                 {
                     return Err(CompactionError::ContextTooLong);
                 }
-                return Err(CompactionError::SummarizationFailed { message: err_msg });
+                return Err(CompactionError::SummarizationFailed {
+                    message: devo_provider::diagnostic::user_message_for_error(&e).into(),
+                });
             }
         };
 
@@ -147,7 +163,6 @@ impl HistorySummarizer for DefaultHistorySummarizer {
         debug!(
             model = %self.request_model,
             response_chars = text.len(),
-            compaction_response = %text,
             "received LLM compaction response"
         );
 

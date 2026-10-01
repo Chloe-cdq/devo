@@ -185,13 +185,15 @@ async fn pending_deletion_hides_explicit_entry_provenance() {
 
     let recalled = runtime
         .prepare_turn(PrepareMemoryRequest {
+            query: "tabs".into(),
             workspace_root: root.path().to_path_buf(),
             session_recall: MemorySetting::On,
         })
         .await
         .unwrap();
-    assert_eq!(recalled.user_entries.len(), 1);
-    assert!(recalled.user_entries[0].provenance.is_empty());
+    assert_eq!(recalled.entries.len(), 1);
+    assert_eq!(recalled.entries[0].entry_id, entry.entry_id);
+    assert_eq!(recalled.entries[0].source_summary, "Explicit user memory");
 
     let forgotten = runtime
         .execute_command(MemoryCommand::Forget(PreparedMemoryForgetRequest {
@@ -236,6 +238,48 @@ async fn pending_deletion_hides_explicit_entry_provenance() {
         panic!("expected committed forget with failed projection");
     };
     assert!(result.forgotten.unwrap().provenance.is_empty());
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: foreground recall obeys the durable deletion fence for inferred memory.
+#[tokio::test]
+async fn pending_deletion_hides_inferred_entry_from_turn_recall() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
+    let mut runtime = open_runtime(&root.path().join("memory"));
+    runtime.attach_deletion_ledger(Arc::clone(&db));
+    let (mut source, candidate) = source();
+    let source_id = devo_protocol::SessionId::new();
+    source.session_id = SessionId::from_legacy_uuid(source_id.into());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    let request = PrepareMemoryRequest {
+        query: "tabs".into(),
+        workspace_root: root.path().to_path_buf(),
+        session_recall: MemorySetting::On,
+    };
+    assert_eq!(
+        runtime
+            .prepare_turn(request.clone())
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+
+    db.record_memory_source_deletions(&[source_id]).unwrap();
+    assert!(
+        runtime
+            .prepare_turn(request)
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7.

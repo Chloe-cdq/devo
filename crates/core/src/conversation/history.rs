@@ -105,7 +105,15 @@ pub fn read_canonical_history(path: &Path) -> Result<CanonicalHistory, HistoryRe
 
 fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
     match line {
-        RolloutLineV2::SessionMeta { session, .. } => history.session = Some(session),
+        RolloutLineV2::SessionMeta { mut session, .. } => {
+            // Whole-record refreshes must not erase the immutable automation source.
+            if history.session.as_ref().is_some_and(|previous| {
+                previous.source == devo_protocol::native::session::SessionSource::Automation
+            }) {
+                session.source = devo_protocol::native::session::SessionSource::Automation;
+            }
+            history.session = Some(session);
+        }
         RolloutLineV2::Turn { turn, extras, .. } => {
             history.turns.push(turn);
             if let Some(extras) = extras
@@ -242,6 +250,11 @@ fn apply_settings_to_canonical_session(
             }
         }
         SessionSettingsField::ModelBindingId => {}
+        SessionSettingsField::SessionSource => {
+            if let Ok(source) = serde_json::from_value(value) {
+                session.source = source;
+            }
+        }
         SessionSettingsField::MemoryRecall => {
             if let Ok(setting) =
                 serde_json::from_value::<devo_protocol::native::session::MemorySetting>(value)

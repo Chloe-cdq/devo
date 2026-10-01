@@ -260,7 +260,7 @@ async fn anthropic_messages_stream_reports_invalid_content_type_before_content()
         .await
         .expect("stream should yield the content-type error");
     let error = event.expect_err("invalid content type should be a stream error");
-    let message = error.to_string();
+    let message = devo_provider::diagnostic::user_message_for_error(&error);
 
     assert!(message.contains("deepseek-v4-flash"), "{message}");
     assert!(
@@ -835,4 +835,127 @@ fn openai_responses_response() -> &'static str {
 
 fn anthropic_response() -> &'static str {
     r#"{"id":"msg-test","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#
+}
+
+/// All retained wire adapters must isolate HTTP failures in both SDK methods.
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: HTTP failure details remain user-visible while every adapter's default error output is private.
+#[tokio::test]
+async fn sdk_http_failures_keep_details_out_of_default_error_representations() {
+    use devo_provider::diagnostic::user_message_for_error;
+    use devo_provider::error::ProviderError;
+    const PRIVATE_TEXT: &str = "Quoted memory: Use tabs. Private earlier conversation";
+    const HTTP_ERROR: &str = concat!(
+        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n",
+        "{\"error\":{\"message\":\"Quoted memory: Use tabs. Private earlier conversation; 401 unauthorized; 500 internal server error\"}}"
+    );
+    enum Adapter {
+        Chat,
+        Responses,
+        Anthropic,
+    }
+    for adapter in [Adapter::Chat, Adapter::Responses, Adapter::Anthropic] {
+        for streaming in [false, true] {
+            let (base_url, capture) = spawn_sse_server(HTTP_ERROR).await;
+            let options = ProviderHttpOptions::from_raw_with_no_proxy(
+                /*proxy_url*/ None,
+                Some("127.0.0.1".into()),
+                /*headers*/ None,
+            )
+            .expect("HTTP options");
+            let provider: Box<dyn ModelProviderSDK> = match adapter {
+                Adapter::Chat => Box::new(
+                    OpenAIProvider::new(base_url)
+                        .with_http_options(options)
+                        .expect("HTTP options"),
+                ),
+                Adapter::Responses => Box::new(
+                    OpenAIResponsesProvider::new(base_url)
+                        .with_http_options(options)
+                        .expect("HTTP options"),
+                ),
+                Adapter::Anthropic => Box::new(
+                    AnthropicProvider::new(base_url)
+                        .with_http_options(options)
+                        .expect("HTTP options"),
+                ),
+            };
+            let error = if streaming {
+                let mut stream = provider
+                    .completion_stream(minimal_request())
+                    .await
+                    .expect("stream created");
+                stream
+                    .next()
+                    .await
+                    .expect("HTTP failure")
+                    .expect_err("rejected stream")
+            } else {
+                provider
+                    .completion(minimal_request())
+                    .await
+                    .expect_err("rejected completion")
+            };
+            capture.await.expect("HTTP request received");
+            assert!(user_message_for_error(&error).contains(PRIVATE_TEXT));
+            let safe_error = error
+                .downcast_ref::<ProviderError>()
+                .expect("safe provider failure");
+            assert_eq!(
+                (
+                    devo_provider::diagnostic::classify_error(&error),
+                    safe_error.error_code()
+                ),
+                (
+                    devo_provider::diagnostic::ErrorClass::ParameterError,
+                    "INVALID_REQUEST_ERROR"
+                )
+            );
+            let outputs = [
+                format!("{error}"),
+                format!("{error:#}"),
+                format!("{error:?}"),
+                format!("{error:#?}"),
+                serde_json::to_string(safe_error).expect("safe serialization"),
+            ];
+            assert_eq!(
+                outputs
+                    .iter()
+                    .filter(|text| text.contains(PRIVATE_TEXT))
+                    .collect::<Vec<_>>(),
+                Vec::<&String>::new()
+            );
+        }
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 Failure/Observability
+/// Verifies: decode failures isolate private values and unsafe source formatting.
+#[tokio::test]
+async fn sdk_decode_errors_isolate_private_values_and_unsafe_sources() {
+    const PRIVATE_TEXT: &str = "Quoted memory: Use tabs. Private earlier conversation";
+    let (base_url, capture) = spawn_json_server(r#"{"id":"private","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":"Quoted memory: Use tabs. Private earlier conversation; 401 unauthorized","output_tokens":1}}"#).await;
+    let provider = AnthropicProvider::new(base_url);
+    let error = provider
+        .completion(minimal_request())
+        .await
+        .expect_err("invalid usage type");
+    capture.await.expect("request received");
+    assert!(devo_provider::diagnostic::user_message_for_error(&error).contains(PRIVATE_TEXT));
+    assert_eq!(
+        devo_provider::diagnostic::classify_error(&error),
+        devo_provider::diagnostic::ErrorClass::NetworkError
+    );
+    let outputs = [
+        format!("{error:#}"),
+        format!("{error:?}"),
+        format!("{error:#?}"),
+    ];
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|text| text.contains(PRIVATE_TEXT))
+            .collect::<Vec<_>>(),
+        Vec::<&String>::new()
+    );
 }

@@ -88,7 +88,7 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                 observed_at = observed_at.max(timestamp);
                 match line.as_ref() {
                     RolloutLineV2::SessionMeta { session, .. } => {
-                        if session.ephemeral {
+                        if session.ephemeral || !session.source.is_interactive() {
                             return Ok(None);
                         }
                         snapshot_contribution = session.settings.memory_contribution;

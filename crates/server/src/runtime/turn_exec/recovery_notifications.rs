@@ -12,7 +12,7 @@ impl ServerRuntime {
     pub(crate) async fn broadcast_recovery_state(&self, session_id: SessionId) {
         match self.turn_recovery(session_id).await {
             Ok(recovery) => {
-                self.broadcast_recovery_notification(
+                self.broadcast_native_notification(
                     session_id,
                     ServerNotification::TurnRecoveryUpdated {
                         session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(
@@ -27,12 +27,12 @@ impl ServerRuntime {
         }
     }
 
-    pub(crate) async fn broadcast_recovery_notification(
+    pub(crate) async fn broadcast_native_notification(
         &self,
         session_id: SessionId,
         notification: ServerNotification,
     ) {
-        let value = serde_json::to_value(notification).expect("recovery notification");
+        let value = serde_json::to_value(notification).expect("Native notification");
         let method = value["method"]
             .as_str()
             .expect("notification method")
