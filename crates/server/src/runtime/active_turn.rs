@@ -216,12 +216,13 @@ impl ActiveTurnRegistry {
         self.turns.lock().await.remove(&session_id);
     }
 
+    /// Returns the published snapshot, retaining the same turn's preparation lane.
     pub(crate) async fn register_spawn_snapshot(
         &self,
         session_id: SessionId,
         turn_id: TurnId,
         snapshot: Arc<SpawnSnapshot>,
-    ) {
+    ) -> Arc<SpawnSnapshot> {
         let mut turns = self.turns.lock().await;
         let execution = turns
             .entry(session_id)
@@ -232,9 +233,11 @@ impl ActiveTurnRegistry {
             // Delegation waiting for recall must keep observing one readiness lane.
             snapshot.prepared_memory = previous.prepared_memory.clone();
         }
+        let snapshot = Arc::new(snapshot);
         execution
             .spawn_snapshots
-            .insert(turn_id, Arc::new(snapshot));
+            .insert(turn_id, Arc::clone(&snapshot));
+        snapshot
     }
 
     pub(crate) async fn clear_spawn_snapshot(&self, session_id: SessionId, turn_id: TurnId) {

@@ -108,6 +108,10 @@ impl ServerRuntime {
 }
 
 #[cfg(test)]
+#[path = "memory_admission_tests.rs"]
+mod admission_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory_forget_runtime_support::{

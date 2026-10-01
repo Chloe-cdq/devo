@@ -28,8 +28,10 @@ Subagents inherit the parent's prepared advisory snapshot independently of
 alter that snapshot. Follow-up child turns retain it; a child never prepares a
 fresh recall. Message edits, rollback, and manual compaction preserve the loaded
 child's delegation identity and inherited snapshot when rebuilding history.
-Delegation during root recall preparation waits for the snapshot;
-prepared-empty snapshots, including manual compaction, do not wait.
+Delegation during root recall preparation waits for the snapshot.
+Concurrent Native task starts and later turn publication share one preparation
+lane, and aborted admission releases waiting delegations with an error.
+Prepared-empty snapshots, including manual compaction, do not wait.
 Restarted approval continuations restore and publish that turn's persisted
 snapshot before replaying tools, including when the original snapshot was empty.
 Memory tools and aliases are hidden and rejected at execution,

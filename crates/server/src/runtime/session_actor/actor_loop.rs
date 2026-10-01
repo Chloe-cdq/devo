@@ -27,7 +27,7 @@ pub(super) async fn run_session_actor(
     mut state: SessionActorState,
     mut mailbox: mpsc::Receiver<SessionCommand>,
     mut memory_settings: watch::Receiver<crate::memory::SessionMemorySettingsSnapshot>,
-    _runtime: Arc<crate::runtime::ServerRuntime>,
+    runtime: Arc<crate::runtime::ServerRuntime>,
 ) {
     while let Some(command) = mailbox.recv().await {
         synchronize_memory_settings(&mut state, *memory_settings.borrow_and_update());
@@ -51,7 +51,18 @@ pub(super) async fn run_session_actor(
                 let _ = reply.send(state.summary.clone());
             }
             SessionCommand::GetSpawnSnapshot { reply } => {
-                let snapshot = state.spawn_snapshot();
+                let mut snapshot = state.spawn_snapshot();
+                if let Some(turn) = state.active_turn.as_ref() {
+                    // Early delegation and later admission/checkout share one preparation lane.
+                    snapshot = (*runtime
+                        .register_turn_spawn_snapshot(
+                            state.session_id(),
+                            turn.turn_id,
+                            Arc::new(snapshot),
+                        )
+                        .await)
+                        .clone();
+                }
                 let _ = reply.send(snapshot);
             }
             SessionCommand::GetApprovalCacheSnapshot { reply } => {
@@ -317,6 +328,9 @@ pub(super) async fn run_session_actor(
                     state.summary.status = SessionRuntimeStatus::Idle;
                     state.summary.updated_at = Utc::now();
                     state.summary.last_activity_at = state.summary.updated_at;
+                    runtime
+                        .clear_turn_spawn_snapshot(state.session_id(), turn_id)
+                        .await;
                 }
                 let _ = reply.send(cleared);
             }
