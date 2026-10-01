@@ -291,7 +291,7 @@ impl ServerRuntime {
             );
         }
 
-        if !summary.ephemeral {
+        if !summary.ephemeral && source.is_interactive() {
             self.runtime_arc()
                 .schedule_memory_scan(summary.session_id, passive_context);
         }

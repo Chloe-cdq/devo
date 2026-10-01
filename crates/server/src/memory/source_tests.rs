@@ -821,3 +821,6 @@ fn automation_source_with_contribution_on_is_excluded() {
     lines.push(json!({"v":2,"kind":"internal","timestamp":"2026-07-01T13:00:00Z","sessionId":SESSION,"turnId":null,"seq":0,"entry":{"type":"sessionSettings","schemaVersion":1,"field":"memoryContribution","value":"on","epoch":1}}));
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
 }
+
+#[path = "source_identity_tests.rs"]
+mod identity_tests;

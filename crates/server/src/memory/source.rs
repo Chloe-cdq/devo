@@ -13,7 +13,7 @@ use devo_core::{
 use devo_protocol::ContentBlock;
 use devo_protocol::native::ids::{ItemId, SessionId, TurnId};
 use devo_protocol::native::item::{Item, ItemEnvelope, ItemState, ToolSource};
-use devo_protocol::native::session::{MemorySetting, SessionStatus};
+use devo_protocol::native::session::{MemorySetting, SessionSource, SessionStatus};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -298,7 +298,13 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                     {
                         return Ok(None);
                     }
-                    if line.field == SessionSettingsField::MemoryContribution {
+                    if line.field == SessionSettingsField::SessionSource {
+                        let Ok(SessionSource::Interactive) =
+                            serde_json::from_value::<SessionSource>(line.value)
+                        else {
+                            return Ok(None);
+                        };
+                    } else if line.field == SessionSettingsField::MemoryContribution {
                         let Ok(setting) = serde_json::from_value::<MemorySetting>(line.value)
                         else {
                             return Ok(None);

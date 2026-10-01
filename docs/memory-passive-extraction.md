@@ -3,6 +3,7 @@
 When General Persistent Memory is enabled, creating a persistent normal root
 session schedules a background scan. Startup and foreground turns do not wait
 for discovery, extraction, retries, or projection repair.
+Creating an automation session does not schedule a scan.
 The session runtime submits scan and cleanup work through the memory module's
 source entry point; the memory module owns extraction and source reconciliation.
 
@@ -14,6 +15,8 @@ Sources must be persistent root sessions, idle for at least
 borrowed fork history, unfinished turns, damaged journals, and sessions that
 used Web, MCP, or Tool Search are excluded. Journals larger than 1 MiB are
 skipped to bound background input work.
+Automation identity is checked in both session metadata and persisted
+`SessionSource` field records. Malformed source values also exclude the session.
 
 Actual external-tool use first records a durable, session-wide exclusion in
 the session index and then adds an fsynced `ExternalContextUsed` rollout fact.

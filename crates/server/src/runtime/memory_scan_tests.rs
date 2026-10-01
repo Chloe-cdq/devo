@@ -814,3 +814,6 @@ async fn scan_credential_assignment_variants_never_send_source() -> Result<()> {
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
     Ok(())
 }
+
+#[path = "memory_scan_identity_tests.rs"]
+mod identity_tests;
