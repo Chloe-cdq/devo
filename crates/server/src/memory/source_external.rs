@@ -50,21 +50,124 @@ pub(super) fn external_tool_name(name: &str) -> bool {
         )
 }
 
-/// Old wrapper journals lack the execution marker. Admit only a direct local
-/// tool call with literal arguments; arbitrary JavaScript can hide tool use.
+/// Old wrapper journals lack the execution marker. Admit only statically
+/// inspectable local calls and output of their results.
 fn legacy_wrapper_is_local(root: tree_sitter::Node<'_>, code: &[u8]) -> bool {
-    if root.has_error() || root.named_child_count() != 1 {
+    if root.has_error() {
         return false;
     }
-    let Some(statement) = root.named_child(0) else {
-        return false;
-    };
-    if statement.kind() != "expression_statement" {
+    let mut results = Vec::new();
+    let mut saw_local_call = false;
+    let mut cursor = root.walk();
+    for statement in root.named_children(&mut cursor) {
+        match statement.kind() {
+            "comment" => {}
+            "expression_statement" => {
+                let Some(expression) = statement.named_child(0) else {
+                    return false;
+                };
+                if local_tool_call(expression, code) {
+                    saw_local_call = true;
+                } else if !result_output(expression, code, &results) {
+                    return false;
+                }
+            }
+            "lexical_declaration" => {
+                if statement
+                    .child(0)
+                    .is_none_or(|keyword| keyword.kind() != "const")
+                    || statement.named_child_count() != 1
+                {
+                    return false;
+                }
+                let Some(declaration) = statement.named_child(0) else {
+                    return false;
+                };
+                let Some(name) = declaration.child_by_field_name("name") else {
+                    return false;
+                };
+                if name.kind() != "identifier" {
+                    return false;
+                }
+                let Ok(name) = name.utf8_text(code) else {
+                    return false;
+                };
+                if matches!(name, "tools" | "text") || results.contains(&name) {
+                    return false;
+                }
+                let Some(value) = declaration.child_by_field_name("value") else {
+                    return false;
+                };
+                if !local_tool_call(value, code) {
+                    return false;
+                }
+                results.push(name);
+                saw_local_call = true;
+            }
+            _ => return false,
+        }
+    }
+    saw_local_call
+}
+
+fn result_output(expression: tree_sitter::Node<'_>, code: &[u8], results: &[&str]) -> bool {
+    if expression.kind() != "call_expression"
+        || expression
+            .child_by_field_name("function")
+            .and_then(|callee| callee.utf8_text(code).ok())
+            != Some("text")
+    {
         return false;
     }
-    let Some(expression) = statement.named_child(0) else {
+    let Some(arguments) = expression.child_by_field_name("arguments") else {
         return false;
     };
+    let mut cursor = arguments.walk();
+    let mut children = arguments.named_children(&mut cursor);
+    let Some(value) = children.next() else {
+        return false;
+    };
+    if children.next().is_some() {
+        return false;
+    }
+    result_value(value, code, results)
+}
+
+fn result_value(value: tree_sitter::Node<'_>, code: &[u8], results: &[&str]) -> bool {
+    match value.kind() {
+        "identifier" => value
+            .utf8_text(code)
+            .is_ok_and(|name| results.contains(&name)),
+        "member_expression" => {
+            value
+                .child_by_field_name("property")
+                .is_some_and(|property| property.kind() == "property_identifier")
+                && value
+                    .child_by_field_name("object")
+                    .is_some_and(|object| result_value(object, code, results))
+        }
+        "parenthesized_expression" => {
+            value.named_child_count() == 1
+                && value
+                    .named_child(0)
+                    .is_some_and(|inner| result_value(inner, code, results))
+        }
+        "binary_expression" => {
+            value
+                .child_by_field_name("operator")
+                .is_some_and(|operator| operator.kind() == "??")
+                && value
+                    .child_by_field_name("left")
+                    .is_some_and(|left| result_value(left, code, results))
+                && value.child_by_field_name("right").is_some_and(|right| {
+                    result_value(right, code, results) || static_wrapper_argument(right)
+                })
+        }
+        _ => false,
+    }
+}
+
+fn local_tool_call(expression: tree_sitter::Node<'_>, code: &[u8]) -> bool {
     let call = if expression.kind() == "await_expression" {
         expression.named_child(0)
     } else {

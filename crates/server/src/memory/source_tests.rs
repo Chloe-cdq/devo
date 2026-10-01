@@ -514,6 +514,57 @@ fn local_tool_input_quoting_external_call_remains_eligible() {
     assert!(read_source(&write_lines(&dir, &lines)).unwrap().is_some());
 }
 
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: sequential local tool calls and output of their results remain eligible.
+#[test]
+fn local_tool_result_wrappers_remain_eligible() {
+    let dir = TempDir::new().unwrap();
+    for code in [
+        "const r = await tools.exec_command({cmd: 'pwd'}); text(r.output);",
+        "const r = await tools.exec_command({cmd: 'pwd'}); text(r.output ?? '');",
+        "const r = await tools.exec_command({cmd: 'pwd'}); text((r.output));",
+        "const first = await tools.exec_command({cmd: 'pwd'}); const second = await tools.exec_command({cmd: 'rg mcp__docs__search crates'}); text(first.output); text(second.output);",
+    ] {
+        let mut lines = legacy(dir.path());
+        lines[2]["Item"]["item"]["output_items"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"ToolCall":{"tool_call_id":"local","tool_name":"functions.exec","input":{"code":code}}}));
+        assert!(
+            read_source(&write_lines(&dir, &lines)).unwrap().is_some(),
+            "{code}"
+        );
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: a local call cannot conceal later dynamic or external execution.
+#[test]
+fn local_tool_result_wrappers_still_exclude_unproved_calls() {
+    let dir = TempDir::new().unwrap();
+    for suffix in [
+        "await tools.web__run({search_query: []});",
+        "text(tools.web__run({search_query: []}));",
+        "const run = tools.web__run; text(run({search_query: []}));",
+        "eval('tools.web__run({search_query: []})');",
+        "text(r[tools.web__run({search_query: []})]);",
+        "text(r.output ?? tools.web__run({search_query: []}));",
+        "text((tools.web__run({search_query: []})));",
+    ] {
+        let code = format!("const r = await tools.exec_command({{cmd: 'pwd'}}); {suffix}");
+        let mut lines = legacy(dir.path());
+        lines[2]["Item"]["item"]["output_items"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"ToolCall":{"tool_call_id":"remote","tool_name":"functions.exec","input":{"code":code}}}));
+        assert_eq!(
+            read_source(&write_lines(&dir, &lines)).unwrap(),
+            None,
+            "{code}"
+        );
+    }
+}
+
 /// Trace: L2-DES-MEM-001 Rev 4.
 /// Verifies: malformed or future contribution setting cannot reenable extraction.
 #[test]

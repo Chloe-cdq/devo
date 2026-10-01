@@ -25,10 +25,13 @@ also excludes its durable parent chain. Failed and interrupted turns do not
 themselves taint a session; only completed turns contribute text. Merely
 offering hosted Web capability does not exclude a text-only session. The source
 reader also recognizes older tool records without this fact. For legacy
-`functions.exec` wrappers, it admits only a direct call to a known local tool
-with literal arguments. Tool names inside a local command string do not count
-as tool use. Complex, malformed, or absent wrapper code is excluded because
-its behavior cannot be established from the journal.
+`functions.exec` wrappers, it admits a sequence of direct calls to known local
+tools with literal arguments, immutable result bindings, and `text(...)` output
+of those results (including property reads and literal `??` fallbacks). Tool
+names inside a local command string do not count as tool use. Dynamic calls,
+aliases, malformed or absent code, and other unrecognized
+statements are excluded because their behavior cannot be established from the
+journal.
 
 Only persisted user text (including mid-turn steering corrections) and assistant
 conversational text are sent to the extractor. Attachments, tool results, reasoning, approvals, hidden context, and
