@@ -17,6 +17,7 @@ pub(super) struct JobClaim {
 pub(super) enum JobFailure {
     TransientProvider,
     PermanentProvider,
+    ProviderUnavailable,
     InvalidOutput,
     Credentials,
     Storage,
@@ -27,6 +28,7 @@ impl JobFailure {
         match self {
             Self::TransientProvider => "transient_provider_error",
             Self::PermanentProvider => "permanent_provider_error",
+            Self::ProviderUnavailable => "provider_unavailable",
             Self::InvalidOutput => "invalid_structured_output",
             Self::Credentials => "credentials_unavailable",
             Self::Storage => "storage_error",

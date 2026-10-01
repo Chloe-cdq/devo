@@ -2151,6 +2151,8 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-javascript",
  "uuid",
  "windows-sys 0.61.2",
 ]

@@ -267,7 +267,7 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
                             TurnItem::ToolResult(result) => result
                                 .tool_name
                                 .as_ref()
-                                .is_some_and(|name| external_tool(name, /*input*/ None)),
+                                .is_some_and(|name| external_tool_name(name)),
                             TurnItem::CommandExecution(command) => {
                                 external_tool(&command.tool_name, Some(&command.input))
                             }
@@ -475,29 +475,9 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     }))
 }
 
-fn external_tool(name: &str, input: Option<&serde_json::Value>) -> bool {
-    let name = name.to_ascii_lowercase();
-    let input = input
-        .map(serde_json::Value::to_string)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    name.contains("web")
-        || name.contains("mcp")
-        || name.contains("browser")
-        || (name.contains("tool") && name.contains("search"))
-        || [
-            "web__",
-            "web.",
-            "web_search",
-            "mcp__",
-            "mcp.",
-            "tool_search",
-            "tools_search",
-            "search_tools",
-        ]
-        .iter()
-        .any(|marker| input.contains(marker))
-}
+#[path = "source_external.rs"]
+mod external;
+use external::{external_tool, external_tool_name};
 
 #[cfg(test)]
 #[path = "source_tests.rs"]

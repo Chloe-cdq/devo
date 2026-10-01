@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "memory_scan_latency_tests.rs"]
 mod latency_tests;
+#[path = "memory_scan_model_tests.rs"]
+mod model_tests;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use devo_core::tools::ToolRegistry;

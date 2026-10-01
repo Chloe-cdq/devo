@@ -24,7 +24,11 @@ recall until non-destructive memory-state reconciliation succeeds. Subagent use
 also excludes its durable parent chain. Failed and interrupted turns do not
 themselves taint a session; only completed turns contribute text. Merely
 offering hosted Web capability does not exclude a text-only session. The source
-reader also recognizes older tool records without this fact.
+reader also recognizes older tool records without this fact. For legacy
+`functions.exec` wrappers, it admits only a direct call to a known local tool
+with literal arguments. Tool names inside a local command string do not count
+as tool use. Complex, malformed, or absent wrapper code is excluded because
+its behavior cannot be established from the journal.
 
 Only persisted user text (including mid-turn steering corrections) and assistant
 conversational text are sent to the extractor. Attachments, tool results, reasoning, approvals, hidden context, and
@@ -47,6 +51,9 @@ session with Native usage purpose `memoryExtraction`, without transcript content
 Provider, model, and selected variant request/options and headers follow the
 normal request precedence. Overlays cannot change the fixed extraction input,
 output limit, disabled tools/thinking, or background privacy marker.
+An unavailable selected model records `provider_unavailable` on eligible source
+jobs without sending source text to a fallback model. Model resolution uses the
+runtime catalog, which includes built-in presets as well as user providers.
 
 Known provider quota must meet
 `memory.min_rate_limit_remaining_percent` (default 25). Missing or stale quota

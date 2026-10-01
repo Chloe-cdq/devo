@@ -123,25 +123,18 @@ impl MemoryRuntime {
                     &context.model_context.default_model,
                 )
             });
-        let Some(selection) = selection else {
-            return Ok(());
-        };
-        if context
-            .model_context
-            .model_catalog
-            .get(&selection)
-            .is_none()
-            && context
-                .model_context
-                .provider_catalog_snapshot
-                .resolve_model(Some(&selection))
-                .is_err()
-        {
-            return Ok(());
-        }
-        let turn_config = context
-            .model_context
-            .resolve_turn_config(Some(&selection), /*reasoning_effort_selection*/ None);
+        let model_unavailable = selection.as_ref().is_none_or(|selection| {
+            context.model_context.model_catalog.get(selection).is_none()
+                && context
+                    .model_context
+                    .provider_catalog_snapshot
+                    .resolve_model(Some(selection))
+                    .is_err()
+        });
+        let turn_config = context.model_context.resolve_turn_config(
+            selection.as_deref(),
+            /*reasoning_effort_selection*/ None,
+        );
         let catalog_model = turn_config
             .model
             .resolve_reasoning_effort_selection(/*selection*/ None)
@@ -156,13 +149,17 @@ impl MemoryRuntime {
             /*turn_id*/ None,
             devo_protocol::native::usage::UsagePurpose::MemoryExtraction,
         );
-        let initialization_failure = provider.initialization_error().map(|error| {
-            if matches!(error, ProviderError::AuthenticationError { .. }) {
-                JobFailure::Credentials
-            } else {
-                JobFailure::PermanentProvider
-            }
-        });
+        let initialization_failure = if model_unavailable {
+            Some(JobFailure::ProviderUnavailable)
+        } else {
+            provider.initialization_error().map(|error| {
+                if matches!(error, ProviderError::AuthenticationError { .. }) {
+                    JobFailure::Credentials
+                } else {
+                    JobFailure::PermanentProvider
+                }
+            })
+        };
         if initialization_failure.is_none() && !self.quota_allows(provider.as_ref()) {
             return Ok(());
         }

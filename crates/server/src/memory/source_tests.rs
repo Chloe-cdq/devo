@@ -166,6 +166,11 @@ fn tool_calls_taint_the_entire_session_even_before_rollback() {
         "mcp__docs__search",
         "tools_search",
         "functions.tool_search",
+        "ToolSearch",
+        "tool-search",
+        "loadtool",
+        "websearch",
+        "web-search",
     ] {
         let mut lines = legacy(dir.path());
         let mut call = lines[2].clone();
@@ -425,6 +430,88 @@ fn tool_wrappers_cannot_hide_external_calls_in_their_input() {
     let mut lines = legacy(dir.path());
     lines[2]["Item"]["item"]["output_items"].as_array_mut().unwrap().push(json!({"ToolCall":{"tool_call_id":"remote","tool_name":"functions.exec","input":{"code":"await tools.web__run({search_query: [{q: 'private'}]})"}}}));
     assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: legacy wrappers remain excluded when an external function is called through an alias.
+#[test]
+fn indirect_external_call_in_tool_wrapper_is_excluded() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = legacy(dir.path());
+    lines[2]["Item"]["item"]["output_items"].as_array_mut().unwrap().push(json!({"ToolCall":{"tool_call_id":"remote","tool_name":"functions.exec","input":{"code":"const run = tools.web__run; await run({search_query: [{q: 'private'}]})"}}}));
+    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: a legacy executable wrapper without inspectable code cannot be admitted.
+#[test]
+fn uninspectable_tool_wrapper_is_excluded() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = legacy(dir.path());
+    lines[2]["Item"]["item"]["output_items"]
+        .as_array_mut()
+        .unwrap()
+        .push(
+            json!({"ToolCall":{"tool_call_id":"unknown","tool_name":"functions.exec","input":{}}}),
+        );
+    assert_eq!(read_source(&write_lines(&dir, &lines)).unwrap(), None);
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: dynamically dispatched legacy wrapper code is excluded when local-only use cannot be proved.
+#[test]
+fn dynamic_legacy_tool_wrappers_are_excluded() {
+    let dir = TempDir::new().unwrap();
+    for code in [
+        "const {web__run: run} = tools; await run({search_query: []})",
+        "const t = tools; const name = 'mcp__docs__search'; await t[name]({})",
+        "eval(\"tools.web__run({search_query: []})\")",
+        "await tools.exec_command({[tools.web__run({search_query: []})]: 'local'})",
+    ] {
+        let mut lines = legacy(dir.path());
+        lines[2]["Item"]["item"]["output_items"].as_array_mut().unwrap().push(json!({"ToolCall":{"tool_call_id":"remote","tool_name":"functions.exec","input":{"code":code}}}));
+        assert_eq!(
+            read_source(&write_lines(&dir, &lines)).unwrap(),
+            None,
+            "{code}"
+        );
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: mentioning an external tool name in a local command is not external tool use.
+#[test]
+fn local_tool_input_mentioning_mcp_remains_eligible() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = legacy(dir.path());
+    lines[2]["Item"]["item"]["output_items"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "ToolCall": {
+                "tool_call_id": "local",
+                "tool_name": "functions.exec",
+                "input": {"code": "await tools.exec_command({cmd: 'rg mcp__docs__search crates'})"}
+            }
+        }));
+    let source = read_source(&write_lines(&dir, &lines)).unwrap();
+    assert!(source.is_some(), "a local grep does not invoke MCP");
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: quoted external-call syntax in a local shell command is data, not a call.
+#[test]
+fn local_tool_input_quoting_external_call_remains_eligible() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = legacy(dir.path());
+    lines[2]["Item"]["item"]["output_items"].as_array_mut().unwrap().push(json!({
+        "ToolCall": {
+            "tool_call_id": "local",
+            "tool_name": "functions.exec",
+            "input": {"code": "await tools.exec_command({cmd: 'rg \\\"tools.web__run(\\\" crates'})"}
+        }
+    }));
+    assert!(read_source(&write_lines(&dir, &lines)).unwrap().is_some());
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4.
