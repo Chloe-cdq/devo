@@ -509,3 +509,5 @@
 | memory::source_intent_tests::pending_deletion_fences_in_flight_extraction | Unit | crates/server/src/memory/source_intent_tests.rs | L2-DES-MEM-001 | 4 | L1-REQ-MEM-001 | Durable deletion intent prevents an already claimed extraction from committing. |
 | memory::source_intent_tests::pending_deletion_fences_new_claim | Unit | crates/server/src/memory/source_intent_tests.rs | L2-DES-MEM-001 | 4 | L1-REQ-MEM-001 | Durable deletion intent prevents new extraction claims. |
 | runtime::memory_scan_tests::reconciliation_keeps_deletion_intent_until_session_is_gone | Unit | crates/server/src/runtime/memory_scan_tests.rs | L2-DES-MEM-001 | 4 | L1-REQ-MEM-001 | Reconciliation keeps the deletion fence while the session is still indexed. |
+| db::tests::memory_source_commit_guard_serializes_intent_recording | Unit | crates/server/src/db.rs | L2-DES-MEM-001 | 4 | L1-REQ-MEM-001 | Memory commit and source-intent recording are serialized at their durable boundary. |
+| db::tests::memory_scan_intent_lookup_uses_blocking_pool | Unit | crates/server/src/db.rs | L2-DES-MEM-001 | 4 | L1-REQ-MEM-001 | Contended source-intent reads do not stall a single Tokio worker. |

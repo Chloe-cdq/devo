@@ -53,8 +53,44 @@ impl MemoryRuntime {
                 });
             }
             MemorySourceWork::Reconcile => {
+                let start = {
+                    let mut state = self
+                        .reconcile_state
+                        .lock()
+                        .expect("reconcile state poisoned");
+                    state.pending = true;
+                    if state.running {
+                        false
+                    } else {
+                        state.running = true;
+                        true
+                    }
+                };
+                if !start {
+                    return;
+                }
                 let memory = Arc::clone(self);
-                let _ = std::thread::spawn(move || memory.reconcile_source_intents());
+                let _ = std::thread::spawn(move || {
+                    loop {
+                        let pending = {
+                            let mut state = memory
+                                .reconcile_state
+                                .lock()
+                                .expect("reconcile state poisoned");
+                            if state.pending {
+                                state.pending = false;
+                                true
+                            } else {
+                                state.running = false;
+                                false
+                            }
+                        };
+                        if !pending {
+                            break;
+                        }
+                        memory.reconcile_source_intents();
+                    }
+                });
             }
         }
     }
@@ -147,7 +183,7 @@ impl MemoryRuntime {
             }
             let session_id = index.metadata.session_id;
             let source_id = session_id.to_string();
-            if self.source_has_intent(&source_id) {
+            if self.scan_source_has_intent(&source_id).await {
                 continue;
             }
             let Some(path) = index.rollout_path else {
@@ -194,7 +230,7 @@ impl MemoryRuntime {
             };
             loop {
                 if context.activity.is_active(session_id).await
-                    || self.source_has_intent(&source_id)
+                    || self.scan_source_has_intent(&source_id).await
                     || !self.quota_allows(provider.as_ref())
                 {
                     let memory = Arc::clone(&self);
@@ -271,7 +307,7 @@ impl MemoryRuntime {
                         .flatten();
                     let still_eligible = latest.as_ref().is_some_and(source_still_eligible)
                         && !context.activity.is_active(session_id).await
-                        && !self.source_has_intent(&source_id);
+                        && !self.scan_source_has_intent(&source_id).await;
                     let candidates = if still_eligible {
                         candidates
                     } else {
@@ -333,6 +369,18 @@ impl MemoryRuntime {
         provider
             .remaining_quota_percent()
             .is_some_and(|remaining| remaining >= self.config.min_rate_limit_remaining_percent)
+    }
+
+    pub(crate) async fn scan_source_has_intent(self: &Arc<Self>, source: &str) -> bool {
+        let memory = Arc::clone(self);
+        let source = source.to_owned();
+        match tokio::task::spawn_blocking(move || memory.source_has_intent(&source)).await {
+            Ok(blocked) => blocked,
+            Err(error) => {
+                tracing::warn!(%error, "memory source intent check task failed");
+                true
+            }
+        }
     }
 }
 

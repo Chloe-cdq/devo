@@ -140,6 +140,13 @@ pub struct MemoryRuntime {
     memory_root: PathBuf,
     connection: Mutex<Connection>,
     deletion_ledger: Option<Arc<crate::db::Database>>,
+    reconcile_state: Mutex<ReconcileState>,
+}
+
+#[derive(Default)]
+struct ReconcileState {
+    running: bool,
+    pending: bool,
 }
 
 pub(super) fn scope_name(scope: MemoryScope) -> &'static str {
@@ -187,6 +194,7 @@ impl MemoryRuntime {
             memory_root,
             connection: Mutex::new(connection),
             deletion_ledger: None,
+            reconcile_state: Mutex::new(ReconcileState::default()),
         };
         runtime.prune_expired(Utc::now())?;
         runtime.rebuild_projections()?;
