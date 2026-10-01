@@ -85,7 +85,7 @@ impl ServerRuntime {
         }
 
         self.rollout_store
-            .append_inherited_memory_settings_at(
+            .append_initial_memory_settings_at(
                 &record.rollout_path,
                 forked_id,
                 forked_runtime.memory_settings,

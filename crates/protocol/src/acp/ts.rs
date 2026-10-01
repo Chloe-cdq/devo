@@ -218,6 +218,8 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<native::session::SessionParent>(&cfg, &mut output);
     push_decl::<native::session::SessionStatus>(&cfg, &mut output);
     push_decl::<native::session::SessionFlag>(&cfg, &mut output);
+    push_decl::<native::session::MemorySetting>(&cfg, &mut output);
+    push_decl::<native::session::SessionSource>(&cfg, &mut output);
     push_decl::<native::session::SessionSettings>(&cfg, &mut output);
     push_decl::<native::session::GitInfo>(&cfg, &mut output);
     push_decl::<native::usage::UsagePurpose>(&cfg, &mut output);

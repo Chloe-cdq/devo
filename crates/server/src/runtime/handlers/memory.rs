@@ -96,11 +96,8 @@ impl ServerRuntime {
             Ok(active) => active,
             Err(response) => return response,
         };
-        let active_session_ids = active.active_session_ids;
         let active_source = active.source;
-        let session_context = self
-            .memory_command_sessions(connection_id, &active_session_ids)
-            .await;
+        let session_context = active.session_context;
         let command = match params.scope {
             devo_protocol::native::rpc_memory::MemoryScope::Project => {
                 if active_source.is_none() && params.source_user_item_id.is_some() {
@@ -160,6 +157,15 @@ impl ServerRuntime {
                         "memory/remember requires a session-bound connection",
                     );
                 };
+                let session_source = session_context
+                    .sessions
+                    .iter()
+                    .find(|candidate| candidate.session_id == source_session_id)
+                    .and_then(|candidate| candidate.source);
+                if let Err(error) = crate::memory::ensure_interactive_memory_source(session_source)
+                {
+                    return self.memory_error_response(request_id, "memory/remember", error);
+                }
                 let Some(workspace_root) = self
                     .session_summary_snapshot(source_session_id)
                     .await

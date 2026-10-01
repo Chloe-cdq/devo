@@ -1503,7 +1503,9 @@ impl ReplayState {
                 SessionSettingsField::SandboxProfile => {
                     self.session_settings.insert(field, value);
                 }
-                SessionSettingsField::MemoryRecall | SessionSettingsField::MemoryContribution => {
+                SessionSettingsField::MemoryRecall
+                | SessionSettingsField::MemoryContribution
+                | SessionSettingsField::SessionSource => {
                     // Memory settings belong to the canonical Native
                     // session snapshot, not the legacy SessionRecord.
                     self.session_settings.insert(field, value);
@@ -5359,6 +5361,7 @@ mod tests {
             SessionMemorySettings {
                 recall: devo_protocol::native::session::MemorySetting::Off,
                 contribution: devo_protocol::native::session::MemorySetting::On,
+                source: Default::default(),
             }
         );
     }

@@ -88,6 +88,7 @@ impl MemoryRuntime {
                             "memory/forget requires a session with a workspace root".to_string(),
                         )
                     })?;
+                super::ensure_interactive_memory_source(session.source)?;
                 session.workspace_root.ok_or_else(|| {
                     MemoryError::InvalidRequest(
                         "memory/forget requires a session with a workspace root".to_string(),
@@ -128,6 +129,7 @@ impl MemoryRuntime {
                         session_id: candidate.session_id,
                         workspace_root,
                         activity: candidate.activity,
+                        source: candidate.source,
                         scope_id,
                     });
                 }
@@ -137,6 +139,7 @@ impl MemoryRuntime {
                     }));
                 }
                 let selected = select_project_memory_session(resolved_candidates)?;
+                super::ensure_interactive_memory_source(selected.source)?;
                 Ok((selected.session_id, selected.scope_id))
             }
         }

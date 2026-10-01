@@ -44,6 +44,8 @@ import type {
 	WorkspaceChangesUpdatedPayload,
 	WorkspaceDiffDetail,
 	SessionInterruptParams,
+	SessionSource,
+	MemorySetting,
 } from "./generated/native"
 import {
 	ProtocolValidationError,
@@ -911,6 +913,8 @@ type SessionSettingsPatch = {
 	reasoningEffort?: string
 	mode?: string
 	permissionProfile?: string
+	memoryRecall?: MemorySetting
+	memoryContribution?: MemorySetting
 }
 
 type SessionSettingsWaiter = {
@@ -1282,7 +1286,9 @@ class NativeClient {
 			data: await this.listSessions(params),
 		}),
 		status: async () => ({ data: Object.fromEntries(this.sessionStatuses) }),
-		create: async (_params?: { title?: string }) => ({ data: await this.createSession() }),
+		create: async (params?: { title?: string; source?: SessionSource }) => ({
+			data: await this.createSession(params?.source),
+		}),
 		promptAsync: async (params: {
 			sessionID: string
 			parts: PromptPartInput[]
@@ -1950,12 +1956,13 @@ class NativeClient {
 		return filtered.slice(0, params?.limit ?? filtered.length)
 	}
 
-	private async createSession(): Promise<Session> {
+	private async createSession(source?: SessionSource): Promise<Session> {
 		await this.ensureInitialized()
 		const cwd = this.options.directory ?? defaultCwd()
 		const result = (await this.requestCanonical("session/new", {
 			cwd,
 			idempotencyKey: crypto.randomUUID(),
+			...(source ? { source } : {}),
 		})) as { session: Record<string, unknown> }
 		const session = this.rememberNativeSession(result.session)
 		await this.ensureSessionSubscription(session.id)
@@ -3775,6 +3782,8 @@ class NativeClient {
 		if (typeof patch.permissionProfile === "string" && patch.permissionProfile.length > 0) {
 			normalizedPatch.permissionProfile = patch.permissionProfile
 		}
+		if (patch.memoryRecall !== undefined) normalizedPatch.memoryRecall = patch.memoryRecall
+		if (patch.memoryContribution !== undefined) normalizedPatch.memoryContribution = patch.memoryContribution
 		if (Object.keys(normalizedPatch).length === 0) return this.sessions.get(sessionId)
 
 		let queue = this.sessionSettingsQueues.get(sessionId)
@@ -3861,6 +3870,8 @@ class NativeClient {
 				if (patch.reasoningEffort) settings.reasoningEffort = patch.reasoningEffort
 				if (patch.mode) settings.mode = patch.mode
 				if (patch.permissionProfile) settings.permissionProfile = patch.permissionProfile
+				if (patch.memoryRecall) settings.memoryRecall = patch.memoryRecall
+				if (patch.memoryContribution) settings.memoryContribution = patch.memoryContribution
 				if (Object.keys(settings).length > 0) update.settings = settings
 
 				const result = (await this.requestCanonical("session/metadata/update", update)) as {

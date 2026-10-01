@@ -227,6 +227,7 @@ impl ServerRuntime {
                     model_binding_id: params.model_binding_id,
                 },
                 tool_registry,
+                devo_protocol::native::session::SessionSource::Interactive,
             )
             .await;
         let legacy: SuccessResponse<SessionStartResult> =

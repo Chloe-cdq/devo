@@ -77,6 +77,12 @@ pub struct SessionInterruptResult {
 pub struct SessionNewParams {
     pub cwd: PathBuf,
     pub idempotency_key: String,
+    /// Automation identity is immutable and cannot be changed by a settings patch.
+    #[serde(
+        default,
+        skip_serializing_if = "super::session::SessionSource::is_interactive"
+    )]
+    pub source: super::session::SessionSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
