@@ -18,13 +18,25 @@ skipped to bound background input work.
 Automation identity is checked in both session metadata and persisted
 `SessionSource` field records. Malformed source values also exclude the session.
 
-Actual external-tool use first records a durable, session-wide exclusion in
-the session index and then adds an fsynced `ExternalContextUsed` rollout fact.
-Local Web, MCP, and Tool Search calls require the rollout write before dispatch;
-hosted Web use is marked when the provider reports the call. A failed marker
-write aborts the turn, while the index exclusion still blocks extraction and
-recall until non-destructive memory-state reconciliation succeeds. Subagent use
-also excludes its durable parent chain. Failed and interrupted turns do not
+Actual external-tool use first resolves the complete ancestor chain and records
+a durable, session-wide exclusion for every source in one session-index transaction.
+Loaded actor snapshots retain ephemeral ancestors; the index retains unloaded
+durable ancestors. Traversal passes through ephemeral sessions to reach durable
+ancestors, and missing identities or cycles remain errors.
+Wholly ephemeral chains need no persistent exclusion and continue even when
+memory storage is unavailable.
+If the session-index ledger write fails, the dedicated memory database provides
+the exclusion instead, fencing jobs and retiring unsupported inferred entries.
+A committed exclusion remains authoritative even if projection refresh fails.
+Local Web, MCP, and Tool Search are fenced before dispatch; hosted Web is fenced
+when the provider reports the call. Fsynced `ExternalContextUsed` rollout facts
+mirror that exclusion. A failed rollout mirror does not fail the tool once the
+durable exclusion exists; other ancestor mirrors are still attempted.
+Memory status reports `degraded` and the redacted `source_provenance_storage`
+classification for observed storage failures during the runtime's lifetime.
+For durable chains, if neither database can persist source exclusion, external content is withheld
+rather than allowing an unfenced source to contribute after restart.
+Subagent use also excludes its durable parent chain. Failed and interrupted turns do not
 themselves taint a session; only completed turns contribute text. Merely
 offering hosted Web capability does not exclude a text-only session. The source
 reader also recognizes older tool records without this fact. For legacy

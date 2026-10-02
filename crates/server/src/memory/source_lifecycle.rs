@@ -9,6 +9,32 @@ use super::stored_values::parse_scope;
 use super::{MemoryError, MemoryRuntime};
 
 impl MemoryRuntime {
+    /// Fence external sources through memory storage when the session ledger
+    /// is unavailable. A post-commit projection failure cannot revoke the fence.
+    pub(crate) fn fence_external_context_sources(
+        &self,
+        sources: &[SessionId],
+    ) -> Result<(), MemoryError> {
+        let Err(error) = self.exclude_sources(sources, Utc::now()) else {
+            return Ok(());
+        };
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| MemoryError::LockPoisoned)?;
+        for source in sources {
+            let excluded: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_excluded_sources WHERE source_session_id = ?1)",
+                [source.to_string()],
+                |row| row.get(0),
+            )?;
+            if !excluded {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Applies durable session-index intents to memory storage. Failed intents
     /// remain in the index for the next startup or scan.
     pub(crate) fn reconcile_source_intents(&self) {

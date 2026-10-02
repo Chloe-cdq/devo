@@ -44,18 +44,7 @@ pub(super) fn reconcile_entry_after_source_change(
 
     let contested: bool = transaction.query_row(
         "SELECT EXISTS(
-            SELECT 1 FROM memory_live_proposal_claims AS owned
-            JOIN memory_live_proposal_claims AS competing
-              ON competing.scope_type = owned.scope_type
-             AND competing.scope_id = owned.scope_id
-             AND competing.proposal_key = owned.proposal_key
-            LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
-            WHERE owned.entry_id = ?1
-              AND competing.canonical_key != owned.canonical_key
-              AND (competing.entry_id IS NULL OR (
-                competitor.scope_type = owned.scope_type
-                AND competitor.scope_id = owned.scope_id
-                AND competitor.state IN ('active', 'restored', 'conflicted')))
+            SELECT 1 FROM memory_contested_proposal_claims WHERE entry_id = ?1
         )",
         [entry_id],
         |row| row.get(0),

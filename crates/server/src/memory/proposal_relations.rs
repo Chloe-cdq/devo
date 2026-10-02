@@ -67,7 +67,20 @@ pub(super) fn create_live_view(transaction: &Transaction<'_>) -> Result<(), Memo
                AND NOT EXISTS (SELECT 1 FROM memory_excluded_sources AS excluded
                  WHERE excluded.source_session_id = support.source_session_id)
                AND NOT EXISTS (SELECT 1 FROM memory_deleted_sources AS deleted
-                 WHERE deleted.source_session_id = support.source_session_id))",
+                 WHERE deleted.source_session_id = support.source_session_id));
+         CREATE VIEW IF NOT EXISTS memory_contested_proposal_claims AS
+         SELECT owned.scope_type, owned.scope_id, owned.proposal_key,
+                owned.canonical_key, owned.entry_id, competitor.origin AS competing_origin
+         FROM memory_live_proposal_claims AS owned
+         JOIN memory_live_proposal_claims AS competing
+           ON competing.scope_type = owned.scope_type
+          AND competing.scope_id = owned.scope_id
+          AND competing.proposal_key = owned.proposal_key
+         LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
+         WHERE competing.canonical_key != owned.canonical_key
+           AND (competing.entry_id IS NULL OR (
+             competitor.scope_type = owned.scope_type AND competitor.scope_id = owned.scope_id
+             AND competitor.state IN ('active', 'restored', 'conflicted')))",
     )?;
     Ok(())
 }
@@ -179,17 +192,9 @@ pub(super) fn admit_inferred(
         ));
     }
     let competitor = transaction.query_row(
-        "SELECT COALESCE(entry.origin, 'inferred_session') FROM memory_live_proposal_claims AS competing
-         LEFT JOIN memory_entries AS entry ON entry.entry_id = competing.entry_id
-         WHERE competing.scope_type = ?1 AND competing.scope_id = ?2
-            AND competing.canonical_key != ?3
-            AND competing.proposal_key IN (
-                SELECT owned.proposal_key FROM memory_live_proposal_claims AS owned
-                WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.canonical_key = ?3
-            )
-            AND (competing.entry_id IS NULL OR (entry.scope_type = ?1 AND entry.scope_id = ?2
-                AND entry.state IN ('active', 'restored', 'conflicted')))
-         ORDER BY CASE entry.origin WHEN 'explicit_user' THEN 0 ELSE 1 END
+        "SELECT COALESCE(competing_origin, 'inferred_session') FROM memory_contested_proposal_claims
+         WHERE scope_type = ?1 AND scope_id = ?2 AND canonical_key = ?3
+         ORDER BY CASE competing_origin WHEN 'explicit_user' THEN 0 ELSE 1 END
          LIMIT 1",
         rusqlite::params![scope_name(scope), scope_id, canonical_key],
         |row| row.get::<_, String>(0),
@@ -292,17 +297,8 @@ fn withhold_competing_inferred(
     // evidence, keys, and timestamps are unchanged.
     let contested_keys = {
         let mut statement = transaction.prepare(
-            "SELECT DISTINCT owned.canonical_key FROM memory_live_proposal_claims AS owned
-             JOIN memory_live_proposal_claims AS competing
-                ON competing.scope_type = owned.scope_type
-                AND competing.scope_id = owned.scope_id
-                AND competing.proposal_key = owned.proposal_key
-             LEFT JOIN memory_entries AS competitor ON competitor.entry_id = competing.entry_id
-             WHERE owned.scope_type = ?1 AND owned.scope_id = ?2 AND owned.proposal_key = ?3
-                AND competing.canonical_key != owned.canonical_key
-                AND (competing.entry_id IS NULL OR (
-                    competitor.scope_type = ?1 AND competitor.scope_id = ?2
-                    AND competitor.state IN ('active', 'restored', 'conflicted')))",
+            "SELECT DISTINCT canonical_key FROM memory_contested_proposal_claims
+             WHERE scope_type = ?1 AND scope_id = ?2 AND proposal_key = ?3",
         )?;
         statement
             .query_map(

@@ -42,6 +42,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -145,6 +146,7 @@ pub struct MemoryRuntime {
     connection: Mutex<Connection>,
     deletion_ledger: Option<Arc<crate::db::Database>>,
     reconcile_state: Mutex<ReconcileState>,
+    source_provenance_storage_failed: AtomicBool,
 }
 
 #[derive(Default)]
@@ -199,6 +201,7 @@ impl MemoryRuntime {
             connection: Mutex::new(connection),
             deletion_ledger: None,
             reconcile_state: Mutex::new(ReconcileState::default()),
+            source_provenance_storage_failed: AtomicBool::new(false),
         };
         runtime.prune_expired(Utc::now())?;
         runtime.rebuild_projections()?;
@@ -207,6 +210,13 @@ impl MemoryRuntime {
 
     pub(crate) fn attach_deletion_ledger(&mut self, db: Arc<crate::db::Database>) {
         self.deletion_ledger = Some(db);
+    }
+
+    /// Retains a redacted health signal when source fencing needs a fallback
+    /// or its rollout mirror is unavailable during this runtime's lifetime.
+    pub(crate) fn note_source_provenance_storage_failure(&self) {
+        self.source_provenance_storage_failed
+            .store(true, Ordering::Relaxed);
     }
 
     fn has_pending_source_deletions(&self) -> bool {
@@ -417,9 +427,23 @@ impl MemoryRuntime {
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
+        let source_storage_failed = self
+            .source_provenance_storage_failed
+            .load(Ordering::Relaxed);
+        let mut error_classes = error_classes(&connection)?;
+        if source_storage_failed {
+            error_classes.push("source_provenance_storage".into());
+            error_classes.sort();
+            error_classes.dedup();
+        }
         Ok(MemoryStatus {
             enabled: self.config.enabled,
-            storage_health: "healthy".into(),
+            storage_health: if source_storage_failed {
+                "degraded"
+            } else {
+                "healthy"
+            }
+            .into(),
             entry_count: count_rows(&connection, "SELECT COUNT(*) FROM memory_entries")?,
             candidate_count: count_rows(&connection, "SELECT COUNT(*) FROM memory_candidates")?,
             pending_job_count: count_rows(
@@ -435,7 +459,7 @@ impl MemoryRuntime {
                 "SELECT COUNT(*) FROM memory_jobs WHERE state = 'error'",
             )?,
             last_successful_scan_at: last_successful_scan_at(&connection)?,
-            error_classes: error_classes(&connection)?,
+            error_classes,
         })
     }
 }

@@ -2,6 +2,12 @@ use super::*;
 use devo_core::{InternalRecordV2, ParsedRolloutLine, RolloutLineV2, parse_rollout_line};
 use pretty_assertions::assert_eq;
 
+#[path = "external_context_lineage.rs"]
+mod lineage;
+
+#[path = "external_context_storage.rs"]
+mod storage;
+
 struct ToolSearchProvider {
     calls: std::sync::atomic::AtomicUsize,
 }
@@ -134,7 +140,7 @@ async fn failed_external_marker_write_keeps_source_excluded() -> Result<()> {
                 /*parent_session_id*/ None
             )
             .await
-            .is_err()
+            .is_ok()
     );
     runtime
         .memory
@@ -170,6 +176,12 @@ async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> 
         .db
         .get_session(&parent_id)?
         .context("parent metadata")?;
+    runtime
+        .remove_session_actor(parent_id)
+        .await
+        .context("parent actor")?
+        .shutdown()
+        .await;
     let grandparent_id = SessionId::new();
     let mut grandparent = parent.clone();
     grandparent.session_id = grandparent_id;
@@ -191,7 +203,7 @@ async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> 
         runtime
             .mark_external_context_used(/*rollout_path*/ None, child_id, Some(parent_id))
             .await
-            .is_err()
+            .is_ok()
     );
     assert_eq!(
         (
@@ -221,9 +233,25 @@ impl ModelProviderSDK for ToolSearchProvider {
 
     async fn completion_stream(
         &self,
-        _request: ModelRequest,
+        request: ModelRequest,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent>> + Send>>> {
         let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        anyhow::ensure!(
+            !request
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|content| {
+                    matches!(
+                        content,
+                        devo_protocol::RequestContent::ToolResult {
+                            is_error: Some(true),
+                            ..
+                        }
+                    )
+                }),
+            "external tool dispatch must succeed"
+        );
         let response = if first {
             ModelResponse {
                 id: "search-tool".into(),

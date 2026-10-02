@@ -6,57 +6,93 @@ use devo_core::SessionId;
 use super::super::ServerRuntime;
 
 impl ServerRuntime {
+    /// Loaded actors retain ephemeral ancestry; the index retains unloaded
+    /// durable ancestry. Neither source alone describes every valid chain.
+    async fn resolve_external_context_ancestor(
+        &self,
+        session_id: SessionId,
+    ) -> Result<crate::db::SessionIndexRecord, String> {
+        if let Some(handle) = self.session(session_id).await
+            && let Some(snapshot) = handle.hook_context_snapshot().await
+        {
+            return Ok(crate::db::SessionIndexRecord {
+                metadata: snapshot.summary,
+                rollout_path: snapshot.record.map(|record| record.rollout_path),
+            });
+        }
+        self.deps
+            .db
+            .get_session_index(&session_id)
+            .map_err(|error| format!("failed to read ancestor session {session_id}: {error}"))?
+            .ok_or_else(|| format!("ancestor session {session_id} unavailable"))
+    }
+
     pub(in crate::runtime) async fn mark_external_context_used(
         &self,
         rollout_path: Option<PathBuf>,
         session_id: SessionId,
         mut parent_session_id: Option<SessionId>,
     ) -> Result<(), String> {
-        self.deps
-            .db
-            .record_external_context_sources(&[session_id])
-            .map_err(|error| format!("failed to record external-context source: {error}"))?;
-        let mut ancestors = Vec::new();
+        let mut contains_durable_session = rollout_path.is_some();
+        let mut sources = vec![session_id];
+        let mut records = vec![(session_id, rollout_path)];
         let mut visited = HashSet::from([session_id]);
         while let Some(parent_id) = parent_session_id {
             if !visited.insert(parent_id) {
                 return Err("external-context parent chain contains a cycle".into());
             }
-            let index = self
-                .deps
-                .db
-                .get_session_index(&parent_id)
-                .map_err(|error| format!("failed to read parent session {parent_id}: {error}"))?
-                .ok_or_else(|| format!("parent session {parent_id} unavailable"))?;
+            let index = self.resolve_external_context_ancestor(parent_id).await?;
+            contains_durable_session |= !index.metadata.ephemeral;
             parent_session_id = index.metadata.parent_session_id;
-            ancestors.push((parent_id, index.rollout_path));
+            sources.push(parent_id);
+            records.push((parent_id, index.rollout_path));
         }
-        let ancestor_ids = ancestors.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        self.deps
-            .db
-            .record_external_context_sources(&ancestor_ids)
-            .map_err(|error| {
-                format!("failed to record ancestor external-context sources: {error}")
-            })?;
-        for (parent_id, rollout_path) in ancestors {
-            if let Some(path) = rollout_path {
-                let store = self.rollout_store.clone();
-                tokio::task::spawn_blocking(move || {
-                    store.mark_external_context_used_at(&path, parent_id)
-                })
+        // Wholly ephemeral chains cannot be admitted as passive sources and
+        // therefore must not depend on memory storage being available.
+        if !contains_durable_session
+            && let Some(handle) = self.session(session_id).await
+            && let Some(snapshot) = handle.hook_context_snapshot().await
+            && snapshot.summary.ephemeral
+        {
+            return Ok(());
+        }
+        // Fence the entire chain before publishing external content. Rollout
+        // facts mirror this authority; a failed mirror must not fail a tool.
+        let db = std::sync::Arc::clone(&self.deps.db);
+        let ledger_sources = sources.clone();
+        let ledger = tokio::task::spawn_blocking(move || {
+            db.record_external_context_sources(&ledger_sources)
+        })
+        .await;
+        if !matches!(ledger, Ok(Ok(()))) {
+            let Some(memory) = &self.memory else {
+                return Err("external-context source exclusion could not be persisted".into());
+            };
+            memory.note_source_provenance_storage_failure();
+            let memory = std::sync::Arc::clone(memory);
+            // The dedicated memory database also provides a durable fence,
+            // including for already claimed jobs and existing inferred entries.
+            tokio::task::spawn_blocking(move || memory.fence_external_context_sources(&sources))
                 .await
-                .map_err(|error| error.to_string())?
-                .map_err(|error| error.to_string())?;
-            }
+                .map_err(|_| "external-context source exclusion could not be persisted")?
+                .map_err(|_| "external-context source exclusion could not be persisted")?;
         }
-        if let Some(path) = rollout_path {
-            let store = self.rollout_store.clone();
-            tokio::task::spawn_blocking(move || {
-                store.mark_external_context_used_at(&path, session_id)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())?;
+        for (source_id, path) in records {
+            if let Some(path) = path {
+                let store = self.rollout_store.clone();
+                let marker = tokio::task::spawn_blocking(move || {
+                    store.mark_external_context_used_at(&path, source_id)
+                })
+                .await;
+                if !matches!(marker, Ok(Ok(()))) {
+                    if let Some(memory) = &self.memory {
+                        memory.note_source_provenance_storage_failure();
+                    }
+                    tracing::warn!(
+                        "external-context rollout marker unavailable; source remains excluded"
+                    );
+                }
+            }
         }
         if let Some(memory) = &self.memory {
             memory.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
