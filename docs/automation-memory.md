@@ -42,10 +42,9 @@ automation identity. Persistent subagents record their inherited memory settings
 before actor registration, so cold Native access retains the one-way boundary.
 The existing ACP wire surface is unchanged.
 
-`SessionMemorySource.source` carries that durable source to the memory module's
-`enqueue_source` admission seam. Automation transcripts are rejected regardless
-of the contribution preference. Background extraction itself remains a later
-implementation step.
+The passive source reader checks the persisted creation source before admitting
+a transcript for extraction. Automation transcripts are rejected regardless of
+the contribution preference.
 
 The server rejects automation-bound `memory/remember` and `memory/forget` Native
 commands and agent mutation tools. Read/search and bounded recall remain available.

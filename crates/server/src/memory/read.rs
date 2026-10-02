@@ -12,6 +12,7 @@ impl MemoryRuntime {
                 "memory read requires a stable entry ID".into(),
             ));
         }
+        let pending_source_deletion = self.has_pending_source_deletions();
         let connection = self
             .connection
             .lock()
@@ -46,10 +47,16 @@ impl MemoryRuntime {
         if scope_id != expected_scope {
             return Err(unavailable());
         }
+        let pending_source_deletion =
+            pending_source_deletion || self.has_pending_source_deletions();
+        let origin = parse_origin(&origin)?;
+        if pending_source_deletion && origin == MemoryOrigin::InferredSession {
+            return Err(unavailable());
+        }
         if contains_secret(&body) {
             return Err(MemoryError::SecretContentRejected);
         }
-        let origin = match parse_origin(&origin)? {
+        let origin = match origin {
             MemoryOrigin::ExplicitUser => "Explicit user memory",
             MemoryOrigin::InferredSession => "Inferred session memory",
         };
@@ -68,7 +75,11 @@ impl MemoryRuntime {
             kind: parse_kind(&kind)?,
             state: parse_state(&state)?,
             body: bounded_body,
-            source_summary: format!("{origin} ({evidence_count} {source})"),
+            source_summary: if pending_source_deletion {
+                origin.to_string()
+            } else {
+                format!("{origin} ({evidence_count} {source})")
+            },
         })
     }
 }

@@ -35,6 +35,7 @@ impl RolloutStore {
                         .or_insert(state)
                 }
             };
+            self.retry_external_context_marker(rollout_path, state)?;
             operation(state)
         })
     }
@@ -51,7 +52,7 @@ impl RolloutStore {
         })
     }
 
-    fn with_locked_file<T>(
+    pub(super) fn with_locked_file<T>(
         &self,
         rollout_path: &Path,
         operation: impl FnOnce() -> Result<T>,

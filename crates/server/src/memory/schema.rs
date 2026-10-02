@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension};
 
-use super::{MEMORY_SCHEMA_VERSION, MemoryError, migration};
+use super::{MEMORY_SCHEMA_VERSION, MemoryError, migration, proposal_relations};
 
 pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> {
     reject_unsupported_existing_schema(connection)?;
@@ -86,6 +86,30 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
             UNIQUE(source_session_id, source_watermark)
         );
 
+        CREATE TABLE IF NOT EXISTS memory_deleted_sources (
+            source_session_id TEXT PRIMARY KEY NOT NULL,
+            deleted_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_excluded_sources (
+            source_session_id TEXT PRIMARY KEY NOT NULL,
+            excluded_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_deleted_source_scopes (
+            source_session_id TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            PRIMARY KEY(source_session_id, scope_type, scope_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_job_receipts (
+            source_session_id TEXT NOT NULL,
+            source_watermark TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            PRIMARY KEY(source_session_id, source_watermark)
+        );
+
         CREATE TABLE IF NOT EXISTS memory_scope_state (
             scope_type TEXT NOT NULL,
             scope_id TEXT NOT NULL,
@@ -114,85 +138,114 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
         |row| row.get::<_, String>(0),
     )?;
     let (previous_version_number, current_version) = supported_schema_version(&previous_version)?;
+    if previous_version_number < 6 {
+        proposal_relations::create_schema(&transaction)?;
+    }
+    if previous_version_number < 8 {
+        ensure_column(
+            &transaction,
+            "memory_proposal_claims",
+            "legacy_unattributed",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    proposal_relations::create_live_view(&transaction)?;
     if previous_version_number == current_version {
         transaction.commit()?;
         return Ok(());
     }
-    ensure_column(
-        &transaction,
-        "memory_jobs",
-        "job_kind",
-        "TEXT NOT NULL DEFAULT 'source_scan'",
-    )?;
-    ensure_column(
-        &transaction,
-        "memory_jobs",
-        "job_key",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_column(&transaction, "memory_jobs", "lease_owner", "TEXT")?;
-    ensure_column(&transaction, "memory_jobs", "claimed_at", "TEXT")?;
-    ensure_column(
-        &transaction,
-        "memory_evidence",
-        "source_user_item_id",
-        "TEXT",
-    )?;
-    transaction.execute(
-        "UPDATE memory_jobs
-         SET job_key = source_session_id || ':' || source_watermark
-         WHERE job_key = ''",
-        [],
-    )?;
-    transaction.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS memory_jobs_kind_key
-         ON memory_jobs (job_kind, job_key)",
-        [],
-    )?;
-    transaction.execute_batch(
-        "UPDATE memory_revocations AS kept
-         SET revoked_at = (
-                 SELECT MAX(all_rows.revoked_at)
-                 FROM memory_revocations AS all_rows
-                 WHERE all_rows.scope_type = kept.scope_type
-                   AND all_rows.scope_id = kept.scope_id
-                   AND all_rows.normalized_key = kept.normalized_key
-             ),
-             restored_at = (
-                 SELECT CASE
-                     WHEN MAX(all_rows.restored_at) >= MAX(all_rows.revoked_at)
-                     THEN MAX(all_rows.restored_at)
-                     ELSE NULL
-                 END
-                 FROM memory_revocations AS all_rows
-                 WHERE all_rows.scope_type = kept.scope_type
-                   AND all_rows.scope_id = kept.scope_id
-                   AND all_rows.normalized_key = kept.normalized_key
-             )
-         WHERE kept.revocation_id = (
-             SELECT MAX(candidate.revocation_id)
-             FROM memory_revocations AS candidate
-             WHERE candidate.scope_type = kept.scope_type
-               AND candidate.scope_id = kept.scope_id
-               AND candidate.normalized_key = kept.normalized_key
-         );
+    if previous_version_number < 5 {
+        ensure_column(
+            &transaction,
+            "memory_jobs",
+            "job_kind",
+            "TEXT NOT NULL DEFAULT 'source_scan'",
+        )?;
+        ensure_column(
+            &transaction,
+            "memory_jobs",
+            "job_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(&transaction, "memory_jobs", "lease_owner", "TEXT")?;
+        ensure_column(&transaction, "memory_jobs", "claimed_at", "TEXT")?;
+        ensure_column(
+            &transaction,
+            "memory_evidence",
+            "source_user_item_id",
+            "TEXT",
+        )?;
+        transaction.execute(
+            "UPDATE memory_jobs
+             SET job_key = source_session_id || ':' || source_watermark
+             WHERE job_key = ''",
+            [],
+        )?;
+        transaction.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS memory_jobs_kind_key
+             ON memory_jobs (job_kind, job_key)",
+            [],
+        )?;
+        transaction.execute_batch(
+            "UPDATE memory_revocations AS kept
+             SET revoked_at = (
+                     SELECT MAX(all_rows.revoked_at)
+                     FROM memory_revocations AS all_rows
+                     WHERE all_rows.scope_type = kept.scope_type
+                       AND all_rows.scope_id = kept.scope_id
+                       AND all_rows.normalized_key = kept.normalized_key
+                 ),
+                 restored_at = (
+                     SELECT CASE
+                         WHEN MAX(all_rows.restored_at) >= MAX(all_rows.revoked_at)
+                         THEN MAX(all_rows.restored_at)
+                         ELSE NULL
+                     END
+                     FROM memory_revocations AS all_rows
+                     WHERE all_rows.scope_type = kept.scope_type
+                       AND all_rows.scope_id = kept.scope_id
+                       AND all_rows.normalized_key = kept.normalized_key
+                 )
+             WHERE kept.revocation_id = (
+                 SELECT MAX(candidate.revocation_id)
+                 FROM memory_revocations AS candidate
+                 WHERE candidate.scope_type = kept.scope_type
+                   AND candidate.scope_id = kept.scope_id
+                   AND candidate.normalized_key = kept.normalized_key
+             );
 
-         DELETE FROM memory_revocations
-         WHERE revocation_id != (
-             SELECT MAX(candidate.revocation_id)
-             FROM memory_revocations AS candidate
-             WHERE candidate.scope_type = memory_revocations.scope_type
-               AND candidate.scope_id = memory_revocations.scope_id
-               AND candidate.normalized_key = memory_revocations.normalized_key
-         );",
-    )?;
-    transaction.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS memory_revocations_scope_identity
-         ON memory_revocations (scope_type, scope_id, normalized_key)",
-        [],
-    )?;
-    if previous_version_number < current_version {
+             DELETE FROM memory_revocations
+             WHERE revocation_id != (
+                 SELECT MAX(candidate.revocation_id)
+                 FROM memory_revocations AS candidate
+                 WHERE candidate.scope_type = memory_revocations.scope_type
+                   AND candidate.scope_id = memory_revocations.scope_id
+                   AND candidate.normalized_key = memory_revocations.normalized_key
+             );",
+        )?;
+        transaction.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS memory_revocations_scope_identity
+             ON memory_revocations (scope_type, scope_id, normalized_key)",
+            [],
+        )?;
         migration::migrate_explicit_equivalence(&transaction)?;
+    }
+    if previous_version_number < 6 {
+        proposal_relations::backfill_claims(&transaction)?;
+    }
+    if previous_version_number < 7 {
+        super::entries::credential_policy::purge_unsafe_memory(&transaction)?;
+        proposal_relations::repair_claims(&transaction)?;
+    }
+    if previous_version_number < 8 {
+        proposal_relations::create_schema(&transaction)?;
+        // Historical candidate retention can erase the only source attribution.
+        // Preserve those claims until explicit resolution rather than guessing.
+        transaction.execute(
+            "UPDATE memory_proposal_claims SET legacy_unattributed = 1",
+            [],
+        )?;
+        proposal_relations::repair_claims(&transaction)?;
     }
     transaction.execute(
         "INSERT INTO memory_schema_meta (key, value)

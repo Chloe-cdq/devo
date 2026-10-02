@@ -7,7 +7,9 @@ use super::{
 };
 use chrono::Utc;
 use devo_protocol::native::ids::MemoryEntryId;
-use devo_protocol::native::rpc_memory::{MemoryForgetResult, MemoryScope, MemoryState};
+use devo_protocol::native::rpc_memory::{
+    MemoryForgetResult, MemoryOrigin, MemoryScope, MemoryState,
+};
 use rusqlite::OptionalExtension;
 
 impl MemoryRuntime {
@@ -20,6 +22,11 @@ impl MemoryRuntime {
                 let entry = self
                     .entry_by_id(&entry_id)?
                     .ok_or_else(|| MemoryError::InvalidRequest("memory entry not found".into()))?;
+                if entry.origin == MemoryOrigin::InferredSession
+                    && self.has_pending_source_deletions()
+                {
+                    return Err(MemoryError::InvalidRequest("memory entry not found".into()));
+                }
                 let scope = entry.scope;
                 let expected_project_scope_id = match scope {
                     MemoryScope::User if entry.scope_id != super::USER_SCOPE_ID => {
@@ -151,6 +158,7 @@ impl MemoryRuntime {
     ) -> Result<MemoryForgetResult, MemoryError> {
         let scope = request.scope.scope;
         let prepared_scope_id = request.scope.scope_id;
+        let hide_inferred = self.has_pending_source_deletions();
         let connection = self
             .connection
             .lock()
@@ -161,11 +169,13 @@ impl MemoryRuntime {
                 let normalized_key = transaction
                     .query_row(
                         "SELECT normalized_key FROM memory_entries
-                         WHERE entry_id = ?1 AND scope_type = ?2 AND scope_id = ?3",
+                         WHERE entry_id = ?1 AND scope_type = ?2 AND scope_id = ?3
+                           AND (?4 = 0 OR origin = 'explicit_user')",
                         rusqlite::params![
                             prepared_entry_id.as_str(),
                             scope_name(scope),
                             prepared_scope_id,
+                            hide_inferred,
                         ],
                         |row| row.get::<_, String>(0),
                     )
@@ -187,11 +197,12 @@ impl MemoryRuntime {
                            AND scope_id = ?2
                            AND (instr(lower(body), lower(?3)) > 0
                                 OR instr(lower(normalized_key), lower(?3)) > 0)
+                           AND (?4 = 0 OR origin = 'explicit_user')
                          ORDER BY updated_at DESC, entry_id ASC",
                     )?;
                     statement
                         .query_map(
-                            rusqlite::params![scope_name(scope), scope_id, text],
+                            rusqlite::params![scope_name(scope), scope_id, text, hide_inferred],
                             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                         )?
                         .collect::<Result<Vec<_>, _>>()?
@@ -200,7 +211,7 @@ impl MemoryRuntime {
                     if targets.is_empty() {
                         return Err(MemoryError::InvalidRequest("memory entry not found".into()));
                     }
-                    let candidates = targets
+                    let mut candidates = targets
                         .iter()
                         .map(|(entry_id, _)| {
                             load_entry(&transaction, &MemoryEntryId::from_string(entry_id.clone()))?
@@ -211,6 +222,17 @@ impl MemoryRuntime {
                                 })
                         })
                         .collect::<Result<Vec<_>, _>>()?;
+                    if !hide_inferred && self.has_pending_source_deletions() {
+                        candidates.retain(|entry| entry.origin == MemoryOrigin::ExplicitUser);
+                    }
+                    if candidates.is_empty() {
+                        return Err(MemoryError::InvalidRequest("memory entry not found".into()));
+                    }
+                    if candidates.len() == 1 {
+                        return Err(MemoryError::InvalidRequest(
+                            "memory selection changed; retry".into(),
+                        ));
+                    }
                     return Ok(MemoryForgetResult {
                         forgotten: None,
                         candidates,
@@ -222,6 +244,17 @@ impl MemoryRuntime {
                 (entry_id, normalized_key, scope_id)
             }
         };
+
+        if !hide_inferred && self.has_pending_source_deletions() {
+            let origin: String = transaction.query_row(
+                "SELECT origin FROM memory_entries WHERE entry_id = ?1",
+                [entry_id.as_str()],
+                |row| row.get(0),
+            )?;
+            if origin == "inferred_session" {
+                return Err(MemoryError::InvalidRequest("memory entry not found".into()));
+            }
+        }
 
         let now = Utc::now().to_rfc3339();
         transaction.execute(

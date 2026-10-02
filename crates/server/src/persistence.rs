@@ -1,4 +1,10 @@
+mod external_context;
+#[cfg(test)]
+#[path = "persistence/external_context_tests.rs"]
+mod external_context_tests;
 mod memory_settings;
+mod source_provenance;
+pub(crate) use source_provenance::read_source_exclusions;
 mod write_path;
 #[cfg(test)]
 pub(crate) use write_path::pause_rollout_append;
@@ -92,6 +98,7 @@ pub(crate) struct RolloutStore {
     /// rollout path, hydrated from the on-disk history on first append so
     /// item seqs and approval folds never collide with it.
     write_states: Arc<StdMutex<HashMap<PathBuf, WritePathState>>>,
+    pending_external_context: Arc<StdMutex<HashMap<PathBuf, SessionId>>>,
     /// Delivery-log sink (08 §5/§7): after each fsynced append, derived
     /// events are projected into the SQLite `event_log` (best effort; the
     /// startup reconciler backfills anything missed). `None` in tests that
@@ -104,6 +111,7 @@ pub(crate) struct RolloutStore {
 pub(crate) struct WritePathState {
     projector: LegacyProjector,
     next_line_index: u64,
+    external_context_used: bool,
 }
 
 impl std::fmt::Debug for RolloutStore {
@@ -120,6 +128,7 @@ impl Clone for RolloutStore {
             data_root: self.data_root.clone(),
             file_locks: Arc::clone(&self.file_locks),
             write_states: Arc::clone(&self.write_states),
+            pending_external_context: Arc::clone(&self.pending_external_context),
             event_log: self.event_log.as_ref().map(Arc::clone),
         }
     }
@@ -132,6 +141,7 @@ impl RolloutStore {
             data_root,
             file_locks: Arc::new(StdMutex::new(HashMap::new())),
             write_states: Arc::new(StdMutex::new(HashMap::new())),
+            pending_external_context: Arc::new(StdMutex::new(HashMap::new())),
             event_log,
         }
     }
@@ -909,7 +919,21 @@ impl RolloutStore {
         // fsynced facts. Best effort — a failure here is backfilled by the
         // startup reconciler, so a crash may delay an event but never lose
         // or duplicate it.
-        if let Some(db) = &self.event_log
+        // External source facts produce no delivery event. Leave their watermark
+        // for ordinary writes or startup backfill; optional projection cannot
+        // delay the marker, including retries before an ordinary append.
+        let external_markers_only = !v2_lines.is_empty()
+            && v2_lines.iter().all(|line| {
+                matches!(
+                    line,
+                    RolloutLineV2::Internal {
+                        entry: devo_core::InternalRecordV2::ExternalContextUsed,
+                        ..
+                    }
+                )
+            });
+        if !external_markers_only
+            && let Some(db) = &self.event_log
             && let Err(error) =
                 project_events_into_log(db, rollout_path, first_line_index, v2_lines)
         {
@@ -1097,12 +1121,14 @@ fn discard_rollout_crash_tail(rollout_path: &Path) -> Result<()> {
 fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
     let mut projector = LegacyProjector::new();
     let mut next_line_index = 0u64;
+    let mut external_context_used = false;
     let file = match File::open(rollout_path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(WritePathState {
                 projector,
                 next_line_index,
+                external_context_used: false,
             });
         }
         Err(error) => {
@@ -1124,7 +1150,18 @@ fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
                     format!("hydrate projector from {}", rollout_path.display())
                 })?;
             }
-            Ok(ParsedRolloutLine::V2(v2)) => projector.observe_v2_line(&v2),
+            Ok(ParsedRolloutLine::V2(v2)) => {
+                if matches!(
+                    v2.as_ref(),
+                    RolloutLineV2::Internal {
+                        entry: devo_core::InternalRecordV2::ExternalContextUsed,
+                        ..
+                    }
+                ) {
+                    external_context_used = true;
+                }
+                projector.observe_v2_line(&v2);
+            }
             Err(RolloutLineReadError::TruncatedTail)
                 if rollout_remainder_is_crash_tail(&mut lines) =>
             {
@@ -1154,6 +1191,7 @@ fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
     Ok(WritePathState {
         projector,
         next_line_index,
+        external_context_used,
     })
 }
 

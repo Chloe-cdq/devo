@@ -40,6 +40,8 @@ pub enum UsagePurpose {
     Compaction,
     /// Session title generation.
     TitleGeneration,
+    /// Passive extraction from an eligible prior session.
+    MemoryExtraction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -155,4 +157,24 @@ pub struct SessionUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy: Option<UsageTotals>,
     pub updated_at: DateTime<Utc>,
+}
+#[cfg(test)]
+mod tests {
+    use super::UsagePurpose;
+    use pretty_assertions::assert_eq;
+
+    /// Trace: L2-DES-MEM-001, L2-DES-LLM-003
+    /// Verifies: background extraction usage has its own Native ledger purpose.
+    #[test]
+    fn extraction_usage_roundtrips_with_a_distinct_purpose() {
+        let purpose = serde_json::from_str::<UsagePurpose>("\"memoryExtraction\"");
+        assert!(
+            purpose.is_ok(),
+            "Native usage must recognize extraction calls"
+        );
+        assert_eq!(
+            serde_json::to_string(&purpose.unwrap()).unwrap(),
+            "\"memoryExtraction\""
+        );
+    }
 }

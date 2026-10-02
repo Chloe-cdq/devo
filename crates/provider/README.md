@@ -132,6 +132,45 @@ for example:
 Higher layers can use these capability flags to shape requests before they are
 serialized by a provider adapter.
 
+## Local initialization failures
+
+`ModelProviderSDK::initialization_error()` and
+`ProviderRouter::initialization_error(&route)` expose known adapter initialization
+failures synchronously without network I/O. The default is `None`, which means
+no known local failure and makes no claim about quota or remote availability.
+Routing and metering wrappers forward the selected adapter's result. Background
+callers can distinguish missing credentials from unavailable quota without
+sending a model request; any user-visible status must redact error details.
+
+## Quota telemetry
+
+`ModelProviderSDK::remaining_quota_percent()` returns the latest available
+remaining quota in `0..=100`. The default is `None`; unavailable telemetry never
+implies full quota. `ProviderRouter::remaining_quota_percent(&route)` forwards
+that observation for the selected adapter and returns `None` for missing routes.
+
+OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages capture quota
+headers from complete and streaming responses, including HTTP failures. They
+report the lowest known request/token window, round down, and clamp at 100.
+Invalid or absent windows are unavailable. Starting another HTTP request clears
+the preceding observation. Only the response for the latest-started request can
+update it; delayed older responses cannot replace low or unavailable quota.
+Observations expire after 60 seconds; adapters never infer that a reset has
+replenished quota.
+
+Header references: [OpenAI rate limits](https://developers.openai.com/api/docs/guides/rate-limits)
+and [Anthropic rate limits](https://platform.claude.com/docs/en/api/rate-limits).
+
+## Background request privacy
+
+Trusted background callers can set `extra_body.__devo_background_request` to
+`true`. The provider strips this internal marker before sending the request.
+Background HTTP failure logs and returned errors exclude request/response
+content; errors retain safe rate-limit, server, authentication, or invalid-request
+classification through routing. Rate-limit errors retain numeric `Retry-After`
+seconds. OpenAI streaming diagnostics also redact raw payloads and skip assistant
+text previews for these requests. Foreground diagnostics keep their existing
+behavior.
 ## What does not belong here
 
 This crate is not responsible for:

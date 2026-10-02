@@ -58,6 +58,17 @@ pub trait ProviderRouter: Send + Sync {
         request: ModelRequest,
     ) -> Result<devo_protocol::ModelResponse, ProviderError>;
 
+    /// Known local initialization failure for the selected route, without I/O.
+    /// None does not imply known quota or remote availability.
+    fn initialization_error(&self, _route: &ProviderRoute) -> Option<ProviderError> {
+        None
+    }
+
+    /// Latest available quota for the selected route; `None` means unavailable.
+    fn remaining_quota_percent(&self, _route: &ProviderRoute) -> Option<u8> {
+        None
+    }
+
     /// Human-readable name of the router (e.g. "multi-provider", "openai-only").
     fn name(&self) -> &str;
 }
@@ -103,6 +114,14 @@ impl ProviderRouter for SingleProviderRouter {
             .completion(request)
             .await
             .map_err(crate::diagnostic::normalize_error)
+    }
+
+    fn initialization_error(&self, _route: &ProviderRoute) -> Option<ProviderError> {
+        self.provider.initialization_error()
+    }
+
+    fn remaining_quota_percent(&self, _route: &ProviderRoute) -> Option<u8> {
+        self.provider.remaining_quota_percent()
     }
 
     fn name(&self) -> &str {
@@ -179,6 +198,19 @@ impl ProviderRouter for MultiProviderRouter {
             .map_err(crate::diagnostic::normalize_error)
     }
 
+    fn initialization_error(&self, route: &ProviderRoute) -> Option<ProviderError> {
+        match self.provider_for_route(route) {
+            Ok(provider) => provider.initialization_error(),
+            Err(error) => Some(error),
+        }
+    }
+
+    fn remaining_quota_percent(&self, route: &ProviderRoute) -> Option<u8> {
+        self.provider_for_route(route)
+            .ok()?
+            .remaining_quota_percent()
+    }
+
     fn name(&self) -> &str {
         "multi-provider"
     }
@@ -201,6 +233,7 @@ mod tests {
     #[derive(Default)]
     struct CapturingProvider {
         requests: Mutex<Vec<String>>,
+        quota: Option<u8>,
     }
 
     impl CapturingProvider {
@@ -240,11 +273,59 @@ mod tests {
             Ok(Box::pin(stream::empty()))
         }
 
+        fn remaining_quota_percent(&self) -> Option<u8> {
+            self.quota
+        }
+
         fn name(&self) -> &str {
             "capturing-provider"
         }
     }
 
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: router quota uses selected route and keeps missing routes unavailable.
+    #[test]
+    fn router_quota_uses_selected_route_and_keeps_missing_routes_unavailable() {
+        let default = Arc::new(CapturingProvider {
+            quota: Some(90),
+            ..Default::default()
+        });
+        let selected = Arc::new(CapturingProvider {
+            quota: Some(35),
+            ..Default::default()
+        });
+        let mut router = MultiProviderRouter::new(default);
+        let selected_route =
+            ProviderRoute::connection("selected", ProviderWireApi::AnthropicMessages);
+        router.insert_route(selected_route.clone(), selected);
+        let missing = ProviderRoute::connection("missing", ProviderWireApi::AnthropicMessages);
+        assert_eq!(
+            [
+                router.remaining_quota_percent(&ProviderRoute::Default),
+                router.remaining_quota_percent(&selected_route),
+                router.remaining_quota_percent(&missing),
+            ],
+            [Some(90), Some(35), None],
+        );
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4.
+    /// Verifies: single router quota matches its route compatibility.
+    #[test]
+    fn single_router_quota_matches_its_route_compatibility() {
+        let provider = Arc::new(CapturingProvider {
+            quota: Some(35),
+            ..Default::default()
+        });
+        let router = SingleProviderRouter::new(provider);
+        assert_eq!(
+            router.remaining_quota_percent(&ProviderRoute::connection(
+                "other",
+                ProviderWireApi::OpenAIResponses
+            )),
+            Some(35),
+        );
+    }
     fn request(model: &str) -> ModelRequest {
         ModelRequest {
             model_slug: devo_protocol::ModelProfileKey::Generic,

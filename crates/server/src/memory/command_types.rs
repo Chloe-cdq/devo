@@ -264,20 +264,3 @@ pub struct PreparedMemory {
     pub entries: Vec<devo_protocol::native::rpc_memory::MemoryRecallEntry>,
     pub snapshot_revision: String,
 }
-
-/// A completed session source eligible for future memory extraction.
-#[derive(Debug, Clone, Default)]
-pub struct SessionMemorySource {
-    /// Durable creation source. Automation transcripts are never eligible.
-    pub source: devo_protocol::native::session::SessionSource,
-    /// Raw per-session contribution preference read when a background scan
-    /// evaluates this source session.
-    pub session_contribution: MemorySetting,
-}
-
-/// Outcome of attempting to enqueue a session source.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EnqueueOutcome {
-    /// Whether this source was accepted for processing.
-    pub accepted: bool,
-}

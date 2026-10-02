@@ -614,6 +614,13 @@ impl ServerRuntime {
         let registry = Arc::clone(&session_tool_registry);
         let approval_id = request.tool_call_id.clone();
         let request_for_checker = request.clone();
+        let external_context_path = working
+            .state
+            .record
+            .as_ref()
+            .map(|record| record.rollout_path.clone());
+        let external_context_parent = working.state.summary.parent_session_id;
+        let external_context_runtime = Arc::clone(&runtime);
         let preapproved_checker = PermissionChecker::new(move |incoming| {
             let approval_id = approval_id.clone();
             let request = request_for_checker.clone();
@@ -652,7 +659,18 @@ impl ServerRuntime {
                 sandbox_profile: working.state.core.config.sandbox_profile.clone(),
                 sandbox_profile_live: None,
             },
-            ToolExecutionOptions::default(),
+            ToolExecutionOptions {
+                on_external_context_use: Some(Arc::new(move |_call: ToolCall| {
+                    let runtime = Arc::clone(&external_context_runtime);
+                    let path = external_context_path.clone();
+                    Box::pin(async move {
+                        runtime
+                            .mark_external_context_used(path, session_id, external_context_parent)
+                            .await
+                    })
+                })),
+                ..ToolExecutionOptions::default()
+            },
         );
         let call = ToolCall {
             id: request.tool_call_id.clone(),

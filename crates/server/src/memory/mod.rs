@@ -8,27 +8,42 @@ mod command_types;
 mod entries;
 mod entry_identity;
 mod equivalence;
+mod extraction;
 mod forget;
 mod identity;
+mod inferred;
+mod jobs;
 mod migration;
 mod projection;
+mod proposal_reconciliation;
+mod proposal_relations;
+#[cfg(test)]
+mod proposal_relations_tests;
 mod queries;
 mod read;
 mod recall;
 mod revocation_lifecycle;
 #[cfg(test)]
 mod runtime_test_support;
+pub(crate) mod scan;
 mod schema;
+mod source;
+#[cfg(test)]
+mod source_intent_tests;
+mod source_lifecycle;
+mod source_provenance;
 mod stored_values;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -50,15 +65,15 @@ use thiserror::Error;
 #[cfg(test)]
 pub(crate) use command_types::MemoryInferredRememberRequest;
 pub use command_types::{
-    EnqueueOutcome, ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
+    ListMemoryRequest, MemoryCommand, MemoryCommandResult, MemoryForgetRequest,
     MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
     MemorySourceContext, MemoryUserSessionSelection, PrepareMemoryRequest, PreparedMemory,
     PreparedMemoryForgetRequest, ProjectMemoryOperation, ProjectMemorySession,
-    ProjectMemorySessionActivity, ReadMemoryRequest, SearchMemoryRequest, SessionMemorySource,
+    ProjectMemorySessionActivity, ReadMemoryRequest, SearchMemoryRequest,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "5";
+const MEMORY_SCHEMA_VERSION: &str = "8";
 const USER_SCOPE_ID: &str = "user";
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 100;
@@ -130,6 +145,19 @@ pub struct MemoryRuntime {
     config: MemoryConfig,
     memory_root: PathBuf,
     connection: Mutex<Connection>,
+    deletion_ledger: Option<Arc<crate::db::Database>>,
+    reconcile_state: Mutex<ReconcileState>,
+    source_provenance_storage_failed: AtomicBool,
+    source_rollout_store: Option<crate::persistence::RolloutStore>,
+    source_recovery_pending: AtomicBool,
+    pending_external_sources: Mutex<HashSet<SessionId>>,
+    excluded_external_sources: Mutex<HashSet<String>>,
+}
+
+#[derive(Default)]
+struct ReconcileState {
+    running: bool,
+    pending: bool,
 }
 
 pub(super) fn scope_name(scope: MemoryScope) -> &'static str {
@@ -172,27 +200,79 @@ impl MemoryRuntime {
         fs::create_dir_all(&memory_root)?;
         let connection = Connection::open(memory_root.join(MEMORY_DATABASE_FILENAME))?;
         schema::create_schema(&connection)?;
+        let excluded_external_sources = {
+            let mut statement =
+                connection.prepare("SELECT source_session_id FROM memory_excluded_sources")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<HashSet<_>, _>>()?
+        };
         let runtime = Self {
             config,
             memory_root,
             connection: Mutex::new(connection),
+            deletion_ledger: None,
+            reconcile_state: Mutex::new(ReconcileState::default()),
+            source_provenance_storage_failed: AtomicBool::new(false),
+            source_rollout_store: None,
+            source_recovery_pending: AtomicBool::new(false),
+            pending_external_sources: Mutex::new(HashSet::new()),
+            excluded_external_sources: Mutex::new(excluded_external_sources),
         };
+        runtime.prune_expired(Utc::now())?;
         runtime.rebuild_projections()?;
         Ok(runtime)
     }
 
-    /// Accepts a session source for later extraction work. Disabled memory
-    /// never queues a source.
-    pub async fn enqueue_source(
-        &self,
-        source: SessionMemorySource,
-    ) -> Result<EnqueueOutcome, MemoryError> {
-        Ok(EnqueueOutcome {
-            accepted: source.source.is_interactive()
-                && self
-                    .config
-                    .resolve_contribution(source.session_contribution)
-                    == MemorySetting::On,
+    pub(crate) fn attach_deletion_ledger(&mut self, db: Arc<crate::db::Database>) {
+        self.deletion_ledger = Some(db);
+    }
+
+    /// Retains a redacted health signal when source fencing needs a fallback
+    /// or its rollout mirror is unavailable during this runtime's lifetime.
+    pub(crate) fn note_source_provenance_storage_failure(&self) {
+        self.source_provenance_storage_failed
+            .store(true, Ordering::Relaxed);
+    }
+
+    fn has_pending_source_deletions(&self) -> bool {
+        if self.source_recovery_pending.load(Ordering::Acquire)
+            || self
+                .pending_external_sources
+                .lock()
+                .map_or(true, |sources| !sources.is_empty())
+        {
+            return true;
+        }
+        self.deletion_ledger
+            .as_ref()
+            .is_some_and(|db| db.has_pending_memory_source_deletions().unwrap_or(true))
+    }
+
+    fn source_has_intent(&self, source: &str) -> bool {
+        if self.source_recovery_pending.load(Ordering::Acquire)
+            || self
+                .pending_external_sources
+                .lock()
+                .map_or(true, |sources| {
+                    sources.iter().any(|id| id.to_string() == source)
+                })
+        {
+            return true;
+        }
+        if self
+            .excluded_external_sources
+            .lock()
+            .map_or(true, |sources| sources.contains(source))
+        {
+            return true;
+        }
+        self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_memory_source_deletion_intent(source)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "failed to check memory source intent");
+                    true
+                })
         })
     }
 
@@ -201,7 +281,7 @@ impl MemoryRuntime {
         &self,
         command: MemoryCommand,
     ) -> Result<MemoryCommandResult, MemoryError> {
-        match command {
+        let mut result = match command {
             MemoryCommand::Status => Ok(MemoryCommandResult::Status(self.status()?)),
             MemoryCommand::Remember(request) => {
                 if !self.config.enabled {
@@ -221,7 +301,7 @@ impl MemoryRuntime {
                 if !self.config.enabled {
                     return Err(MemoryError::Disabled);
                 }
-                Ok(MemoryCommandResult::Forget(self.forget(request)?))
+                self.forget(request).map(MemoryCommandResult::Forget)
             }
             MemoryCommand::List(request) => {
                 if !self.config.enabled {
@@ -312,7 +392,35 @@ impl MemoryRuntime {
                     })?)),
                 }
             }
+        };
+        if self.has_pending_source_deletions() {
+            match &mut result {
+                Ok(MemoryCommandResult::Remember(entry)) => entry.provenance.clear(),
+                Ok(MemoryCommandResult::List(page)) => {
+                    for entry in &mut page.data {
+                        entry.provenance.clear();
+                    }
+                }
+                Ok(MemoryCommandResult::Forget(forget)) => {
+                    if let Some(entry) = &mut forget.forgotten {
+                        entry.provenance.clear();
+                    }
+                    for entry in &mut forget.candidates {
+                        entry.provenance.clear();
+                    }
+                }
+                Err(MemoryError::ForgetCommitted { result: forget, .. }) => {
+                    if let Some(entry) = &mut forget.forgotten {
+                        entry.provenance.clear();
+                    }
+                    for entry in &mut forget.candidates {
+                        entry.provenance.clear();
+                    }
+                }
+                _ => {}
+            }
         }
+        result
     }
 
     fn resolve_project_memory_source(
@@ -360,9 +468,23 @@ impl MemoryRuntime {
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
+        let source_storage_failed = self
+            .source_provenance_storage_failed
+            .load(Ordering::Relaxed);
+        let mut error_classes = error_classes(&connection)?;
+        if source_storage_failed {
+            error_classes.push("source_provenance_storage".into());
+            error_classes.sort();
+            error_classes.dedup();
+        }
         Ok(MemoryStatus {
             enabled: self.config.enabled,
-            storage_health: "healthy".into(),
+            storage_health: if source_storage_failed {
+                "degraded"
+            } else {
+                "healthy"
+            }
+            .into(),
             entry_count: count_rows(&connection, "SELECT COUNT(*) FROM memory_entries")?,
             candidate_count: count_rows(&connection, "SELECT COUNT(*) FROM memory_candidates")?,
             pending_job_count: count_rows(
@@ -378,7 +500,7 @@ impl MemoryRuntime {
                 "SELECT COUNT(*) FROM memory_jobs WHERE state = 'error'",
             )?,
             last_successful_scan_at: last_successful_scan_at(&connection)?,
-            error_classes: error_classes(&connection)?,
+            error_classes,
         })
     }
 }
@@ -434,9 +556,12 @@ fn count_rows(connection: &Connection, sql: &str) -> Result<u64, MemoryError> {
 
 fn last_successful_scan_at(connection: &Connection) -> Result<Option<DateTime<Utc>>, MemoryError> {
     let timestamp = connection.query_row(
-        "SELECT MAX(updated_at)
-         FROM memory_jobs
-         WHERE state = 'completed' AND job_kind = 'source_scan'",
+        "SELECT (SELECT timestamp FROM (
+             SELECT updated_at AS timestamp FROM memory_jobs
+             WHERE state = 'completed' AND job_kind = 'source_scan'
+             UNION ALL
+             SELECT completed_at AS timestamp FROM memory_job_receipts
+         ) ORDER BY julianday(timestamp) DESC LIMIT 1)",
         [],
         |row| row.get::<_, Option<String>>(0),
     )?;
@@ -475,7 +600,9 @@ fn redact_error_class(error_class: String) -> String {
         | "permanent_provider_error"
         | "provider_unavailable"
         | "quota_unavailable"
-        | "transient_provider_error" => error_class,
+        | "transient_provider_error"
+        | "storage_error"
+        | "projection_error" => error_class,
         _ => "unknown".to_string(),
     }
 }

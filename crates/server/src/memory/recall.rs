@@ -73,13 +73,15 @@ impl MemoryRuntime {
         if terms.is_empty() {
             return Ok(prepared);
         }
+        let mut pending_source_deletion = self.has_pending_source_deletions();
         let connection = self
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
-        let transaction = connection.unchecked_transaction()?;
-        let mut statement = transaction.prepare(
-            "SELECT e.entry_id, e.scope_type, e.kind, e.body, e.origin, e.updated_at,
+        loop {
+            let transaction = connection.unchecked_transaction()?;
+            let mut statement = transaction.prepare(
+                "SELECT e.entry_id, e.scope_type, e.kind, e.body, e.origin, e.updated_at,
                     (SELECT COUNT(*) FROM memory_evidence WHERE entry_id = e.entry_id)
              FROM memory_entries_fts
              JOIN memory_entries e ON e.entry_id = memory_entries_fts.entry_id
@@ -87,115 +89,131 @@ impl MemoryRuntime {
                AND ((e.scope_type = 'user' AND e.scope_id = ?2)
                     OR (e.scope_type = 'project' AND e.scope_id = ?3))
                AND e.state IN ('active', 'restored')
+               AND (?4 = 0 OR e.origin = 'explicit_user')
                AND NOT EXISTS (
                    SELECT 1 FROM memory_revocations r
                    WHERE r.scope_type = e.scope_type AND r.scope_id = e.scope_id
                      AND r.normalized_key = e.normalized_key
                      AND (r.restored_at IS NULL OR r.restored_at < r.revoked_at))",
-        )?;
-        let mut rows = BTreeMap::new();
-        let query_terms = terms.iter().collect::<Vec<_>>();
-        for batch in query_terms.chunks(64) {
-            let fts_query = batch
-                .iter()
-                .map(|term| format!("\"{term}\""))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            for row in statement.query_map(
-                rusqlite::params![fts_query, USER_SCOPE_ID, project.scope_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(/*idx*/ 0)?,
-                        row.get::<_, String>(/*idx*/ 1)?,
-                        row.get::<_, String>(/*idx*/ 2)?,
-                        row.get::<_, String>(/*idx*/ 3)?,
-                        row.get::<_, String>(/*idx*/ 4)?,
-                        row.get::<_, String>(/*idx*/ 5)?,
-                        row.get::<_, i64>(/*idx*/ 6)?,
-                    ))
-                },
-            )? {
-                let row = row?;
-                rows.entry(row.0.clone()).or_insert(row);
-            }
-        }
-        drop(statement);
-        let mut candidates = Vec::new();
-        for (_, (id, scope, kind, body, origin, updated_at, evidence_count)) in rows {
-            if contains_secret(&body) {
-                continue;
-            }
-            let relevance = terms.intersection(&lexical_terms(&body)).count();
-            if relevance == 0 {
-                continue;
-            }
-            let origin = parse_origin(&origin)?;
-            let mut summary = body.chars().take(/*n*/ 640).collect::<String>();
-            if body.chars().count() > 640 {
-                summary.push('…');
-            }
-            let source = match origin {
-                MemoryOrigin::ExplicitUser => "Explicit user memory",
-                MemoryOrigin::InferredSession => "Inferred session memory",
-            };
-            let suffix = if evidence_count == 1 {
-                "source"
-            } else {
-                "sources"
-            };
-            candidates.push(RecallCandidate {
-                entry: MemoryRecallEntry {
-                    entry_id: MemoryEntryId::from_string(id),
-                    scope: parse_scope(&scope)?,
-                    kind: parse_kind(&kind)?,
-                    summary,
-                    source_summary: format!("{source} ({evidence_count} {suffix})"),
-                },
-                relevance,
-                origin,
-                evidence_count,
-                updated_at: parse_timestamp(&updated_at)?,
-            });
-        }
-        candidates.sort_by(|left, right| {
-            right
-                .relevance
-                .cmp(&left.relevance)
-                .then_with(|| {
-                    (right.entry.scope == MemoryScope::Project)
-                        .cmp(&(left.entry.scope == MemoryScope::Project))
-                })
-                .then_with(|| {
-                    (right.origin == MemoryOrigin::ExplicitUser)
-                        .cmp(&(left.origin == MemoryOrigin::ExplicitUser))
-                })
-                .then_with(|| right.evidence_count.cmp(&left.evidence_count))
-                .then_with(|| right.updated_at.cmp(&left.updated_at))
-                .then_with(|| left.entry.entry_id.cmp(&right.entry.entry_id))
-        });
-        let entry_limit = self.config.max_entries_per_turn.min(/*other*/ 12) as usize;
-        let token_limit = u64::from(self.config.max_prompt_tokens.min(/*other*/ 2000));
-        for candidate in candidates {
-            if prepared.entries.len() == entry_limit {
-                break;
-            }
-            prepared.entries.push(candidate.entry);
-            if approx_tokens_from_byte_count(prepared.advisory_context().len()) > token_limit {
-                prepared.entries.pop();
-            }
-        }
-        let recalled_at = Utc::now().to_rfc3339();
-        for entry in &prepared.entries {
-            transaction.execute(
-                "UPDATE memory_entries SET last_recalled_at = ?1 WHERE entry_id = ?2",
-                rusqlite::params![recalled_at, entry.entry_id.as_str()],
             )?;
+            let mut rows = BTreeMap::new();
+            let query_terms = terms.iter().collect::<Vec<_>>();
+            for batch in query_terms.chunks(64) {
+                let fts_query = batch
+                    .iter()
+                    .map(|term| format!("\"{term}\""))
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                for row in statement.query_map(
+                    rusqlite::params![
+                        fts_query,
+                        USER_SCOPE_ID,
+                        project.scope_id,
+                        pending_source_deletion
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(/*idx*/ 0)?,
+                            row.get::<_, String>(/*idx*/ 1)?,
+                            row.get::<_, String>(/*idx*/ 2)?,
+                            row.get::<_, String>(/*idx*/ 3)?,
+                            row.get::<_, String>(/*idx*/ 4)?,
+                            row.get::<_, String>(/*idx*/ 5)?,
+                            row.get::<_, i64>(/*idx*/ 6)?,
+                        ))
+                    },
+                )? {
+                    let row = row?;
+                    rows.entry(row.0.clone()).or_insert(row);
+                }
+            }
+            drop(statement);
+            let mut candidates = Vec::new();
+            for (_, (id, scope, kind, body, origin, updated_at, evidence_count)) in rows {
+                if contains_secret(&body) {
+                    continue;
+                }
+                let relevance = terms.intersection(&lexical_terms(&body)).count();
+                if relevance == 0 {
+                    continue;
+                }
+                let origin = parse_origin(&origin)?;
+                let mut summary = body.chars().take(/*n*/ 640).collect::<String>();
+                if body.chars().count() > 640 {
+                    summary.push('…');
+                }
+                let source = match origin {
+                    MemoryOrigin::ExplicitUser => "Explicit user memory",
+                    MemoryOrigin::InferredSession => "Inferred session memory",
+                };
+                let suffix = if evidence_count == 1 {
+                    "source"
+                } else {
+                    "sources"
+                };
+                candidates.push(RecallCandidate {
+                    entry: MemoryRecallEntry {
+                        entry_id: MemoryEntryId::from_string(id),
+                        scope: parse_scope(&scope)?,
+                        kind: parse_kind(&kind)?,
+                        summary,
+                        source_summary: if pending_source_deletion {
+                            source.to_owned()
+                        } else {
+                            format!("{source} ({evidence_count} {suffix})")
+                        },
+                    },
+                    relevance,
+                    origin,
+                    evidence_count,
+                    updated_at: parse_timestamp(&updated_at)?,
+                });
+            }
+            candidates.sort_by(|left, right| {
+                right
+                    .relevance
+                    .cmp(&left.relevance)
+                    .then_with(|| {
+                        (right.entry.scope == MemoryScope::Project)
+                            .cmp(&(left.entry.scope == MemoryScope::Project))
+                    })
+                    .then_with(|| {
+                        (right.origin == MemoryOrigin::ExplicitUser)
+                            .cmp(&(left.origin == MemoryOrigin::ExplicitUser))
+                    })
+                    .then_with(|| right.evidence_count.cmp(&left.evidence_count))
+                    .then_with(|| right.updated_at.cmp(&left.updated_at))
+                    .then_with(|| left.entry.entry_id.cmp(&right.entry.entry_id))
+            });
+            let entry_limit = self.config.max_entries_per_turn.min(/*other*/ 12) as usize;
+            let token_limit = u64::from(self.config.max_prompt_tokens.min(/*other*/ 2000));
+            for candidate in candidates {
+                if prepared.entries.len() == entry_limit {
+                    break;
+                }
+                prepared.entries.push(candidate.entry);
+                if approx_tokens_from_byte_count(prepared.advisory_context().len()) > token_limit {
+                    prepared.entries.pop();
+                }
+            }
+            if !pending_source_deletion && self.has_pending_source_deletions() {
+                pending_source_deletion = true;
+                prepared.entries.clear();
+                continue;
+            }
+            let recalled_at = Utc::now().to_rfc3339();
+            for entry in &prepared.entries {
+                transaction.execute(
+                    "UPDATE memory_entries SET last_recalled_at = ?1 WHERE entry_id = ?2",
+                    rusqlite::params![recalled_at, entry.entry_id.as_str()],
+                )?;
+            }
+            transaction.commit()?;
+            return Ok(PreparedMemory::from_entries(
+                prepared.project_scope_id,
+                prepared.entries,
+            ));
         }
-        transaction.commit()?;
-        Ok(PreparedMemory::from_entries(
-            prepared.project_scope_id,
-            prepared.entries,
-        ))
     }
 }
 

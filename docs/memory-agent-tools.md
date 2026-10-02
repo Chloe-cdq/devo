@@ -14,6 +14,8 @@ scope, kind, state, bounded body (4000 characters plus a truncation marker), and
 a provenance summary. Other projects and unknown IDs share the same unavailable
 result. Neither read surface exposes raw evidence, transcript text, storage
 paths, or secret-bearing stored content.
+While source deletion or external-context cleanup is pending, reads hide
+inferred entries and omit source counts for explicit entries.
 
 Remember and forget use the existing canonical Memory commands. A root mutation
 tool invocation asserts explicit current-user intent; the server verifies the
@@ -38,4 +40,5 @@ Memory tools and aliases are hidden and rejected at execution,
 and the server coordinator rejects independent child read/search requests.
 Delegated sessions, including ephemeral sessions, cannot update recall or
 contribution settings. Passive source enqueue remains a server-owned seam with
-no agent tool or Native command; background source admission is a later slice.
+no agent tool or Native command; source admission follows the eligibility rules
+in [Passive memory contribution](memory-passive-extraction.md).

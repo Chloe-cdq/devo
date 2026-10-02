@@ -1,3 +1,6 @@
+#[path = "credential_policy.rs"]
+pub(super) mod credential_policy;
+
 use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::MemoryEntryId;
 use devo_protocol::native::rpc_memory::MemoryEntry;
@@ -5,12 +8,13 @@ use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
-use devo_safety::{InMemorySecretDetectorRegistry, SecretDetectorRegistry};
 use rusqlite::{Connection, OptionalExtension};
 
 #[cfg(test)]
 use super::MemoryInferredRememberRequest;
-use super::entry_identity::{IdentityResolutionMode, MemoryEntryIdentity};
+use super::entry_identity::{
+    IdentityResolutionMode, MemoryEntryIdentity, MemoryIdentityResolution,
+};
 use super::identity;
 use super::projection::{render_projection, write_atomic_projection};
 use super::stored_values::{parse_kind, parse_origin, parse_scope, parse_state, parse_timestamp};
@@ -137,13 +141,21 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
-        let existing = identity.resolve_and_merge_existing(
+        let existing = match identity.resolve_and_merge_existing(
             &transaction,
             request.scope,
             &scope_id,
             &body,
             identity_resolution_mode,
-        )?;
+        )? {
+            MemoryIdentityResolution::Vacant => None,
+            MemoryIdentityResolution::Existing(entry) => Some(entry),
+            MemoryIdentityResolution::Occupied => {
+                return Err(MemoryError::InvalidRequest(
+                    "memory text collides with a different historical entry".into(),
+                ));
+            }
+        };
         let existing_origin = existing.as_ref().map(|entry| entry.origin);
         let secondary_revocation_key = if source_observed_at.is_some() {
             &identity.legacy_inferred_key
@@ -269,6 +281,15 @@ impl MemoryRuntime {
             )?;
             entry_id
         };
+        if origin == MemoryOrigin::ExplicitUser {
+            super::proposal_relations::bind_entry(
+                &transaction,
+                request.scope,
+                &scope_id,
+                &identity.canonical_key,
+                entry_id.as_str(),
+            )?;
+        }
         if !preserve_existing {
             transaction.execute(
                 "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
@@ -379,28 +400,7 @@ fn classify_kind(body: &str) -> MemoryKind {
     }
 }
 
-pub(super) fn contains_secret(body: &str) -> bool {
-    let lower_body = body.to_ascii_lowercase();
-    let marker_match = [
-        "sk-",
-        "ghp_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "bearer ",
-        "api_key=",
-        "apikey=",
-        "aws_secret_access_key",
-        "-----begin ",
-    ]
-    .iter()
-    .any(|marker| lower_body.contains(marker));
-    marker_match
-        || InMemorySecretDetectorRegistry::with_default_detectors()
-            .all()
-            .into_iter()
-            .any(|detector| !detector.detect(body).is_empty())
-}
+pub(super) use credential_policy::contains_secret;
 
 pub(super) fn load_entry(
     connection: &Connection,
@@ -497,6 +497,12 @@ fn load_provenance(
         "SELECT session_id, turn_id, source_user_item_id
          FROM memory_evidence
          WHERE entry_id = ?1
+           AND NOT EXISTS (
+             SELECT 1 FROM memory_excluded_sources AS excluded
+             WHERE excluded.source_session_id = memory_evidence.session_id)
+           AND NOT EXISTS (
+             SELECT 1 FROM memory_deleted_sources AS deleted
+             WHERE deleted.source_session_id = memory_evidence.session_id)
          ORDER BY observed_at ASC, evidence_id ASC",
     )?;
     let rows = statement

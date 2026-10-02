@@ -688,6 +688,7 @@ impl V2InverseProjector {
             InternalRecordV2::Execution { .. }
             | InternalRecordV2::GoalState { .. }
             | InternalRecordV2::UsageRecord { .. }
+            | InternalRecordV2::ExternalContextUsed
             | InternalRecordV2::TurnApprovalCheckpoint(_) => Ok(Vec::new()),
         }
     }

@@ -1999,6 +1999,7 @@ dependencies = [
  "async-trait",
  "devo-network-proxy",
  "devo-protocol",
+ "eventsource-stream",
  "futures",
  "pretty_assertions",
  "reqwest 0.12.28",
@@ -2009,6 +2010,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2133,6 +2135,7 @@ dependencies = [
  "jsonrepair",
  "lru",
  "pretty_assertions",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -2148,6 +2151,8 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-javascript",
  "uuid",
  "windows-sys 0.61.2",
 ]

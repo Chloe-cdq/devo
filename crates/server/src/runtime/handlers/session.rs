@@ -238,6 +238,7 @@ impl ServerRuntime {
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
         let steer_input_queue = Arc::clone(&core_session.steer_input_queue);
         let rollout_path_for_db = record.as_ref().map(|entry| entry.rollout_path.clone());
+        let passive_context = Arc::clone(&runtime_context);
         let actor_state = SessionActorState {
             runtime_context,
             record,
@@ -288,6 +289,11 @@ impl ServerRuntime {
                 error = %err,
                 "failed to persist session metadata to database"
             );
+        }
+
+        if !summary.ephemeral && source.is_interactive() {
+            self.runtime_arc()
+                .schedule_memory_scan(summary.session_id, passive_context);
         }
 
         tracing::info!(

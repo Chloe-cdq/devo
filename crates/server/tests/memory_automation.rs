@@ -152,48 +152,6 @@ async fn automation_cannot_promote_private_memory_with_remember_tool() -> Result
     Ok(())
 }
 
-/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-1/DD-2
-/// Verifies: contribution On never admits an automation transcript for extraction.
-#[tokio::test]
-async fn automation_sources_are_ineligible_even_with_contribution_on() -> Result<()> {
-    use devo_protocol::native::session::{MemorySetting, SessionSource};
-    use devo_server::memory::{EnqueueOutcome, MemoryRuntime, SessionMemorySource};
-    let data = tempfile::TempDir::new()?;
-    let memory = MemoryRuntime::open(
-        data.path().join("memory"),
-        devo_core::MemoryConfig {
-            enabled: true,
-            default_contribution: MemorySetting::On,
-            ..Default::default()
-        },
-    )?;
-    for session_contribution in [
-        MemorySetting::Inherit,
-        MemorySetting::On,
-        MemorySetting::Off,
-    ] {
-        assert_eq!(
-            memory
-                .enqueue_source(SessionMemorySource {
-                    source: SessionSource::Automation,
-                    session_contribution,
-                })
-                .await?,
-            EnqueueOutcome { accepted: false }
-        );
-    }
-    assert_eq!(
-        memory
-            .enqueue_source(SessionMemorySource {
-                source: SessionSource::Interactive,
-                session_contribution: MemorySetting::On,
-            })
-            .await?,
-        EnqueueOutcome { accepted: true }
-    );
-    Ok(())
-}
-
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-1/DD-6
 /// Verifies: enabled automation recall consumes the same bounded snapshot without writing private data.
 #[tokio::test]

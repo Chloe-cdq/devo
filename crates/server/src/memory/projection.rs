@@ -6,6 +6,7 @@ use std::path::Path;
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryScope;
 
+use super::entries::contains_secret;
 use super::{MemoryError, kind_name, origin_name, state_name};
 
 pub(super) fn render_projection(scope: MemoryScope, entries: &[MemoryEntry]) -> String {
@@ -16,6 +17,10 @@ pub(super) fn render_projection(scope: MemoryScope, entries: &[MemoryEntry]) -> 
     let mut projection = format!(
         "# {title} Memory\n\n<!-- Generated from SQLite. Read-only; manual edits are not canonical. -->\n"
     );
+    let entries = entries
+        .iter()
+        .filter(|entry| !contains_secret(&entry.body) && !contains_secret(&entry.normalized_key))
+        .collect::<Vec<_>>();
     if entries.is_empty() {
         projection.push_str("\n_No memory entries._\n");
         return projection;
@@ -129,5 +134,61 @@ fn replace_projection(temporary: &Path, target: &Path) -> std::io::Result<()> {
         Err(std::io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_projection;
+    use devo_protocol::native::ids::MemoryEntryId;
+    use devo_protocol::native::rpc_memory::{
+        MemoryEntry, MemoryKind, MemoryOrigin, MemoryScope, MemoryState,
+    };
+    use pretty_assertions::assert_eq;
+
+    /// Trace: L2-DES-MEM-001 DD-6
+    /// Verifies: unsafe historical entries cannot appear in a projection regardless of lifecycle state.
+    #[test]
+    fn credential_projection_excludes_unsafe_entries_in_every_state() {
+        let timestamp = "2026-09-28T00:00:00Z".parse().unwrap();
+        let safe = MemoryEntry {
+            entry_id: MemoryEntryId::from_string("mem_safe".into()),
+            scope: MemoryScope::User,
+            scope_id: "user".into(),
+            kind: MemoryKind::Fact,
+            normalized_key: "rust".into(),
+            body: "Use Rust".into(),
+            origin: MemoryOrigin::ExplicitUser,
+            state: MemoryState::Active,
+            created_at: timestamp,
+            updated_at: timestamp,
+            replacement_entry_id: None,
+            provenance: vec![],
+        };
+        let expected = "# User Memory\n\n<!-- Generated from SQLite. Read-only; manual edits are not canonical. -->\n\n## fact\n\n- `mem_safe` — Use Rust\n  - state: active\n  - origin: explicit_user\n  - created_at: 2026-09-28T00:00:00+00:00\n  - updated_at: 2026-09-28T00:00:00+00:00\n";
+        let empty = "# User Memory\n\n<!-- Generated from SQLite. Read-only; manual edits are not canonical. -->\n\n_No memory entries._\n";
+        for state in [
+            MemoryState::Active,
+            MemoryState::Restored,
+            MemoryState::Stale,
+            MemoryState::Retired,
+            MemoryState::Conflicted,
+        ] {
+            for field in ["body", "key"] {
+                let mut unsafe_entry = safe.clone();
+                unsafe_entry.entry_id = MemoryEntryId::from_string("mem_unsafe".into());
+                unsafe_entry.state = state;
+                match field {
+                    "body" => unsafe_entry.body = "API key: ab".into(),
+                    "key" => unsafe_entry.normalized_key = "API key: ab".into(),
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    render_projection(MemoryScope::User, &[safe.clone(), unsafe_entry.clone()]),
+                    expected
+                );
+                assert_eq!(render_projection(MemoryScope::User, &[unsafe_entry]), empty);
+            }
+        }
     }
 }

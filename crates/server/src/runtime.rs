@@ -136,6 +136,9 @@ mod lifecycle;
 mod mcp;
 mod memory_forget_authorization;
 mod memory_forget_preparation;
+mod memory_scan;
+#[cfg(test)]
+mod memory_scan_tests;
 mod memory_scope;
 mod model_api;
 mod outbound;
@@ -146,6 +149,7 @@ mod provider_discovery;
 mod reference_search;
 mod session_actor;
 mod session_cache;
+mod session_deletion;
 mod session_interactive;
 mod session_title;
 mod skills;
@@ -376,7 +380,13 @@ impl ServerRuntime {
             .clone();
         let memory =
             match crate::memory::MemoryRuntime::open(server_home.join("memory"), memory_config) {
-                Ok(runtime) => Some(Arc::new(runtime)),
+                Ok(mut runtime) => {
+                    runtime.attach_deletion_ledger(Arc::clone(&deps.db));
+                    runtime.attach_source_rollout_store(rollout_store.clone());
+                    let runtime = Arc::new(runtime);
+                    runtime.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
+                    Some(runtime)
+                }
                 Err(error) => {
                     tracing::warn!(%error, "failed to initialize persistent memory runtime");
                     None

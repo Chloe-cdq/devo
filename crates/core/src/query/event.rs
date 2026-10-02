@@ -149,6 +149,10 @@ pub struct QueryOptions {
     /// Slot written before each provider attempt so in-turn callers (auto-review)
     /// can reuse the same request prefix for prompt-cache hits.
     pub last_model_request: Option<SharedLastModelRequest>,
+    /// Persist external-context provenance when provider-hosted tool use is
+    /// observed. Failure aborts the provider turn before using that content.
+    pub on_hosted_external_context_use:
+        Option<Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>>,
 }
 
 /// Live per-session settings shared with a running turn. The server writes
@@ -194,6 +198,13 @@ impl std::fmt::Debug for QueryOptions {
             .field(
                 "last_model_request",
                 &self.last_model_request.as_ref().map(|_| "<shared>"),
+            )
+            .field(
+                "on_hosted_external_context_use",
+                &self
+                    .on_hosted_external_context_use
+                    .as_ref()
+                    .map(|_| "<configured>"),
             )
             .finish()
     }

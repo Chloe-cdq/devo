@@ -27,6 +27,7 @@ use devo_provider::ProviderRoute;
 use devo_provider::ProviderRouter;
 use devo_provider::SingleProviderRouter;
 use devo_provider::anthropic::AnthropicProvider;
+use devo_provider::error::ProviderError;
 use devo_provider::openai::OpenAIProvider;
 use devo_provider::openai::OpenAIResponsesProvider;
 use std::path::Path;
@@ -121,26 +122,36 @@ impl ModelProviderSDK for MissingProvider {
 }
 
 struct UnavailableProvider {
-    message: String,
+    error: ProviderError,
 }
 
 impl UnavailableProvider {
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(error: anyhow::Error) -> Self {
+        let error = error.downcast::<ProviderError>().unwrap_or_else(|error| {
+            ProviderError::InvalidRequestError {
+                message: error.to_string().into(),
+                details: None,
+            }
+        });
+        Self { error }
     }
 }
 
 #[async_trait::async_trait]
 impl ModelProviderSDK for UnavailableProvider {
     async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
-        anyhow::bail!("{}", self.message)
+        Err(self.error.clone().into())
     }
 
     async fn completion_stream(
         &self,
         _request: ModelRequest,
     ) -> Result<Pin<Box<dyn futures::Stream<Item = Result<StreamEvent>> + Send>>> {
-        anyhow::bail!("{}", self.message)
+        Err(self.error.clone().into())
+    }
+
+    fn initialization_error(&self) -> Option<ProviderError> {
+        Some(self.error.clone())
     }
 
     fn name(&self) -> &str {
@@ -156,7 +167,11 @@ pub(crate) fn build_provider_adapter(
 ) -> Result<Arc<dyn ModelProviderSDK>> {
     let provider: Arc<dyn ModelProviderSDK> = match wire_api {
         ProviderWireApi::AnthropicMessages => {
-            let api_key = api_key.context("anthropic provider requires an API key")?;
+            let api_key = api_key.ok_or_else(|| ProviderError::AuthenticationError {
+                message: "anthropic provider requires an API key".into(),
+                provider_name: Some("anthropic".into()),
+                status_code: None,
+            })?;
             let base_url = base_url.unwrap_or_else(|| "https://api.anthropic.com".to_string());
             Arc::new(
                 AnthropicProvider::new(base_url)
@@ -220,7 +235,7 @@ fn build_multi_provider_router(
             let provider_instance =
                 match build_provider_route(wire_api, provider_id, provider, auth, provider_http) {
                     Ok(provider) => provider,
-                    Err(error) => Arc::new(UnavailableProvider::new(error.to_string())),
+                    Err(error) => Arc::new(UnavailableProvider::new(error)),
                 };
             router.insert_route(
                 ProviderRoute::connection(provider_id.clone(), wire_api),
@@ -278,10 +293,14 @@ fn resolve_provider_api_key(
     let Some(credential_id) = provider.credential.as_deref() else {
         return Ok(None);
     };
-    let credential = auth.credentials.get(credential_id).with_context(|| {
-        format!(
-            "provider `{provider_id}` references missing credential `{credential_id}` in user auth.json"
-        )
+    let credential = auth.credentials.get(credential_id).ok_or_else(|| {
+        ProviderError::AuthenticationError {
+            message: format!(
+                "provider `{provider_id}` references missing credential `{credential_id}` in user auth.json"
+            ).into(),
+            provider_name: Some(provider_id.into()),
+            status_code: None,
+        }
     })?;
     Ok(Some(credential.value.clone()))
 }
