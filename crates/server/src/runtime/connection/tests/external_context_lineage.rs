@@ -147,6 +147,11 @@ async fn tool_search_through_ephemeral_parent(root_state: RootState) -> Result<(
     provider.calls.store(0, std::sync::atomic::Ordering::SeqCst);
     spawn_and_complete(&runtime, &mut notifications, middle, "Find a tool").await?;
     assert_eq!(external_context_fact_count(&record.rollout_path)?, 1);
+    runtime
+        .memory
+        .as_ref()
+        .context("memory")?
+        .reconcile_source_intents();
     assert!(
         runtime
             .deps

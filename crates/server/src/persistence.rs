@@ -96,6 +96,7 @@ pub(crate) struct RolloutStore {
     /// rollout path, hydrated from the on-disk history on first append so
     /// item seqs and approval folds never collide with it.
     write_states: Arc<StdMutex<HashMap<PathBuf, WritePathState>>>,
+    pending_external_context: Arc<StdMutex<HashMap<PathBuf, SessionId>>>,
     /// Delivery-log sink (08 §5/§7): after each fsynced append, derived
     /// events are projected into the SQLite `event_log` (best effort; the
     /// startup reconciler backfills anything missed). `None` in tests that
@@ -125,6 +126,7 @@ impl Clone for RolloutStore {
             data_root: self.data_root.clone(),
             file_locks: Arc::clone(&self.file_locks),
             write_states: Arc::clone(&self.write_states),
+            pending_external_context: Arc::clone(&self.pending_external_context),
             event_log: self.event_log.as_ref().map(Arc::clone),
         }
     }
@@ -137,6 +139,7 @@ impl RolloutStore {
             data_root,
             file_locks: Arc::new(StdMutex::new(HashMap::new())),
             write_states: Arc::new(StdMutex::new(HashMap::new())),
+            pending_external_context: Arc::new(StdMutex::new(HashMap::new())),
             event_log,
         }
     }

@@ -31,13 +31,14 @@ mod source;
 #[cfg(test)]
 mod source_intent_tests;
 mod source_lifecycle;
+mod source_provenance;
 mod stored_values;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -147,6 +148,9 @@ pub struct MemoryRuntime {
     deletion_ledger: Option<Arc<crate::db::Database>>,
     reconcile_state: Mutex<ReconcileState>,
     source_provenance_storage_failed: AtomicBool,
+    source_rollout_store: Option<crate::persistence::RolloutStore>,
+    source_recovery_pending: AtomicBool,
+    pending_external_sources: Mutex<HashSet<SessionId>>,
 }
 
 #[derive(Default)]
@@ -202,6 +206,9 @@ impl MemoryRuntime {
             deletion_ledger: None,
             reconcile_state: Mutex::new(ReconcileState::default()),
             source_provenance_storage_failed: AtomicBool::new(false),
+            source_rollout_store: None,
+            source_recovery_pending: AtomicBool::new(false),
+            pending_external_sources: Mutex::new(HashSet::new()),
         };
         runtime.prune_expired(Utc::now())?;
         runtime.rebuild_projections()?;
@@ -220,6 +227,14 @@ impl MemoryRuntime {
     }
 
     fn has_pending_source_deletions(&self) -> bool {
+        if self.source_recovery_pending.load(Ordering::Acquire)
+            || self
+                .pending_external_sources
+                .lock()
+                .map_or(true, |sources| !sources.is_empty())
+        {
+            return true;
+        }
         self.deletion_ledger.as_ref().is_some_and(|db| {
             db.has_pending_memory_source_deletions().unwrap_or(true)
                 || db.has_pending_external_context_sources().unwrap_or(true)
@@ -227,6 +242,16 @@ impl MemoryRuntime {
     }
 
     fn source_has_intent(&self, source: &str) -> bool {
+        if self.source_recovery_pending.load(Ordering::Acquire)
+            || self
+                .pending_external_sources
+                .lock()
+                .map_or(true, |sources| {
+                    sources.iter().any(|id| id.to_string() == source)
+                })
+        {
+            return true;
+        }
         self.deletion_ledger.as_ref().is_some_and(|db| {
             db.has_memory_source_intent(source).unwrap_or_else(|error| {
                 tracing::warn!(%error, "failed to check memory source intent");

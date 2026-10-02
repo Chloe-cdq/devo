@@ -38,6 +38,7 @@ impl MemoryRuntime {
     /// Applies durable session-index intents to memory storage. Failed intents
     /// remain in the index for the next startup or scan.
     pub(crate) fn reconcile_source_intents(&self) {
+        self.reconcile_external_context_sources();
         let Some(db) = self.deletion_ledger.as_ref() else {
             return;
         };

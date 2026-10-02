@@ -205,6 +205,11 @@ async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> 
             .await
             .is_ok()
     );
+    let memory = runtime.memory.as_ref().context("memory runtime")?;
+    for source in [child_id, parent_id, grandparent_id] {
+        assert!(memory.scan_source_has_intent(&source.to_string()).await);
+    }
+    memory.reconcile_source_intents();
     assert_eq!(
         (
             runtime

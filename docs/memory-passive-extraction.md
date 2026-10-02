@@ -18,24 +18,40 @@ skipped to bound background input work.
 Automation identity is checked in both session metadata and persisted
 `SessionSource` field records. Malformed source values also exclude the session.
 
-Actual external-tool use first resolves the complete ancestor chain and records
-a durable, session-wide exclusion for every source in one session-index transaction.
-Loaded actor snapshots retain ephemeral ancestors; the index retains unloaded
-durable ancestors. Traversal passes through ephemeral sessions to reach durable
-ancestors, and missing identities or cycles remain errors.
-Wholly ephemeral chains need no persistent exclusion and continue even when
-memory storage is unavailable.
-If the session-index ledger write fails, the dedicated memory database provides
-the exclusion instead, fencing jobs and retiring unsupported inferred entries.
-A committed exclusion remains authoritative even if projection refresh fails.
-Local Web, MCP, and Tool Search are fenced before dispatch; hosted Web is fenced
-when the provider reports the call. Fsynced `ExternalContextUsed` rollout facts
-mirror that exclusion. A failed rollout mirror does not fail the tool once the
-durable exclusion exists; other ancestor mirrors are still attempted.
-Memory status reports `degraded` and the redacted `source_provenance_storage`
-classification for observed storage failures during the runtime's lifetime.
-For durable chains, if neither database can persist source exclusion, external content is withheld
-rather than allowing an unfenced source to contribute after restart.
+Actual external-tool use first resolves the complete ancestor chain and closes
+memory admission for every source before publishing external content. Loaded
+actor snapshots retain ephemeral ancestors; the index retains unloaded durable
+ancestors. Traversal passes through ephemeral sessions to reach durable
+ancestors, and missing identities or cycles remain errors. Wholly ephemeral
+chains need no persistent exclusion.
+
+The foreground records fsynced `ExternalContextUsed` facts in ordinary canonical
+session history. Optional source-ledger, memory-database and projection writes
+run in background reconciliation; failure of both exclusion databases does not
+reject local Web, MCP, Tool Search or hosted Web. While exclusion is pending,
+new extraction claims and commits are refused, inferred memory is withheld from
+recall and on-demand results, and explicit memory remains available.
+Reconciliation transfers the pending fence to the session ledger or the dedicated
+memory database. A committed exclusion survives projection refresh failure.
+
+Canonical marker retry ownership belongs to session persistence even when memory
+cannot initialize. A failed marker is retried before the next ordinary append;
+remaining ancestor markers are still attempted. When optional memory is absent,
+a failed marker also schedules the available session-ledger fallback. Ordinary
+session history remains the durable recovery authority when both optional
+exclusion databases reject writes.
+
+Startup withholds inferred memory and extraction until background recovery has
+read canonical source facts and restored their exclusions. Recovery captures a
+stable file prefix under the append lock and streams provenance outside that
+lock, skipping large message and tool payloads. A known source with a crash tail
+or unsupported history version is quarantined independently; if source identity
+cannot be established, inference remains closed until recovery succeeds. The
+next scan or reconciliation retries pending storage repair. Memory status reports
+`degraded` and the content-free `source_provenance_storage` class for observed
+storage failures during the runtime's lifetime. This isolation concerns optional
+memory storage; canonical conversation persistence retains its ordinary durability
+contract.
 Subagent use also excludes its durable parent chain. Failed and interrupted turns do not
 themselves taint a session; only completed turns contribute text. Merely
 offering hosted Web capability does not exclude a text-only session. The source

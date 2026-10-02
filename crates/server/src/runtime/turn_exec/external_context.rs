@@ -56,27 +56,12 @@ impl ServerRuntime {
         {
             return Ok(());
         }
-        // Fence the entire chain before publishing external content. Rollout
-        // facts mirror this authority; a failed mirror must not fail a tool.
-        let db = std::sync::Arc::clone(&self.deps.db);
-        let ledger_sources = sources.clone();
-        let ledger = tokio::task::spawn_blocking(move || {
-            db.record_external_context_sources(&ledger_sources)
-        })
-        .await;
-        if !matches!(ledger, Ok(Ok(()))) {
-            let Some(memory) = &self.memory else {
-                return Err("external-context source exclusion could not be persisted".into());
-            };
-            memory.note_source_provenance_storage_failure();
-            let memory = std::sync::Arc::clone(memory);
-            // The dedicated memory database also provides a durable fence,
-            // including for already claimed jobs and existing inferred entries.
-            tokio::task::spawn_blocking(move || memory.fence_external_context_sources(&sources))
-                .await
-                .map_err(|_| "external-context source exclusion could not be persisted")?
-                .map_err(|_| "external-context source exclusion could not be persisted")?;
+        // Close memory admission immediately. Optional database writes and
+        // projection repair run in the background, never on the tool path.
+        if let Some(memory) = &self.memory {
+            memory.begin_external_context_sources(&sources);
         }
+        let mut marker_failed = false;
         for (source_id, path) in records {
             if let Some(path) = path {
                 let store = self.rollout_store.clone();
@@ -85,17 +70,27 @@ impl ServerRuntime {
                 })
                 .await;
                 if !matches!(marker, Ok(Ok(()))) {
+                    marker_failed = true;
                     if let Some(memory) = &self.memory {
                         memory.note_source_provenance_storage_failure();
                     }
                     tracing::warn!(
-                        "external-context rollout marker unavailable; source remains excluded"
+                        "external-context rollout marker unavailable; memory reconciliation required"
                     );
                 }
             }
         }
         if let Some(memory) = &self.memory {
             memory.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
+        } else if marker_failed {
+            // Preserve the available ledger fallback even when the optional
+            // memory module failed initialization. It cannot block this tool.
+            let db = std::sync::Arc::clone(&self.deps.db);
+            let _ = std::thread::spawn(move || {
+                if db.record_external_context_sources(&sources).is_err() {
+                    tracing::warn!("external-context source ledger reconciliation required");
+                }
+            });
         }
         Ok(())
     }

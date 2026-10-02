@@ -382,6 +382,7 @@ impl ServerRuntime {
             match crate::memory::MemoryRuntime::open(server_home.join("memory"), memory_config) {
                 Ok(mut runtime) => {
                     runtime.attach_deletion_ledger(Arc::clone(&deps.db));
+                    runtime.attach_source_rollout_store(rollout_store.clone());
                     let runtime = Arc::new(runtime);
                     runtime.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
                     Some(runtime)

@@ -83,6 +83,142 @@ fn pending_deletion_fences_new_claim() {
     assert_eq!(runtime.claim_source(&source, Utc::now()).unwrap(), None);
 }
 
+/// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: volatile exclusion intent blocks new claims and an already running extraction before either database can persist the fence.
+#[test]
+fn volatile_external_intent_fences_claims_and_in_flight_extraction() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(&root.path().join("memory"));
+    let (mut source, candidate) = source();
+    let legacy_source = devo_protocol::SessionId::new();
+    source.session_id = SessionId::from_legacy_uuid(legacy_source.into());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime.begin_external_context_sources(&[legacy_source]);
+    let mut newer = source.clone();
+    newer.watermark = "source-2".into();
+    assert_eq!(runtime.claim_source(&newer, now).unwrap(), None);
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    let connection = runtime.connection.lock().unwrap();
+    let entries: i64 = connection
+        .query_row("SELECT COUNT(*) FROM memory_entries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(entries, 0);
+}
+
+/// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: pending volatile provenance hides inferred memory from list, recall and direct read without hiding explicit memory.
+#[tokio::test]
+async fn volatile_external_intent_fences_reads_and_recall() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(&root.path().join("memory"));
+    let (mut source, candidate) = source();
+    let legacy_source = devo_protocol::SessionId::new();
+    source.session_id = SessionId::from_legacy_uuid(legacy_source.into());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    let inferred = runtime
+        .list(ListMemoryRequest::default())
+        .unwrap()
+        .data
+        .remove(0);
+    let explicit = runtime
+        .remember(remember_request("Keep tabs for scripts"))
+        .unwrap();
+    runtime.begin_external_context_sources(&[legacy_source]);
+    assert_eq!(
+        runtime
+            .list(ListMemoryRequest::default())
+            .unwrap()
+            .data
+            .iter()
+            .map(|entry| entry.entry_id.clone())
+            .collect::<Vec<_>>(),
+        vec![explicit.entry_id.clone()]
+    );
+    assert!(matches!(
+        runtime.read(super::ReadMemoryRequest {
+            entry_id: inferred.entry_id,
+            workspace_root: root.path().to_path_buf(),
+        }),
+        Err(super::MemoryError::InvalidRequest(_))
+    ));
+    let recalled = runtime
+        .prepare_turn(PrepareMemoryRequest {
+            query: "tabs scripts".into(),
+            workspace_root: root.path().to_path_buf(),
+            session_recall: MemorySetting::On,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        recalled
+            .entries
+            .iter()
+            .map(|entry| entry.entry_id.clone())
+            .collect::<Vec<_>>(),
+        vec![explicit.entry_id]
+    );
+}
+
+/// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: startup closes inferred access before canonical replay, then preserves safe sources after repairing the recovered exclusion.
+#[test]
+fn startup_source_recovery_gates_inference_until_canonical_facts_are_replayed() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
+    let mut runtime = open_runtime(&root.path().join("memory"));
+    let now = Utc::now();
+    let (mut tainted, candidate) = source();
+    let legacy_tainted = devo_protocol::SessionId::new();
+    tainted.session_id = SessionId::from_legacy_uuid(legacy_tainted.into());
+    let claim = runtime.claim_source(&tainted, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &tainted, &[candidate], now)
+        .unwrap();
+    let (safe, mut candidate) = source();
+    candidate.key = "other preference".into();
+    candidate.body = "I prefer spaces".into();
+    let claim = runtime.claim_source(&safe, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &safe, &[candidate], now)
+        .unwrap();
+    let store =
+        crate::persistence::RolloutStore::new(root.path().to_path_buf(), /*event_log*/ None);
+    store
+        .mark_external_context_used_at(&root.path().join("sessions/source.jsonl"), legacy_tainted)
+        .unwrap();
+    runtime.attach_deletion_ledger(db);
+    runtime.attach_source_rollout_store(store);
+    assert!(
+        runtime
+            .list(ListMemoryRequest::default())
+            .unwrap()
+            .data
+            .is_empty()
+    );
+    let mut newer = safe.clone();
+    newer.watermark = "source-2".into();
+    assert_eq!(runtime.claim_source(&newer, now).unwrap(), None);
+    runtime.reconcile_source_intents();
+    assert_eq!(
+        runtime
+            .list_recallable(ListMemoryRequest::default())
+            .unwrap()
+            .data
+            .iter()
+            .map(|entry| entry.body.clone())
+            .collect::<Vec<_>>(),
+        vec!["I prefer spaces"]
+    );
+    assert!(runtime.claim_source(&newer, now).unwrap().is_some());
+}
+
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7.
 /// Verifies: forget selectors cannot bypass the pending-intent inferred read fence.
 #[test]
