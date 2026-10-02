@@ -234,6 +234,8 @@ mod tests {
         (store, record.rollout_path)
     }
 
+    /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+    /// Verifies: startup backfills delivery events through a final external marker without inventing or duplicating events.
     #[test]
     fn reconcile_backfills_rows_and_is_idempotent() {
         let dir = TempDir::new().expect("temp dir");
