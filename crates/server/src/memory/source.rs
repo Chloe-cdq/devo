@@ -54,6 +54,13 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     let Ok(text) = std::str::from_utf8(&bytes) else {
         return Ok(None);
     };
+    // Share format and uncertainty policy with canonical startup recovery.
+    // Reject external or damaged sources before building transcript messages.
+    if crate::persistence::read_source_exclusions(text.as_bytes())
+        .map_or(true, |excluded| !excluded.is_empty())
+    {
+        return Ok(None);
+    }
     let inverse = V2InverseProjector::new();
     let mut session: Option<devo_core::SessionRecord> = None;
     let mut turns = HashMap::<devo_protocol::TurnId, devo_core::TurnRecord>::new();

@@ -26,27 +26,35 @@ ancestors, and missing identities or cycles remain errors. Wholly ephemeral
 chains need no persistent exclusion.
 
 The foreground records fsynced `ExternalContextUsed` facts in ordinary canonical
-session history. Optional source-ledger, memory-database and projection writes
-run in background reconciliation; failure of both exclusion databases does not
-reject local Web, MCP, Tool Search or hosted Web. While exclusion is pending,
-new extraction claims and commits are refused, inferred memory is withheld from
+session history. These eventless facts do not synchronously update the delivery
+log; ordinary appends or startup backfill advance its watermark. Dedicated
+memory-database and projection writes run in background reconciliation; their
+failure does not reject local Web, MCP, Tool Search or hosted Web. While exclusion
+is pending, new extraction claims and commits are refused, inferred memory is withheld from
 recall and on-demand results, and explicit memory remains available.
-Reconciliation transfers the pending fence to the session ledger or the dedicated
-memory database. A committed exclusion survives projection refresh failure.
+Reconciliation transfers the pending fence only after the dedicated memory
+exclusion commits. An in-process cache retains the exclusion after transfer and
+reloads committed exclusions on restart. A committed exclusion survives
+projection refresh failure while status still reports the storage failure.
+New exclusions never write the primary session database. Startup imports all
+legacy exclusion rows, including reconciled receipts, through a separate
+read-only connection that does not hold the foreground database mutex.
 
 Canonical marker retry ownership belongs to session persistence even when memory
 cannot initialize. A failed marker is retried before the next ordinary append;
-remaining ancestor markers are still attempted. When optional memory is absent,
-a failed marker also schedules the available session-ledger fallback. Ordinary
-session history remains the durable recovery authority when both optional
-exclusion databases reject writes.
+remaining ancestor markers are still attempted. This retry ownership is shared
+across store clones and needs no primary-database fallback. Ordinary session
+history remains the durable recovery authority when optional exclusion storage
+rejects writes.
 
 Startup withholds inferred memory and extraction until background recovery has
 read canonical source facts and restored their exclusions. Recovery captures a
 stable file prefix under the append lock and streams provenance outside that
-lock, skipping large message and tool payloads. A known source with a crash tail
-or unsupported history version is quarantined independently; if source identity
-cannot be established, inference remains closed until recovery succeeds. The
+lock, skipping large message and tool payloads. Recovery and passive admission
+share one source-header decoder for Native and frozen legacy journals, including
+identities in legacy turn, item, and field records when a session header is absent.
+A known source with a crash tail or unsupported history version is quarantined
+independently; if source identity cannot be established, inference remains closed until recovery succeeds. The
 next scan or reconciliation retries pending storage repair. Memory status reports
 `degraded` and the content-free `source_provenance_storage` class for observed
 storage failures during the runtime's lifetime. This isolation concerns optional

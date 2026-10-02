@@ -90,6 +90,15 @@ fn external_context_fact_count(path: &std::path::Path) -> Result<usize> {
         .count())
 }
 
+fn durable_source_exclusion(root: &std::path::Path, source: SessionId) -> Result<bool> {
+    let connection = rusqlite::Connection::open(root.join("memory/memory.sqlite3"))?;
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM memory_excluded_sources WHERE source_session_id = ?1)",
+        [source.to_string()],
+        |row| row.get(0),
+    )?)
+}
+
 fn build_runtime_with_default_tools(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
@@ -147,19 +156,7 @@ async fn failed_external_marker_write_keeps_source_excluded() -> Result<()> {
         .as_ref()
         .context("memory runtime")?
         .reconcile_source_intents();
-    assert!(
-        runtime
-            .deps
-            .db
-            .pending_external_context_sources()?
-            .is_empty()
-    );
-    assert!(
-        runtime
-            .deps
-            .db
-            .has_external_context_source(&session_id.to_string())?
-    );
+    assert!(durable_source_exclusion(root.path(), session_id)?);
     Ok(())
 }
 
@@ -212,21 +209,15 @@ async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> 
     memory.reconcile_source_intents();
     assert_eq!(
         (
-            runtime
-                .deps
-                .db
-                .has_external_context_source(&child_id.to_string())?,
-            runtime
-                .deps
-                .db
-                .has_external_context_source(&parent_id.to_string())?,
-            runtime
-                .deps
-                .db
-                .has_external_context_source(&grandparent_id.to_string())?,
+            durable_source_exclusion(root.path(), child_id)?,
+            durable_source_exclusion(root.path(), parent_id)?,
+            durable_source_exclusion(root.path(), grandparent_id)?,
         ),
         (true, true, true)
     );
+    for source in [child_id, parent_id, grandparent_id] {
+        assert!(memory.scan_source_has_intent(&source.to_string()).await);
+    }
     Ok(())
 }
 

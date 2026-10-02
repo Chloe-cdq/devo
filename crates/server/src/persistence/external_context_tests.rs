@@ -46,7 +46,8 @@ fn failed_external_marker_is_retried_by_ordinary_append() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("session.jsonl");
     let session = devo_core::SessionId::new();
-    let store = RolloutStore::new(dir.path().to_path_buf(), /*event_log*/ None);
+    let db = std::sync::Arc::new(crate::db::Database::open(dir.path().join("devo.db")).unwrap());
+    let store = RolloutStore::new(dir.path().to_path_buf(), Some(std::sync::Arc::clone(&db)));
     std::fs::create_dir(&path).unwrap();
     assert!(store.mark_external_context_used_at(&path, session).is_err());
     std::fs::remove_dir(&path).unwrap();
@@ -59,6 +60,8 @@ fn failed_external_marker_is_retried_by_ordinary_append() {
     if matches!(v2.as_ref(), devo_core::RolloutLineV2::Internal {
         entry: InternalRecordV2::ExternalContextUsed, ..
     })));
+    assert_eq!(db.projection_watermark(&path).unwrap(), Some(1));
+    assert_eq!(db.event_log_len().unwrap(), 0);
 }
 
 /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
@@ -135,6 +138,65 @@ fn external_context_recovery_quarantines_unsupported_versions() {
         serde_json::to_writer(&mut file, &newer).unwrap();
         file.write_all(b"\n").unwrap();
         drop(file);
+        assert_eq!(
+            store.external_context_sources().unwrap(),
+            std::collections::HashSet::from([session])
+        );
+    }
+}
+
+/// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: a frozen legacy session header identifies a crash-tail source without closing recovery for unrelated sessions.
+#[test]
+fn legacy_crash_tail_is_quarantined_by_source_identity() {
+    use std::io::Write;
+    let root = TempDir::new().unwrap();
+    let store = RolloutStore::new(root.path().to_path_buf(), /*event_log*/ None);
+    let record = store.create_session_record(
+        devo_core::SessionId::new(),
+        chrono::Utc::now(),
+        root.path().to_path_buf(),
+        Vec::new(),
+        /*title*/ None,
+        /*model*/ None,
+        /*model_binding_id*/ None,
+        /*reasoning_effort_selection*/ None,
+        "test".into(),
+        /*parent_session_id*/ None,
+    );
+    std::fs::create_dir_all(record.rollout_path.parent().unwrap()).unwrap();
+    let mut file = std::fs::File::create(&record.rollout_path).unwrap();
+    serde_json::to_writer(
+        &mut file,
+        &devo_core::RolloutLine::SessionMeta(Box::new(devo_core::SessionMetaLine {
+            timestamp: chrono::Utc::now(),
+            session: record.clone(),
+        })),
+    )
+    .unwrap();
+    file.write_all(b"\n{\"v\":2,\"kind\":").unwrap();
+    drop(file);
+    assert_eq!(
+        store.external_context_sources().unwrap(),
+        std::collections::HashSet::from([record.id])
+    );
+}
+
+/// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: frozen legacy turn and item identities localize damaged histories even without a session header.
+#[test]
+fn legacy_nested_identity_is_quarantined_without_session_header() {
+    let fixture = include_str!("../../../core/tests/fixtures/rollout_v1/basic_session.jsonl");
+    let session = "00000000-0000-0000-0000-0000000000b1".parse().unwrap();
+    for row in fixture.lines().skip(1).take(2) {
+        let root = TempDir::new().unwrap();
+        let store = RolloutStore::new(root.path().to_path_buf(), /*event_log*/ None);
+        std::fs::create_dir(root.path().join("sessions")).unwrap();
+        std::fs::write(
+            root.path().join("sessions/legacy.jsonl"),
+            format!("{row}\n{{\"v\":2,\"kind\":"),
+        )
+        .unwrap();
         assert_eq!(
             store.external_context_sources().unwrap(),
             std::collections::HashSet::from([session])

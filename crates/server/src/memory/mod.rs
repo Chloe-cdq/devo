@@ -151,6 +151,7 @@ pub struct MemoryRuntime {
     source_rollout_store: Option<crate::persistence::RolloutStore>,
     source_recovery_pending: AtomicBool,
     pending_external_sources: Mutex<HashSet<SessionId>>,
+    excluded_external_sources: Mutex<HashSet<String>>,
 }
 
 #[derive(Default)]
@@ -199,6 +200,13 @@ impl MemoryRuntime {
         fs::create_dir_all(&memory_root)?;
         let connection = Connection::open(memory_root.join(MEMORY_DATABASE_FILENAME))?;
         schema::create_schema(&connection)?;
+        let excluded_external_sources = {
+            let mut statement =
+                connection.prepare("SELECT source_session_id FROM memory_excluded_sources")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<HashSet<_>, _>>()?
+        };
         let runtime = Self {
             config,
             memory_root,
@@ -209,6 +217,7 @@ impl MemoryRuntime {
             source_rollout_store: None,
             source_recovery_pending: AtomicBool::new(false),
             pending_external_sources: Mutex::new(HashSet::new()),
+            excluded_external_sources: Mutex::new(excluded_external_sources),
         };
         runtime.prune_expired(Utc::now())?;
         runtime.rebuild_projections()?;
@@ -235,10 +244,9 @@ impl MemoryRuntime {
         {
             return true;
         }
-        self.deletion_ledger.as_ref().is_some_and(|db| {
-            db.has_pending_memory_source_deletions().unwrap_or(true)
-                || db.has_pending_external_context_sources().unwrap_or(true)
-        })
+        self.deletion_ledger
+            .as_ref()
+            .is_some_and(|db| db.has_pending_memory_source_deletions().unwrap_or(true))
     }
 
     fn source_has_intent(&self, source: &str) -> bool {
@@ -252,11 +260,19 @@ impl MemoryRuntime {
         {
             return true;
         }
+        if self
+            .excluded_external_sources
+            .lock()
+            .map_or(true, |sources| sources.contains(source))
+        {
+            return true;
+        }
         self.deletion_ledger.as_ref().is_some_and(|db| {
-            db.has_memory_source_intent(source).unwrap_or_else(|error| {
-                tracing::warn!(%error, "failed to check memory source intent");
-                true
-            })
+            db.has_memory_source_deletion_intent(source)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "failed to check memory source intent");
+                    true
+                })
         })
     }
 

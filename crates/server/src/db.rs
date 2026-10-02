@@ -106,6 +106,7 @@ const CURRENT_SCHEMA_VERSION: u32 = 3;
 /// SQLite database for session metadata, token stats, and pending queues.
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
+    path: PathBuf,
 }
 
 impl Database {
@@ -115,6 +116,7 @@ impl Database {
             .with_context(|| format!("failed to open database at {}", db_path.display()))?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: db_path,
         };
         db.migrate()?;
         Ok(db)
@@ -1398,6 +1400,54 @@ mod tests {
         drop(held);
         scanning.join().unwrap();
         assert!(responsive);
+    }
+
+    /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+    /// Verifies: background external exclusion cannot occupy the connection needed by foreground session reads during primary write contention.
+    #[test]
+    fn source_reconciliation_does_not_block_foreground_database_reads() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let (db, root) = test_db();
+        let db = Arc::new(db);
+        let mut memory = crate::memory::MemoryRuntime::open(
+            root.path().join("memory"),
+            devo_core::MemoryConfig::default(),
+        )
+        .unwrap();
+        memory.attach_deletion_ledger(Arc::clone(&db));
+        memory.reconcile_source_intents();
+        let memory = Arc::new(memory);
+        let source = SessionId::new();
+        memory.begin_external_context_sources(&[source]);
+        let blocker = rusqlite::Connection::open(root.path().join("test.db")).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let repair = std::thread::spawn(move || {
+            memory.reconcile_source_intents();
+            done_tx.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while done_rx.try_recv().is_err() && db.conn.try_lock().is_ok() && Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        let (read_tx, read_rx) = mpsc::channel();
+        let reading = {
+            let db = Arc::clone(&db);
+            std::thread::spawn(move || {
+                read_tx.send(db.get_session(&source)).unwrap();
+            })
+        };
+        let foreground = read_rx.recv_timeout(Duration::from_millis(500));
+        blocker.execute_batch("ROLLBACK").unwrap();
+        repair.join().unwrap();
+        reading.join().unwrap();
+        assert!(
+            foreground.is_ok(),
+            "background source repair held the foreground database connection"
+        );
+        assert_eq!(foreground.unwrap().unwrap(), None);
     }
 
     #[test]

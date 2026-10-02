@@ -25,10 +25,16 @@ impl MemoryRuntime {
 
     pub(super) fn reconcile_external_context_sources(&self) {
         if self.source_recovery_pending.load(Ordering::Acquire) {
-            let recovered = self.source_rollout_store.as_ref().map_or_else(
-                || Ok(Default::default()),
-                crate::persistence::RolloutStore::external_context_sources,
-            );
+            let recovered = (|| -> anyhow::Result<std::collections::HashSet<SessionId>> {
+                let mut sources = self.source_rollout_store.as_ref().map_or_else(
+                    || Ok(Default::default()),
+                    crate::persistence::RolloutStore::external_context_sources,
+                )?;
+                if let Some(ledger) = &self.deletion_ledger {
+                    sources.extend(ledger.external_context_sources_for_recovery()?);
+                }
+                Ok(sources)
+            })();
             match recovered {
                 Ok(sources) => {
                     self.begin_external_context_sources(&sources.into_iter().collect::<Vec<_>>());
@@ -50,17 +56,9 @@ impl MemoryRuntime {
         if sources.is_empty() {
             return;
         }
-        let ledger_recorded = self
-            .deletion_ledger
-            .as_ref()
-            .is_some_and(|db| db.record_external_context_sources(&sources).is_ok());
-        if !ledger_recorded {
-            self.note_source_provenance_storage_failure();
-        }
-        // A durable ledger is enough to transfer ownership of the pending
-        // fence; existing source-intent reads stay closed until reconciliation.
-        let fenced = ledger_recorded || self.fence_external_context_sources(&sources).is_ok();
-        if fenced {
+        // Transfer ownership only after the dedicated memory exclusion commits.
+        // The primary session database is a read-only legacy import, not a writer.
+        if self.fence_external_context_sources(&sources).is_ok() {
             let mut pending = self
                 .pending_external_sources
                 .lock()

@@ -237,7 +237,19 @@ mod tests {
     #[test]
     fn reconcile_backfills_rows_and_is_idempotent() {
         let dir = TempDir::new().expect("temp dir");
-        let (store, _path) = write_session_file(dir.path());
+        let (store, path) = write_session_file(dir.path());
+        let journal = std::fs::read_to_string(&path).expect("read canonical history");
+        let ParsedRolloutLine::V2(line) =
+            parse_rollout_line(journal.lines().next().unwrap()).unwrap()
+        else {
+            panic!("expected native session metadata");
+        };
+        let RolloutLineV2::SessionMeta { session, .. } = line.as_ref() else {
+            panic!("expected session metadata");
+        };
+        store
+            .mark_external_context_used_at(&path, session.id.to_string().parse().unwrap())
+            .expect("canonical marker");
         let db = Database::open(dir.path().join("devo.db")).expect("open db");
 
         let stats = reconcile_event_log(&store, &db).expect("first reconcile");
@@ -245,6 +257,10 @@ mod tests {
         assert_eq!(stats.files_damaged, 0);
         assert_eq!(stats.rows_inserted, 4);
         assert_eq!(db.event_log_len().expect("count"), 4);
+        assert_eq!(
+            db.projection_watermark(&path).expect("marker watermark"),
+            Some(3)
+        );
 
         // Re-running is a no-op (watermark + primary-key idempotency).
         let stats = reconcile_event_log(&store, &db).expect("second reconcile");

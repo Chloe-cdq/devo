@@ -61,7 +61,6 @@ impl ServerRuntime {
         if let Some(memory) = &self.memory {
             memory.begin_external_context_sources(&sources);
         }
-        let mut marker_failed = false;
         for (source_id, path) in records {
             if let Some(path) = path {
                 let store = self.rollout_store.clone();
@@ -70,7 +69,6 @@ impl ServerRuntime {
                 })
                 .await;
                 if !matches!(marker, Ok(Ok(()))) {
-                    marker_failed = true;
                     if let Some(memory) = &self.memory {
                         memory.note_source_provenance_storage_failure();
                     }
@@ -82,15 +80,6 @@ impl ServerRuntime {
         }
         if let Some(memory) = &self.memory {
             memory.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
-        } else if marker_failed {
-            // Preserve the available ledger fallback even when the optional
-            // memory module failed initialization. It cannot block this tool.
-            let db = std::sync::Arc::clone(&self.deps.db);
-            let _ = std::thread::spawn(move || {
-                if db.record_external_context_sources(&sources).is_err() {
-                    tracing::warn!("external-context source ledger reconciliation required");
-                }
-            });
         }
         Ok(())
     }

@@ -91,23 +91,30 @@ async fn hosted_web_survives_source_store_failure(failure: SourceStoreFailure) -
     else {
         panic!("expected memory status");
     };
-    assert_eq!(status.storage_health, "degraded");
-    assert!(
+    let legacy_writes_only = matches!(failure, SourceStoreFailure::IndexLedger);
+    assert_eq!(
+        status.storage_health,
+        if legacy_writes_only {
+            "healthy"
+        } else {
+            "degraded"
+        }
+    );
+    assert_eq!(
         status
             .error_classes
             .iter()
-            .any(|class| class == "source_provenance_storage")
+            .any(|class| class == "source_provenance_storage"),
+        !legacy_writes_only
     );
     runtime.shutdown().await;
     drop(runtime);
 
     // Inspect durable exclusion after the original runtime and its actors stop.
-    // A projection marker failure must not erase the authoritative ledger;
-    // a ledger failure must leave the memory database's source exclusion intact.
+    // New exclusions belong to memory.sqlite3; rejected legacy writes cannot affect them.
     match failure {
         SourceStoreFailure::RolloutMarker => {
-            let db = crate::db::Database::open(root.path().join("connection.db"))?;
-            assert!(db.has_external_context_source(&parent.to_string())?);
+            assert!(durable_source_exclusion(root.path(), parent)?);
         }
         SourceStoreFailure::IndexLedger | SourceStoreFailure::IndexLedgerAndProjection => {
             let memory = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
@@ -169,14 +176,14 @@ async fn hosted_web_survives_rollout_marker_failure() -> Result<()> {
 }
 
 /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
-/// Verifies: a source-ledger write failure falls back to durable memory exclusion without failing Web.
+/// Verifies: rejected legacy ledger writes are never attempted and independent exclusion keeps Web healthy.
 #[tokio::test]
 async fn hosted_web_survives_index_ledger_failure() -> Result<()> {
     hosted_web_survives_source_store_failure(SourceStoreFailure::IndexLedger).await
 }
 
 /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
-/// Verifies: committed fallback exclusion survives projection failure and keeps old inferred content out of search after restart.
+/// Verifies: committed independent exclusion survives projection failure and keeps old inferred content out of search after restart.
 #[tokio::test]
 async fn hosted_web_survives_committed_exclusion_projection_failure() -> Result<()> {
     hosted_web_survives_source_store_failure(SourceStoreFailure::IndexLedgerAndProjection).await
@@ -384,5 +391,43 @@ async fn unavailable_memory_retries_failed_ancestor_marker_before_restart() -> R
     memory.reconcile_source_intents();
     assert!(memory.scan_source_has_intent(&parent.to_string()).await);
     restarted.shutdown().await;
+    Ok(())
+}
+
+/// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: fsynced external provenance does not wait for the primary database's projection watermark write.
+#[tokio::test]
+async fn external_marker_does_not_wait_for_primary_database_writer() -> Result<()> {
+    let root = TempDir::new()?;
+    let runtime = build_runtime(root.path());
+    let connection = initialized_connection(&runtime).await;
+    let session = start_durable_session(&runtime, connection, root.path()).await?;
+    let record = runtime
+        .session(session)
+        .await
+        .context("session")?
+        .record()
+        .await
+        .flatten()
+        .context("record")?;
+    let blocker = rusqlite::Connection::open(root.path().join("connection.db"))?;
+    blocker.execute_batch("BEGIN IMMEDIATE")?;
+    let marked = tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.mark_external_context_used(
+            Some(record.rollout_path.clone()),
+            session,
+            /*parent_session_id*/ None,
+        ),
+    )
+    .await;
+    blocker.execute_batch("ROLLBACK")?;
+    assert!(
+        marked.is_ok(),
+        "canonical provenance waited for optional database projection"
+    );
+    marked?.map_err(anyhow::Error::msg)?;
+    assert_eq!(external_context_fact_count(&record.rollout_path)?, 1);
+    runtime.shutdown().await;
     Ok(())
 }

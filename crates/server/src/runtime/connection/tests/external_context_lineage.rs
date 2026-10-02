@@ -152,12 +152,7 @@ async fn tool_search_through_ephemeral_parent(root_state: RootState) -> Result<(
         .as_ref()
         .context("memory")?
         .reconcile_source_intents();
-    assert!(
-        runtime
-            .deps
-            .db
-            .has_external_context_source(&parent.to_string())?
-    );
+    assert!(durable_source_exclusion(root.path(), parent)?);
     runtime.shutdown().await;
     Ok(())
 }

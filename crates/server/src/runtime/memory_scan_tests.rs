@@ -152,35 +152,7 @@ fn setup(
         quota: std::sync::Mutex::new(Some(100)),
         failure: std::sync::Mutex::new(None),
     });
-    let sdk: Arc<dyn ModelProviderSDK> = provider.clone();
-    let runtime = ServerRuntime::new(
-        root.path().into(),
-        ServerRuntimeDependencies::new(
-            Arc::clone(&sdk),
-            Arc::new(SingleProviderRouter::new(sdk)),
-            Arc::new(ToolRegistry::new()),
-            crate::empty_mcp_manager(),
-            "test-fast".into(),
-            Arc::new(PresetModelCatalog::new(vec![Model {
-                slug: "test-fast".into(),
-                display_name: "test-fast".into(),
-                ..Model::default()
-            }])),
-            Box::new(FileSystemSkillCatalog::new(SkillsConfig {
-                bundled: Some(BundledSkillsConfig { enabled: false }),
-                ..SkillsConfig::default()
-            })),
-            AgentsMdConfig::default(),
-            Arc::new(crate::db::Database::open(root.path().join("devo.db"))?),
-            Arc::new(std::sync::Mutex::new(AppConfigStore::load(
-                root.path().into(),
-                /*workspace_root*/ None,
-            )?)),
-        ),
-    );
-    runtime
-        .rollout_store
-        .index_rollout_metadata(&runtime.deps.db)?;
+    let runtime = open_scan_runtime(root.path(), Arc::clone(&provider))?;
     assert_eq!(runtime.deps.db.list_root_sessions()?.len(), sources);
     Ok((root, runtime, provider))
 }
@@ -286,6 +258,42 @@ impl crate::memory::scan::SourceActivity for IdleSources {
     async fn is_active(&self, _session_id: SessionId) -> bool {
         false
     }
+}
+
+fn open_scan_runtime(
+    root: &std::path::Path,
+    provider: Arc<BlockingExtractor>,
+) -> Result<Arc<ServerRuntime>> {
+    let sdk: Arc<dyn ModelProviderSDK> = provider.clone();
+    let runtime = ServerRuntime::new(
+        root.into(),
+        ServerRuntimeDependencies::new(
+            Arc::clone(&sdk),
+            Arc::new(SingleProviderRouter::new(sdk)),
+            Arc::new(ToolRegistry::new()),
+            crate::empty_mcp_manager(),
+            "test-fast".into(),
+            Arc::new(PresetModelCatalog::new(vec![Model {
+                slug: "test-fast".into(),
+                display_name: "test-fast".into(),
+                ..Model::default()
+            }])),
+            Box::new(FileSystemSkillCatalog::new(SkillsConfig {
+                bundled: Some(BundledSkillsConfig { enabled: false }),
+                ..SkillsConfig::default()
+            })),
+            AgentsMdConfig::default(),
+            Arc::new(crate::db::Database::open(root.join("devo.db"))?),
+            Arc::new(std::sync::Mutex::new(AppConfigStore::load(
+                root.into(),
+                /*workspace_root*/ None,
+            )?)),
+        ),
+    );
+    runtime
+        .rollout_store
+        .index_rollout_metadata(&runtime.deps.db)?;
+    Ok(runtime)
 }
 
 async fn scan(runtime: &Arc<ServerRuntime>, root: &std::path::Path) -> Result<()> {
@@ -497,7 +505,7 @@ async fn source_delete_survives_memory_storage_error() -> Result<()> {
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-7.
-/// Verifies: the durable external-context ledger excludes a source even without a rollout marker.
+/// Verifies: startup imports legacy external-context exclusions even without a rollout marker.
 #[tokio::test]
 async fn external_context_ledger_blocks_scan_without_rollout_marker() -> Result<()> {
     let (root, runtime, provider) = setup(/*sources*/ 1, /*permits*/ 1)?;
@@ -506,6 +514,10 @@ async fn external_context_ledger_blocks_scan_without_rollout_marker() -> Result<
         .deps
         .db
         .record_external_context_sources(&[source_id])?;
+
+    runtime.shutdown().await;
+    drop(runtime);
+    let runtime = open_scan_runtime(root.path(), Arc::clone(&provider))?;
 
     scan(&runtime, root.path()).await?;
 

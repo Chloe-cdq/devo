@@ -2,36 +2,12 @@ use std::collections::HashSet;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use devo_core::{InternalRecordV2, RolloutLineV2, SessionId};
 use devo_protocol::native::ids::SessionId as NativeSessionId;
-use serde::Deserialize;
 
 use super::{RolloutStore, WritePathState};
-
-// Read only identity and provenance, streaming past message/tool payloads.
-// Full history validation remains the passive source reader's responsibility.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProvenanceRow {
-    v: Option<u32>,
-    kind: Option<String>,
-    session_id: Option<String>,
-    session: Option<ProvenanceSession>,
-    entry: Option<ProvenanceEntry>,
-}
-
-#[derive(Deserialize)]
-struct ProvenanceSession {
-    id: String,
-}
-
-#[derive(Deserialize)]
-struct ProvenanceEntry {
-    #[serde(rename = "type")]
-    kind: String,
-}
 
 impl RolloutStore {
     /// Recover canonical source facts in the background. Capture a committed
@@ -44,75 +20,9 @@ impl RolloutStore {
                 let length = file.metadata()?.len();
                 Ok((file, length))
             })?;
-            let reader = BufReader::new(file.take(length));
-            let rows = serde_json::Deserializer::from_reader(reader).into_iter::<ProvenanceRow>();
-            let mut known_sources = HashSet::new();
-            for row in rows {
-                let Ok(row) = row else {
-                    // A damaged/unfinished row makes this history uncertain,
-                    // without preventing recovery of unrelated sessions.
-                    anyhow::ensure!(!known_sources.is_empty(), "rollout provenance unavailable");
-                    sources.extend(known_sources);
-                    break;
-                };
-                let identity = row
-                    .session_id
-                    .as_deref()
-                    .or_else(|| row.session.as_ref().map(|session| session.id.as_str()));
-                if let Some(identity) = identity {
-                    known_sources.insert(identity.parse::<SessionId>()?);
-                }
-                let supported = match (row.v, row.kind.as_deref()) {
-                    (None, None) => true, // Frozen legacy format has neither v nor kind.
-                    (Some(2), Some("internal")) => matches!(
-                        row.entry.as_ref().map(|entry| entry.kind.as_str()),
-                        Some(
-                            "execution"
-                                | "entry"
-                                | "sessionContext"
-                                | "messageEdit"
-                                | "turnSuperseded"
-                                | "goalState"
-                                | "usageRecord"
-                                | "externalContextUsed"
-                                | "sessionSettings"
-                                | "turnApprovalCheckpoint"
-                        )
-                    ),
-                    (
-                        Some(2),
-                        Some(
-                            "sessionMeta"
-                            | "turn"
-                            | "item"
-                            | "sessionTitleUpdated"
-                            | "compactionSnapshot"
-                            | "sessionRollback"
-                            | "workspaceCheckpoint"
-                            | "workspaceChange"
-                            | "workspaceRestoreStarted"
-                            | "workspaceRestoreCompleted",
-                        ),
-                    ) => true,
-                    (Some(_), _) | (None, Some(_)) => false,
-                };
-                if !supported {
-                    anyhow::ensure!(!known_sources.is_empty(), "rollout provenance unavailable");
-                    sources.extend(known_sources);
-                    break;
-                }
-                if row.v == Some(2)
-                    && row.kind.as_deref() == Some("internal")
-                    && row
-                        .entry
-                        .as_ref()
-                        .is_some_and(|entry| entry.kind == "externalContextUsed")
-                {
-                    let identity = row
-                        .session_id
-                        .context("rollout source identity unavailable")?;
-                    sources.insert(identity.parse()?);
-                }
+            let excluded = super::read_source_exclusions(BufReader::new(file.take(length)))?;
+            for source in excluded {
+                sources.insert(source.parse()?);
             }
         }
         Ok(sources)

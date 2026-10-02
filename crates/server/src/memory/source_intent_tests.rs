@@ -520,10 +520,11 @@ fn deletion_intent_does_not_wait_for_blocked_memory_commit() {
 /// Verifies: on-demand reads obey pending source intents without hiding explicit memory bodies.
 #[tokio::test]
 async fn pending_source_intents_fence_on_demand_reads() {
-    for record_intent in [
-        crate::db::Database::record_memory_source_deletions,
-        crate::db::Database::record_external_context_sources,
-    ] {
+    enum Intent {
+        Deletion,
+        External,
+    }
+    for intent in [Intent::Deletion, Intent::External] {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
         let mut runtime = open_runtime(&root.path().join("memory"));
@@ -562,7 +563,10 @@ async fn pending_source_intents_fence_on_demand_reads() {
         let mut request = remember_request("Keep keyboard shortcuts");
         request.source.session_id = source_id;
         let explicit = runtime.remember(request).unwrap();
-        record_intent(&db, &[source_id]).unwrap();
+        match intent {
+            Intent::Deletion => db.record_memory_source_deletions(&[source_id]).unwrap(),
+            Intent::External => runtime.begin_external_context_sources(&[source_id]),
+        }
 
         let result = runtime
             .execute_command(MemoryCommand::Read(inferred_request))
@@ -647,4 +651,44 @@ fn search_preserves_validation_and_filters_during_source_cleanup() {
             Err(super::MemoryError::InvalidRequest(_))
         ));
     }
+}
+
+/// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
+/// Verifies: startup imports legacy external exclusions even when their ledger receipt was already reconciled, without new primary writes.
+#[test]
+fn startup_imports_reconciled_legacy_exclusion_without_primary_writes() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
+    let mut runtime = open_runtime(&root.path().join("memory"));
+    let (mut source, candidate) = source();
+    let legacy_source = devo_protocol::SessionId::new();
+    source.session_id = SessionId::from_legacy_uuid(legacy_source.into());
+    let now = Utc::now();
+    let claim = runtime.claim_source(&source, now).unwrap().unwrap();
+    runtime
+        .commit_extraction(&claim, &source, &[candidate], now)
+        .unwrap();
+    db.record_external_context_sources(&[legacy_source])
+        .unwrap();
+    db.finish_external_context_sources(&[legacy_source])
+        .unwrap();
+    let primary = rusqlite::Connection::open(root.path().join("devo.db")).unwrap();
+    primary.execute_batch("CREATE TRIGGER no_exclusion_insert BEFORE INSERT ON memory_external_context_sources BEGIN SELECT RAISE(FAIL, 'legacy ledger read only'); END;
+        CREATE TRIGGER no_exclusion_update BEFORE UPDATE ON memory_external_context_sources BEGIN SELECT RAISE(FAIL, 'legacy ledger read only'); END;").unwrap();
+    runtime.attach_deletion_ledger(db);
+    runtime.attach_source_rollout_store(crate::persistence::RolloutStore::new(
+        root.path().to_path_buf(),
+        /*event_log*/ None,
+    ));
+    runtime.reconcile_source_intents();
+    assert!(
+        runtime
+            .list_recallable(ListMemoryRequest::default())
+            .unwrap()
+            .data
+            .is_empty()
+    );
+    let mut newer = source;
+    newer.watermark = "after-legacy-import".into();
+    assert_eq!(runtime.claim_source(&newer, now).unwrap(), None);
 }

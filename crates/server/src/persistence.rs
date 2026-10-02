@@ -3,6 +3,8 @@ mod external_context;
 #[path = "persistence/external_context_tests.rs"]
 mod external_context_tests;
 mod memory_settings;
+mod source_provenance;
+pub(crate) use source_provenance::read_source_exclusions;
 mod write_path;
 #[cfg(test)]
 pub(crate) use write_path::pause_rollout_append;
@@ -917,7 +919,21 @@ impl RolloutStore {
         // fsynced facts. Best effort — a failure here is backfilled by the
         // startup reconciler, so a crash may delay an event but never lose
         // or duplicate it.
-        if let Some(db) = &self.event_log
+        // External source facts produce no delivery event. Leave their watermark
+        // for ordinary writes or startup backfill; optional projection cannot
+        // delay the marker, including retries before an ordinary append.
+        let external_markers_only = !v2_lines.is_empty()
+            && v2_lines.iter().all(|line| {
+                matches!(
+                    line,
+                    RolloutLineV2::Internal {
+                        entry: devo_core::InternalRecordV2::ExternalContextUsed,
+                        ..
+                    }
+                )
+            });
+        if !external_markers_only
+            && let Some(db) = &self.event_log
             && let Err(error) =
                 project_events_into_log(db, rollout_path, first_line_index, v2_lines)
         {

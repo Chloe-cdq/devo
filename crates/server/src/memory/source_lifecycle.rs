@@ -9,8 +9,7 @@ use super::stored_values::parse_scope;
 use super::{MemoryError, MemoryRuntime};
 
 impl MemoryRuntime {
-    /// Fence external sources through memory storage when the session ledger
-    /// is unavailable. A post-commit projection failure cannot revoke the fence.
+    /// A post-commit projection failure cannot revoke the durable exclusion.
     pub(crate) fn fence_external_context_sources(
         &self,
         sources: &[SessionId],
@@ -18,6 +17,7 @@ impl MemoryRuntime {
         let Err(error) = self.exclude_sources(sources, Utc::now()) else {
             return Ok(());
         };
+        self.note_source_provenance_storage_failure();
         let connection = self
             .connection
             .lock()
@@ -64,17 +64,6 @@ impl MemoryRuntime {
             }
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "failed to read memory source deletion ledger"),
-        }
-        match db.pending_external_context_sources() {
-            Ok(pending) if !pending.is_empty() => {
-                if let Err(error) = self.exclude_sources(&pending, Utc::now()) {
-                    tracing::warn!(%error, "external-context source exclusion remains pending");
-                } else if let Err(error) = db.finish_external_context_sources(&pending) {
-                    tracing::warn!(%error, "failed to finish external-context source ledger");
-                }
-            }
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "failed to read external-context source ledger"),
         }
     }
 
@@ -166,6 +155,10 @@ impl MemoryRuntime {
             proposal_reconciliation::reconcile_entry_after_source_change(&transaction, &entry_id)?;
         }
         transaction.commit()?;
+        self.excluded_external_sources
+            .lock()
+            .map_err(|_| MemoryError::LockPoisoned)?
+            .extend(sources.iter().map(ToString::to_string));
         for (scope_type, scope_id) in scopes {
             self.refresh_projection(&connection, parse_scope(&scope_type)?, &scope_id)?;
         }
