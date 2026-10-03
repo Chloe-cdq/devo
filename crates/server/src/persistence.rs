@@ -4,7 +4,7 @@ mod external_context;
 mod external_context_tests;
 mod memory_settings;
 mod source_provenance;
-pub(crate) use source_provenance::read_source_exclusions;
+pub(crate) use source_provenance::{read_source_eligibility, read_source_exclusions};
 mod write_path;
 #[cfg(test)]
 pub(crate) use write_path::pause_rollout_append;

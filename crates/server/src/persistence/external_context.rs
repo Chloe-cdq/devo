@@ -28,6 +28,17 @@ impl RolloutStore {
         Ok(sources)
     }
 
+    /// Read the monotonic fact under the append lock, including any pending
+    /// retry. A fork cannot publish history while source durability is unknown.
+    pub(crate) fn external_context_used_at(&self, rollout_path: &Path) -> Result<bool> {
+        let (file, length) = self.with_locked_write_state(rollout_path, |_state| {
+            let file = std::fs::File::open(rollout_path)?;
+            let length = file.metadata()?.len();
+            Ok((file, length))
+        })?;
+        super::source_provenance::read_external_context_used(BufReader::new(file.take(length)))
+    }
+
     /// Intent belongs to ordinary session persistence even when optional
     /// memory cannot initialize. A failed append is retried by the next write.
     pub(crate) fn mark_external_context_used_at(
@@ -58,6 +69,13 @@ impl RolloutStore {
         let Some(source) = source else {
             return Ok(());
         };
+        if !state.external_context_used && rollout_path.exists() {
+            let file = std::fs::File::open(rollout_path)?;
+            let length = file.metadata()?.len();
+            state.external_context_used = super::source_provenance::read_external_context_used(
+                BufReader::new(file.take(length)),
+            )?;
+        }
         if !state.external_context_used {
             let line = RolloutLineV2::Internal {
                 v: 2,

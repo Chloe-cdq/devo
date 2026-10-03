@@ -4,6 +4,8 @@ use super::*;
 mod latency_tests;
 #[path = "memory_scan_model_tests.rs"]
 mod model_tests;
+#[path = "memory_source_eligibility_tests.rs"]
+mod source_eligibility_tests;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use devo_core::tools::ToolRegistry;
@@ -773,6 +775,7 @@ async fn scan_reports_missing_credentials_without_quota() -> Result<()> {
                     "retryingJobCount":0,"errorJobCount":1,
                     "lastSuccessfulScanAt":null,
                     "errorClasses":["credentials_unavailable"],
+                    "sourceExclusionReasons":[],
                 }
             })
         );

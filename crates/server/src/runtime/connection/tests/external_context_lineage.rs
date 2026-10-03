@@ -119,8 +119,13 @@ async fn tool_search_through_ephemeral_parent(root_state: RootState) -> Result<(
     )?;
     let provider = Arc::new(ToolSearchProvider {
         calls: std::sync::atomic::AtomicUsize::new(1),
+        tool_name: "ToolSearch",
     });
-    let runtime = build_runtime_with_default_tools(root.path(), provider.clone());
+    let runtime = build_runtime_with_tools(
+        root.path(),
+        provider.clone(),
+        Arc::new(devo_core::tools::create_default_tool_registry()),
+    );
     let (connection, mut notifications) = initialize_connection(&runtime).await?;
     let parent = start_durable_session(&runtime, connection, root.path()).await?;
     let record = runtime
