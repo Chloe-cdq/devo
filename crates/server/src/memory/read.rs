@@ -12,6 +12,7 @@ impl MemoryRuntime {
                 "memory read requires a stable entry ID".into(),
             ));
         }
+        self.expire_inferred((self.clock)())?;
         let pending_source_deletion = self.has_pending_source_deletions();
         let connection = self
             .connection

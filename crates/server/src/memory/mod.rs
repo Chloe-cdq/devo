@@ -5,6 +5,7 @@
 
 pub(crate) mod command_execution;
 mod command_types;
+mod competing_projection;
 mod entries;
 mod entry_identity;
 mod equivalence;
@@ -13,6 +14,9 @@ mod forget;
 mod identity;
 mod inferred;
 mod jobs;
+mod lifecycle;
+#[cfg(test)]
+mod lifecycle_tests;
 mod migration;
 mod projection;
 mod proposal_reconciliation;
@@ -73,7 +77,7 @@ pub use command_types::{
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "8";
+const MEMORY_SCHEMA_VERSION: &str = "9";
 const USER_SCOPE_ID: &str = "user";
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 100;
@@ -143,6 +147,7 @@ pub enum MemoryError {
 /// Server-owned runtime for General Persistent Memory.
 pub struct MemoryRuntime {
     config: MemoryConfig,
+    clock: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
     memory_root: PathBuf,
     connection: Mutex<Connection>,
     deletion_ledger: Option<Arc<crate::db::Database>>,
@@ -197,6 +202,15 @@ impl MemoryRuntime {
     /// Opens or creates the dedicated memory database and applies all
     /// idempotent schema migrations.
     pub fn open(memory_root: PathBuf, config: MemoryConfig) -> Result<Self, MemoryError> {
+        Self::open_with_clock(memory_root, config, Arc::new(Utc::now))
+    }
+
+    // All lifecycle decisions in an instance share this injectable time source.
+    fn open_with_clock(
+        memory_root: PathBuf,
+        config: MemoryConfig,
+        clock: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
+    ) -> Result<Self, MemoryError> {
         fs::create_dir_all(&memory_root)?;
         let connection = Connection::open(memory_root.join(MEMORY_DATABASE_FILENAME))?;
         schema::create_schema(&connection)?;
@@ -209,6 +223,7 @@ impl MemoryRuntime {
         };
         let runtime = Self {
             config,
+            clock,
             memory_root,
             connection: Mutex::new(connection),
             deletion_ledger: None,
@@ -219,7 +234,7 @@ impl MemoryRuntime {
             pending_external_sources: Mutex::new(HashSet::new()),
             excluded_external_sources: Mutex::new(excluded_external_sources),
         };
-        runtime.prune_expired(Utc::now())?;
+        runtime.prune_expired((runtime.clock)())?;
         runtime.rebuild_projections()?;
         Ok(runtime)
     }

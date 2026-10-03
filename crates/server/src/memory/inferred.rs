@@ -176,10 +176,33 @@ impl MemoryRuntime {
                     (None, "identity_collision")
                 }
                 super::proposal_relations::InferredAdmission::Existing(existing) => {
-                    transaction.execute(
-                        "UPDATE memory_entries SET updated_at = ?1 WHERE entry_id = ?2",
-                        rusqlite::params![timestamp, existing.entry_id],
-                    )?;
+                    if existing.origin
+                        == devo_protocol::native::rpc_memory::MemoryOrigin::InferredSession
+                    {
+                        transaction.execute(
+                            "UPDATE memory_entries SET updated_at = ?1,
+                                state = CASE WHEN state = 'stale' THEN 'active' ELSE state END
+                             WHERE entry_id = ?2",
+                            rusqlite::params![timestamp, existing.entry_id],
+                        )?;
+                        transaction.execute(
+                            "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
+                            [&existing.entry_id],
+                        )?;
+                        transaction.execute(
+                            "INSERT INTO memory_entries_fts(entry_id, normalized_key, body)
+                             SELECT entry_id, normalized_key, body FROM memory_entries
+                             WHERE entry_id = ?1 AND state IN ('active', 'restored')",
+                            [&existing.entry_id],
+                        )?;
+                        super::proposal_relations::bind_entry(
+                            &transaction,
+                            candidate.scope,
+                            &scope_id,
+                            &identity.canonical_key,
+                            &existing.entry_id,
+                        )?;
+                    }
                     (Some(existing.entry_id), "accepted")
                 }
                 super::proposal_relations::InferredAdmission::ExistingRetiredUncontested(

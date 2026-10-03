@@ -29,6 +29,7 @@ pub(super) fn bound_inferred_entries_for_group(
 pub(super) fn reconcile_entry_after_source_change(
     transaction: &Transaction<'_>,
     entry_id: &str,
+    expiry_cutoff: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), MemoryError> {
     let has_live_claim: bool = transaction.query_row(
         "SELECT EXISTS(
@@ -51,10 +52,12 @@ pub(super) fn reconcile_entry_after_source_change(
     )?;
     if !contested {
         transaction.execute(
-            "UPDATE memory_entries SET state = 'active'
+            "UPDATE memory_entries SET state = CASE
+               WHEN MAX(julianday(updated_at), COALESCE(julianday(last_recalled_at), julianday(updated_at)))
+                    <= julianday(?2) THEN 'stale' ELSE 'active' END
              WHERE entry_id = ?1 AND origin = 'inferred_session' AND state = 'conflicted'
                AND EXISTS(SELECT 1 FROM memory_evidence WHERE entry_id = ?1)",
-            [entry_id],
+            rusqlite::params![entry_id, expiry_cutoff.to_rfc3339()],
         )?;
         transaction.execute(
             "INSERT INTO memory_entries_fts(entry_id, normalized_key, body)

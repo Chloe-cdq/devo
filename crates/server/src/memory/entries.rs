@@ -109,7 +109,7 @@ impl MemoryRuntime {
             .kind
             .unwrap_or_else(|| classify_kind(&normalized_key));
         let scope_id = self.scope_id(request.scope, &request.source.workspace_root)?;
-        let now = Utc::now().to_rfc3339();
+        let now = (self.clock)().to_rfc3339();
         let identity_resolution_mode = match &mode {
             MemoryWriteMode::Explicit => IdentityResolutionMode::Explicit,
             #[cfg(test)]
@@ -235,14 +235,7 @@ impl MemoryRuntime {
             )?;
         }
         let entry_id = if let Some(existing_id) = existing_id {
-            if preserve_existing {
-                transaction.execute(
-                    "UPDATE memory_entries
-                     SET updated_at = ?1
-                     WHERE entry_id = ?2",
-                    rusqlite::params![now, existing_id],
-                )?;
-            } else {
+            if !preserve_existing {
                 transaction.execute(
                     "UPDATE memory_entries
                      SET kind = ?1, normalized_key = ?2, body = ?3, origin = ?4, state = ?5,
@@ -282,6 +275,13 @@ impl MemoryRuntime {
             entry_id
         };
         if origin == MemoryOrigin::ExplicitUser {
+            super::lifecycle::replace_competing_entries(
+                &transaction,
+                request.scope,
+                &scope_id,
+                &identity.canonical_key,
+                entry_id.as_str(),
+            )?;
             super::proposal_relations::bind_entry(
                 &transaction,
                 request.scope,
@@ -368,7 +368,8 @@ impl MemoryRuntime {
         scope_id: &str,
     ) -> Result<(), MemoryError> {
         let entries = load_scope_entries(connection, scope, scope_id)?;
-        let projection = render_projection(scope, &entries);
+        let mut projection = render_projection(scope, &entries);
+        super::competing_projection::append_claims(connection, scope, scope_id, &mut projection)?;
         let directory = match scope {
             MemoryScope::User => self.memory_root.join("user"),
             MemoryScope::Project => self.memory_root.join("projects").join(scope_id),

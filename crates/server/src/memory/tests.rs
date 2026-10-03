@@ -172,7 +172,6 @@ async fn structured_inferred_evidence_preserves_active_explicit_identity() {
         .expect("record structured inferred evidence")
         .expect("evidence-preserving inference");
     let expected = MemoryEntry {
-        updated_at: inferred.updated_at,
         provenance: vec![
             remembered.provenance[0].clone(),
             MemoryProvenance {
@@ -304,9 +303,7 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         .record_inferred(inferred_request("I prefer tabs!", inferred_observed_at))
         .expect("inferred duplicate")
         .expect("evidence-preserving inference");
-    let remembered_updated_at = remembered.updated_at;
     let expected = MemoryEntry {
-        updated_at: inferred.updated_at,
         provenance: vec![
             remembered.provenance[0].clone(),
             MemoryProvenance {
@@ -320,7 +317,6 @@ async fn inferred_memory_does_not_replace_explicit_content() {
         ..remembered
     };
     assert_eq!(inferred, expected);
-    assert!(inferred.updated_at > remembered_updated_at);
 
     let listed = match runtime
         .execute_command(MemoryCommand::List(super::ListMemoryRequest {
