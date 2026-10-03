@@ -49,12 +49,6 @@ impl ServerRuntime {
                     .map_err(|error| format!("memory source cleanup worker failed: {error}"))?
                 {
                     Ok(forgotten) => Some(forgotten),
-                    Err(crate::memory::MemoryError::SourceDeletionCommitted {
-                        forgotten, ..
-                    }) => {
-                        tracing::warn!("memory source projection refresh remains pending");
-                        Some(forgotten)
-                    }
                     Err(error) if related_memory == RelatedMemoryDeletion::Preserve => {
                         tracing::warn!(%error, "memory source deletion remains pending");
                         None
