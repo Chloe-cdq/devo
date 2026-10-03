@@ -112,6 +112,7 @@ fn deleting_cross_group_owned_claim_restores_surviving_inferred_entry() {
         .delete_sources(
             &[devo_protocol::SessionId::try_from(deleted.session_id.as_str()).unwrap()],
             Utc::now(),
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
         )
         .unwrap();
     let entries = runtime.list(ListMemoryRequest::default()).unwrap().data;

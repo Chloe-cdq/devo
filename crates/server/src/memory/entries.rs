@@ -141,6 +141,25 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.unchecked_transaction()?;
+        let source_id = request.source.session_id.to_string();
+        let pending_deletion = self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_memory_source_deletion_intent(&source_id)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "failed to check explicit memory source intent");
+                    true
+                })
+        });
+        if pending_deletion
+            || transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_deleted_sources WHERE source_session_id = ?1)",
+                [&source_id],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            return Err(MemoryError::InvalidRequest(
+                "memory source session is being deleted".into(),
+            ));
+        }
         let existing = match identity.resolve_and_merge_existing(
             &transaction,
             request.scope,

@@ -402,22 +402,18 @@ impl ServerRuntime {
                 );
             }
         };
-        let deleted_session_ids = match self.delete_session_tree(params.session_id).await {
-            Ok(deleted_session_ids) => deleted_session_ids,
-            Err(error) => {
-                return acp_error_response(
-                    request_id,
-                    AcpErrorCode::InternalError,
-                    format!("failed to delete session: {error}"),
-                );
-            }
-        };
-        if !deleted_session_ids.is_empty() {
-            self.broadcast_event(ServerEvent::SessionDeleted(SessionDeletedPayload {
-                session_id: params.session_id,
-                deleted_session_ids,
-            }))
-            .await;
+        if let Err(error) = self
+            .delete_session_tree(
+                params.session_id,
+                devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+            )
+            .await
+        {
+            return acp_error_response(
+                request_id,
+                AcpErrorCode::InternalError,
+                format!("failed to delete session: {error}"),
+            );
         }
         acp_success_response(request_id, AcpDeleteSessionResult::default())
     }

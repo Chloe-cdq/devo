@@ -12,7 +12,10 @@ async fn source_delete_does_not_wait_for_locked_memory_database() -> Result<()> 
 
     let deletion = tokio::time::timeout(
         Duration::from_secs(2),
-        runtime.delete_session_tree(source_id.clone()),
+        runtime.delete_session_tree(
+            source_id,
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        ),
     )
     .await;
     let pending = runtime.deps.db.pending_memory_source_deletions()?;

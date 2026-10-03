@@ -720,7 +720,13 @@ fn deleting_opposing_source_restores_surviving_inferred_claim() {
     assert_eq!(conflicted[0].state, MemoryState::Conflicted);
 
     let source_id = devo_protocol::SessionId::try_from(opposing.session_id.as_str()).unwrap();
-    runtime.delete_sources(&[source_id], Utc::now()).unwrap();
+    runtime
+        .delete_sources(
+            &[source_id],
+            Utc::now(),
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
 
     let surviving = runtime.list(ListMemoryRequest::default()).unwrap().data;
     assert_eq!(
@@ -794,7 +800,13 @@ fn second_runtime_deletes_opposing_source_without_stale_conflict() {
     );
     let source_id = devo_protocol::SessionId::try_from(opposing.session_id.as_str()).unwrap();
 
-    second.delete_sources(&[source_id], Utc::now()).unwrap();
+    second
+        .delete_sources(
+            &[source_id],
+            Utc::now(),
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
 
     let entries = first.list(ListMemoryRequest::default()).unwrap().data;
     assert_eq!(entries.len(), 1);

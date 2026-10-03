@@ -311,6 +311,8 @@ fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
         ),
         crate::memory::MemoryError::Directory(_)
         | crate::memory::MemoryError::Database(_)
+        | crate::memory::MemoryError::StorageBusy
+        | crate::memory::MemoryError::SourceDeletionCommitted { .. }
         | crate::memory::MemoryError::LockPoisoned
         | crate::memory::MemoryError::InvalidCount(_)
         | crate::memory::MemoryError::InvalidTimestamp(_)

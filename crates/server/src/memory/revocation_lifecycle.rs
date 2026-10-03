@@ -88,3 +88,45 @@ pub(super) fn canonicalize_revocation_identity(
     )?;
     Ok(())
 }
+
+/// Apply durable revocation, retirement and lexical removal in the caller's transaction.
+pub(super) fn revoke_entry(
+    transaction: &Transaction<'_>,
+    entry_id: &str,
+    scope_type: &str,
+    scope_id: &str,
+    normalized_key: &str,
+    now: &str,
+) -> Result<(), MemoryError> {
+    transaction.execute(
+        "INSERT INTO memory_revocations (
+                 revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+             ON CONFLICT(scope_type, scope_id, normalized_key) DO UPDATE SET
+                 revoked_at = excluded.revoked_at,
+                 restored_at = NULL",
+        rusqlite::params![
+            uuid::Uuid::now_v7().simple().to_string(),
+            scope_type,
+            scope_id,
+            normalized_key,
+            now,
+        ],
+    )?;
+    let updated = transaction.execute(
+        "UPDATE memory_entries
+             SET state = ?1, updated_at = ?2
+             WHERE entry_id = ?3 AND scope_type = ?4 AND scope_id = ?5",
+        rusqlite::params!["retired", now, entry_id, scope_type, scope_id,],
+    )?;
+    if updated != 1 {
+        return Err(MemoryError::InvalidRequest(
+            "memory entry not found".to_string(),
+        ));
+    }
+    transaction.execute(
+        "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
+        [entry_id],
+    )?;
+    Ok(())
+}

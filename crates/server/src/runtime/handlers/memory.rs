@@ -334,6 +334,8 @@ impl ServerRuntime {
             ),
             MemoryError::Directory(_)
             | MemoryError::Database(_)
+            | MemoryError::StorageBusy
+            | MemoryError::SourceDeletionCommitted { .. }
             | MemoryError::LockPoisoned
             | MemoryError::InvalidCount(_)
             | MemoryError::InvalidTimestamp(_)
