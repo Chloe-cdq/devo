@@ -206,6 +206,25 @@ pub struct MemoryReadEntry {
     pub source_summary: String,
 }
 
+/// Content-free reasons a passive source was excluded. No session identity,
+/// journal path, transcript text, or provider output is exposed.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySourceExclusionReason {
+    ExternalContextUsed,
+    Ephemeral,
+    NonRoot,
+    Automation,
+    ForkHistory,
+    NotPersisted,
+    SourceUnavailable,
+    InvalidHistory,
+    SourceFenced,
+    Active,
+}
+
 /// Safe, aggregate memory health information exposed to Native clients.
 ///
 /// Counts intentionally exclude row contents and error details. The server
@@ -227,4 +246,8 @@ pub struct MemoryStatus {
     pub last_successful_scan_at: Option<DateTime<Utc>>,
     /// Distinct redacted failure classifications for current error jobs.
     pub error_classes: Vec<String>,
+    /// Distinct source exclusions observed by this runtime, in enum order.
+    /// The bounded set is reset on restart and populated by subsequent scans.
+    #[serde(default)]
+    pub source_exclusion_reasons: Vec<MemorySourceExclusionReason>,
 }

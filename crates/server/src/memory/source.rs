@@ -1,7 +1,7 @@
 //! Bounded, fail-closed rollout input for passive memory extraction.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -17,7 +17,7 @@ use devo_protocol::native::session::{MemorySetting, SessionSource, SessionStatus
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
+pub(super) const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct ExtractableSource {
@@ -41,26 +41,29 @@ pub(crate) struct SourceMessage {
 /// Returns no source when history completeness or provenance cannot be proved.
 /// Parse errors are deliberately discarded: their text can contain source data.
 pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSource>> {
-    let file = std::fs::File::open(path)?;
+    let mut file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
         return Ok(None);
     }
+    // Every read, including pre-attempt and pre-commit rereads, skips payloads
+    // until the complete committed source prefix passes admission.
+    if crate::persistence::read_source_eligibility(BufReader::new(
+        file.by_ref().take(metadata.len()),
+    ))
+    .is_err()
+    {
+        return Ok(None);
+    }
+    file.rewind()?;
     let mut bytes = Vec::new();
-    file.take(MAX_SOURCE_BYTES + 1).read_to_end(&mut bytes)?;
+    file.take(metadata.len()).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_SOURCE_BYTES {
         return Ok(None);
     }
     let Ok(text) = std::str::from_utf8(&bytes) else {
         return Ok(None);
     };
-    // Share format and uncertainty policy with canonical startup recovery.
-    // Reject external or damaged sources before building transcript messages.
-    if crate::persistence::read_source_exclusions(text.as_bytes())
-        .map_or(true, |excluded| !excluded.is_empty())
-    {
-        return Ok(None);
-    }
     let inverse = V2InverseProjector::new();
     let mut session: Option<devo_core::SessionRecord> = None;
     let mut turns = HashMap::<devo_protocol::TurnId, devo_core::TurnRecord>::new();

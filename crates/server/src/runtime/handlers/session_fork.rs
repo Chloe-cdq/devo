@@ -120,6 +120,17 @@ impl ServerRuntime {
         )?;
 
         if let Some(source_record) = &source.record {
+            if self
+                .rollout_store
+                .external_context_used_at(&source_record.rollout_path)
+                .map_err(|error| format!("failed to read fork source provenance: {error}"))?
+            {
+                self.rollout_store
+                    .mark_external_context_used_at(&record.rollout_path, forked_id)
+                    .map_err(|error| {
+                        format!("failed to persist fork source provenance: {error}")
+                    })?;
+            }
             let kept_calls = forked_runtime
                 .persisted_turn_items
                 .iter()

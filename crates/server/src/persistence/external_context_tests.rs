@@ -203,3 +203,74 @@ fn legacy_nested_identity_is_quarantined_without_session_header() {
         );
     }
 }
+
+/// Trace: L2-DES-MEM-001 DD-7.
+/// Verifies: a fork's provenance query observes another store's committed fact.
+#[test]
+fn external_context_query_observes_another_store() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let session = devo_core::SessionId::new();
+    let store = RolloutStore::new(dir.path().to_path_buf(), /*event_log*/ None);
+    store
+        .append_goal_state(&path, session, /*goal*/ None)
+        .unwrap();
+    assert_eq!(store.external_context_used_at(&path).unwrap(), false);
+    let other = RolloutStore::new(dir.path().to_path_buf(), /*event_log*/ None);
+    other.mark_external_context_used_at(&path, session).unwrap();
+    assert_eq!(store.external_context_used_at(&path).unwrap(), true);
+}
+
+/// Trace: L2-DES-MEM-001 DD-7/DD-13.
+/// Verifies: damaged eligibility fields preserve identity and quarantine only that source during recovery.
+#[test]
+fn external_context_recovery_isolates_malformed_session_fields() {
+    for damage in [
+        serde_json::json!({"source": {}}),
+        serde_json::json!({"ephemeral": "true"}),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let healthy = devo_core::SessionId::new();
+        let damaged = devo_core::SessionId::new();
+        let store = RolloutStore::new(dir.path().to_path_buf(), /*event_log*/ None);
+        store
+            .mark_external_context_used_at(&dir.path().join("sessions/healthy.jsonl"), healthy)
+            .unwrap();
+        let mut session = damage;
+        session["id"] = serde_json::json!(damaged);
+        std::fs::write(
+            dir.path().join("sessions/damaged.jsonl"),
+            serde_json::json!({
+                "v": 2, "kind": "sessionMeta", "session": session
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.external_context_sources().unwrap(),
+            std::collections::HashSet::from([healthy, damaged])
+        );
+    }
+}
+
+/// Trace: L2-DES-MEM-001 DD-7.
+/// Verifies: stale false write state cannot duplicate another store's monotonic fact.
+#[test]
+fn external_context_marking_observes_another_store() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let session = devo_core::SessionId::new();
+    let store = RolloutStore::new(dir.path().to_path_buf(), /*event_log*/ None);
+    store
+        .append_goal_state(&path, session, /*goal*/ None)
+        .unwrap();
+    let other = RolloutStore::new(dir.path().to_path_buf(), /*event_log*/ None);
+    other.mark_external_context_used_at(&path, session).unwrap();
+    store.mark_external_context_used_at(&path, session).unwrap();
+    let facts = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("externalContextUsed"))
+        .count();
+    assert_eq!(facts, 1);
+}
