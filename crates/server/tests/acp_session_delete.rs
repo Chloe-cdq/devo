@@ -758,3 +758,40 @@ async fn delete_session_with_active_turn_and_pending_queue() -> Result<()> {
 
     Ok(())
 }
+
+/// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention; L2-DES-SERVER-002.
+/// Verifies: cancelling the initiating request preserves deletion and notification to subscribed clients.
+#[tokio::test]
+async fn cancelled_delete_still_notifies_other_clients() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let (owner, _owner_rx) = initialize_acp_connection(&runtime).await?;
+    let (observer, mut observer_rx) = initialize_native_connection(&runtime).await?;
+    let cwd = data_root.path().join("repo");
+    std::fs::create_dir_all(&cwd)?;
+    let session = create_acp_session(&runtime, owner, 21, &cwd).await?;
+    subscribe_to_session_events(&runtime, observer, 20, session.session_id).await?;
+    {
+        let deletion = runtime.handle_incoming(
+            observer,
+            serde_json::json!({
+                "id":22,"method":"session/delete","params":{"sessionId":session.session_id}
+            }),
+        );
+        tokio::pin!(deletion);
+        assert!(futures::poll!(deletion.as_mut()).is_pending());
+        // Drop the initiating request before the owned deletion task gets polled.
+    }
+    let notification = wait_for_original_method(&mut observer_rx, "session/deleted")
+        .await
+        .context("cancelled delete lost observer notification")?;
+    assert_eq!(
+        notification["params"]["deletedSessionIds"],
+        serde_json::json!([session.session_id])
+    );
+    assert_eq!(
+        list_acp_sessions(&runtime, owner, 23, &cwd).await?.sessions,
+        vec![]
+    );
+    Ok(())
+}

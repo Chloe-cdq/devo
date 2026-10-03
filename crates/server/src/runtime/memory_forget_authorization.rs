@@ -68,6 +68,16 @@ pub(super) struct MemoryForgetReservation<'a> {
 
 impl MemoryForgetReservation<'_> {
     pub(super) fn commit(mut self, forgotten: Option<&MemoryEntry>) -> Result<(), ToolCallError> {
+        self.coordinator.complete(
+            self.reservation_id,
+            forgotten.map_or(&[], std::slice::from_ref),
+        )?;
+        self.finalized = true;
+        Ok(())
+    }
+
+    /// Finalize the canonical revocations committed by a source deletion.
+    pub(super) fn commit_sources(mut self, forgotten: &[MemoryEntry]) -> Result<(), ToolCallError> {
         self.coordinator.complete(self.reservation_id, forgotten)?;
         self.finalized = true;
         Ok(())
@@ -328,7 +338,7 @@ impl MemoryForgetCoordinator {
     fn complete(
         &self,
         reservation_id: u64,
-        forgotten: Option<&MemoryEntry>,
+        forgotten: &[MemoryEntry],
     ) -> Result<(), ToolCallError> {
         let mut state = self.lock_state()?;
         let active = state
@@ -342,7 +352,7 @@ impl MemoryForgetCoordinator {
                 )
             })?;
         if let Some(expected_entry_id) = active.entry_id.as_ref()
-            && forgotten.map(|entry| &entry.entry_id) != Some(expected_entry_id)
+            && (forgotten.len() != 1 || &forgotten[0].entry_id != expected_entry_id)
         {
             return Err(ToolCallError::InternalError(
                 "memory forget returned an unexpected entry".to_string(),
@@ -356,14 +366,16 @@ impl MemoryForgetCoordinator {
         {
             state.pending_by_session.remove(&active.session_id);
         }
-        if let Some(forgotten) = forgotten {
+        if !forgotten.is_empty() {
             state.mutation_epoch = state.mutation_epoch.checked_add(1).ok_or_else(|| {
                 ToolCallError::InternalError("memory forget mutation epoch overflow".to_string())
             })?;
             state.pending_by_session.retain(|_, selection| {
-                selection
-                    .candidates
-                    .retain(|candidate| candidate.entry_id != forgotten.entry_id);
+                selection.candidates.retain(|candidate| {
+                    !forgotten
+                        .iter()
+                        .any(|entry| candidate.entry_id == entry.entry_id)
+                });
                 !selection.candidates.is_empty()
             });
         }

@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "memory_scan_deletion_tests.rs"]
+mod deletion_tests;
 #[path = "memory_scan_latency_tests.rs"]
 mod latency_tests;
 #[path = "memory_scan_model_tests.rs"]
@@ -351,7 +353,10 @@ async fn deleting_processed_source_removes_its_memory() -> Result<()> {
 
     assert_eq!(
         runtime
-            .delete_session_tree(source_id)
+            .delete_session_tree(
+                source_id,
+                devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve
+            )
             .await
             .map_err(anyhow::Error::msg)?,
         vec![source_id]
@@ -396,7 +401,10 @@ async fn deleting_source_during_extraction_prevents_late_commit() -> Result<()> 
 
     assert_eq!(
         runtime
-            .delete_session_tree(source_id)
+            .delete_session_tree(
+                source_id,
+                devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve
+            )
             .await
             .map_err(anyhow::Error::msg)?,
         vec![source_id]
@@ -439,16 +447,16 @@ async fn source_delete_retries_after_projection_write_failure() -> Result<()> {
 
     assert_eq!(
         runtime
-            .delete_session_tree(source_id)
+            .delete_session_tree(
+                source_id,
+                devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve
+            )
             .await
             .map_err(anyhow::Error::msg)?,
         vec![source_id]
     );
     assert!(runtime.deps.db.get_session(&source_id)?.is_none());
-    assert_eq!(
-        runtime.deps.db.pending_memory_source_deletions()?,
-        vec![source_id]
-    );
+    assert_eq!(runtime.deps.db.pending_memory_source_deletions()?, vec![]);
     std::fs::remove_file(&projection_dir)?;
     runtime.memory.as_ref().unwrap().reconcile_source_intents();
     assert_eq!(runtime.deps.db.pending_memory_source_deletions()?, vec![]);
@@ -469,7 +477,10 @@ async fn source_delete_survives_memory_storage_error() -> Result<()> {
 
     assert_eq!(
         runtime
-            .delete_session_tree(source_id)
+            .delete_session_tree(
+                source_id,
+                devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve
+            )
             .await
             .map_err(anyhow::Error::msg)?,
         vec![source_id]

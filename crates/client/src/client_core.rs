@@ -441,6 +441,7 @@ impl ServerClientCore {
                 session_id: devo_protocol::native::ids::SessionId::from_string(
                     session_id.to_string(),
                 ),
+                related_memory: None,
             },
         )
         .await

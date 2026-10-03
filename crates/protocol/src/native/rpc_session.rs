@@ -341,6 +341,21 @@ pub struct SessionArchiveResult {
 #[serde(rename_all = "camelCase")]
 pub struct SessionDeleteParams {
     pub session_id: SessionId,
+    /// Preserve explicit memory by default, or revoke all related identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub related_memory: Option<RelatedMemoryDeletion>,
+}
+
+/// Persistent-memory policy for deleting a source session tree.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RelatedMemoryDeletion {
+    /// Remove source evidence while preserving explicit memory.
+    #[default]
+    Preserve,
+    /// Revoke every related identity, including entries with other evidence.
+    Forget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

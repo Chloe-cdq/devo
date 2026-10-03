@@ -39,31 +39,71 @@ impl MemoryRuntime {
     /// remain in the index for the next startup or scan.
     pub(crate) fn reconcile_source_intents(&self) {
         self.reconcile_external_context_sources();
-        let Some(db) = self.deletion_ledger.as_ref() else {
-            return;
-        };
-        match db.pending_memory_source_deletions() {
-            Ok(pending) if !pending.is_empty() => {
-                if let Err(error) = self.delete_sources(&pending, Utc::now()) {
-                    tracing::warn!(%error, "memory source deletion remains pending");
-                } else {
-                    let mut completed = Vec::new();
-                    for source in pending {
-                        match db.get_session(&source) {
-                            Ok(None) => completed.push(source),
-                            Ok(Some(_)) => {}
-                            Err(error) => {
-                                tracing::warn!(%error, %source, "failed to inspect deleted session");
+        if let Some(db) = self.deletion_ledger.as_ref() {
+            match db.pending_memory_source_deletions() {
+                Ok(pending) if !pending.is_empty() => {
+                    let committed = match self.delete_sources(
+                        &pending,
+                        Utc::now(),
+                        devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+                    ) {
+                        Ok(_) => true,
+                        Err(MemoryError::SourceDeletionCommitted { .. }) => {
+                            tracing::warn!("memory source projection refresh remains pending");
+                            true
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "memory source deletion remains pending");
+                            false
+                        }
+                    };
+                    if committed {
+                        let mut completed = Vec::new();
+                        for source in pending {
+                            match db.get_session(&source) {
+                                Ok(None) => completed.push(source),
+                                Ok(Some(_)) => {}
+                                Err(error) => {
+                                    tracing::warn!(%error, %source, "failed to inspect deleted session")
+                                }
                             }
                         }
-                    }
-                    if let Err(error) = db.finish_memory_source_deletions(&completed) {
-                        tracing::warn!(%error, "failed to finish memory source deletion ledger");
+                        if let Err(error) = db.finish_memory_source_deletions(&completed) {
+                            tracing::warn!(%error, "failed to finish memory source deletion ledger");
+                        }
                     }
                 }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "failed to read memory source deletion ledger")
+                }
             }
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "failed to read memory source deletion ledger"),
+        }
+        // Projection repair owns its durable scopes after canonical cleanup has
+        // released the source fence. It must not hide surviving inferred entries.
+        let Ok(connection) = self.connection.lock() else {
+            return;
+        };
+        let repair = (|| -> Result<(), MemoryError> {
+            let sources = {
+                let mut statement = connection.prepare(
+                    "SELECT DISTINCT source_session_id FROM memory_deleted_source_scopes",
+                )?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            let sources = sources
+                .into_iter()
+                .map(|source| {
+                    SessionId::try_from(source.as_str())
+                        .map_err(|error| MemoryError::InvalidStoredValue(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.refresh_deleted_source_projections(&connection, &sources)
+        })();
+        if let Err(error) = repair {
+            tracing::warn!(%error, "memory source projection repair remains pending");
         }
     }
 
@@ -161,163 +201,6 @@ impl MemoryRuntime {
             .extend(sources.iter().map(ToString::to_string));
         for (scope_type, scope_id) in scopes {
             self.refresh_projection(&connection, parse_scope(&scope_type)?, &scope_id)?;
-        }
-        Ok(())
-    }
-
-    /// Permanently fences deleted sources and removes their contribution.
-    pub(crate) fn delete_sources(
-        &self,
-        sources: &[SessionId],
-        now: DateTime<Utc>,
-    ) -> Result<(), MemoryError> {
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| MemoryError::LockPoisoned)?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for source in sources {
-            let source_id = source.to_string();
-            transaction.execute(
-                "INSERT INTO memory_deleted_sources(source_session_id, deleted_at)
-                 VALUES (?1, ?2) ON CONFLICT(source_session_id) DO NOTHING",
-                rusqlite::params![source_id, now.to_rfc3339()],
-            )?;
-            let affected_entries = {
-                let mut statement = transaction.prepare(
-                    "SELECT DISTINCT entry.entry_id, entry.scope_type, entry.scope_id
-                     FROM memory_entries AS entry
-                     JOIN memory_evidence AS evidence ON evidence.entry_id = entry.entry_id
-                     WHERE evidence.session_id = ?1",
-                )?;
-                statement
-                    .query_map([&source_id], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            let affected_groups = {
-                let mut statement = transaction.prepare(
-                    "SELECT DISTINCT scope_type, scope_id, proposal_key
-                     FROM memory_proposal_claim_sources WHERE source_session_id = ?1",
-                )?;
-                statement
-                    .query_map([&source_id], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            let mut recheck_entries = affected_entries
-                .iter()
-                .map(|(entry_id, _, _)| entry_id.clone())
-                .collect::<BTreeSet<_>>();
-            for (scope_type, scope_id, proposal_key) in &affected_groups {
-                recheck_entries.extend(proposal_reconciliation::bound_inferred_entries_for_group(
-                    &transaction,
-                    scope_type,
-                    scope_id,
-                    proposal_key,
-                )?);
-            }
-            transaction.execute(
-                "DELETE FROM memory_proposal_claim_sources WHERE source_session_id = ?1",
-                [&source_id],
-            )?;
-            transaction.execute(
-                "DELETE FROM memory_proposal_claims
-                 WHERE legacy_unattributed = 0
-                   AND NOT EXISTS (
-                     SELECT 1 FROM memory_proposal_claim_sources AS support
-                     WHERE support.scope_type = memory_proposal_claims.scope_type
-                       AND support.scope_id = memory_proposal_claims.scope_id
-                       AND support.proposal_key = memory_proposal_claims.proposal_key
-                       AND support.canonical_key = memory_proposal_claims.canonical_key)",
-                [],
-            )?;
-            transaction.execute(
-                "DELETE FROM memory_candidates WHERE source_session_id = ?1",
-                [&source_id],
-            )?;
-            transaction.execute(
-                "DELETE FROM memory_evidence WHERE session_id = ?1",
-                [&source_id],
-            )?;
-            transaction.execute(
-                "DELETE FROM memory_jobs WHERE source_session_id = ?1",
-                [&source_id],
-            )?;
-            transaction.execute(
-                "DELETE FROM memory_job_receipts WHERE source_session_id = ?1",
-                [&source_id],
-            )?;
-            for (entry_id, scope_type, scope_id) in affected_entries {
-                transaction.execute(
-                    "INSERT OR IGNORE INTO memory_deleted_source_scopes
-                     (source_session_id, scope_type, scope_id) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![source_id, scope_type, scope_id],
-                )?;
-                transaction.execute(
-                    "UPDATE memory_entries SET state = 'retired', updated_at = ?1
-                     WHERE entry_id = ?2 AND origin = 'inferred_session'
-                       AND NOT EXISTS (
-                           SELECT 1 FROM memory_evidence WHERE entry_id = ?2
-                       )",
-                    rusqlite::params![now.to_rfc3339(), entry_id],
-                )?;
-                transaction.execute(
-                    "DELETE FROM memory_entries_fts WHERE entry_id = ?1 AND EXISTS (
-                        SELECT 1 FROM memory_entries
-                        WHERE entry_id = ?1 AND state = 'retired'
-                    )",
-                    [&entry_id],
-                )?;
-            }
-            for (scope_type, scope_id, _proposal_key) in affected_groups {
-                transaction.execute(
-                    "INSERT OR IGNORE INTO memory_deleted_source_scopes
-                     (source_session_id, scope_type, scope_id) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![source_id, scope_type, scope_id],
-                )?;
-            }
-            for entry_id in recheck_entries {
-                proposal_reconciliation::reconcile_entry_after_source_change(
-                    &transaction,
-                    &entry_id,
-                )?;
-            }
-        }
-        transaction.commit()?;
-        let mut scopes = BTreeSet::new();
-        for source in sources {
-            let pending = {
-                let mut statement = connection.prepare(
-                    "SELECT scope_type, scope_id FROM memory_deleted_source_scopes
-                     WHERE source_session_id = ?1",
-                )?;
-                statement
-                    .query_map([source.to_string()], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            scopes.extend(pending);
-        }
-        for (scope_type, scope_id) in scopes {
-            self.refresh_projection(&connection, parse_scope(&scope_type)?, &scope_id)?;
-        }
-        for source in sources {
-            connection.execute(
-                "DELETE FROM memory_deleted_source_scopes WHERE source_session_id = ?1",
-                [source.to_string()],
-            )?;
         }
         Ok(())
     }

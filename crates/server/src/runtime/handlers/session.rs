@@ -1519,22 +1519,15 @@ impl ServerRuntime {
                 );
             }
         };
-        let deleted_session_ids = match self.delete_session_tree(session_id).await {
-            Ok(deleted_session_ids) => deleted_session_ids,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    format!("failed to delete session: {error}"),
-                );
-            }
-        };
-        if !deleted_session_ids.is_empty() {
-            self.broadcast_event(ServerEvent::SessionDeleted(SessionDeletedPayload {
-                session_id,
-                deleted_session_ids,
-            }))
-            .await;
+        if let Err(error) = self
+            .delete_session_tree(session_id, params.related_memory.unwrap_or_default())
+            .await
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                format!("failed to delete session: {error}"),
+            );
         }
         serde_json::to_value(SuccessResponse {
             id: request_id,

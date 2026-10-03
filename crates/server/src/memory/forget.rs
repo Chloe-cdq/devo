@@ -3,13 +3,11 @@ use super::entries::{load_entry, normalize_body};
 use super::{
     MemoryError, MemoryForgetRequest, MemoryForgetSelector, MemoryForgetSource, MemoryRuntime,
     PreparedMemoryForgetRequest, ResolvedProjectMemorySession, scope_name,
-    select_project_memory_session, state_name,
+    select_project_memory_session,
 };
 use chrono::Utc;
 use devo_protocol::native::ids::MemoryEntryId;
-use devo_protocol::native::rpc_memory::{
-    MemoryForgetResult, MemoryOrigin, MemoryScope, MemoryState,
-};
+use devo_protocol::native::rpc_memory::{MemoryForgetResult, MemoryOrigin, MemoryScope};
 use rusqlite::OptionalExtension;
 
 impl MemoryRuntime {
@@ -257,41 +255,13 @@ impl MemoryRuntime {
         }
 
         let now = Utc::now().to_rfc3339();
-        transaction.execute(
-            "INSERT INTO memory_revocations (
-                 revocation_id, scope_type, scope_id, normalized_key, revoked_at, restored_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)
-             ON CONFLICT(scope_type, scope_id, normalized_key) DO UPDATE SET
-                 revoked_at = excluded.revoked_at,
-                 restored_at = NULL",
-            rusqlite::params![
-                uuid::Uuid::now_v7().simple().to_string(),
-                scope_name(scope),
-                scope_id,
-                normalized_key,
-                now,
-            ],
-        )?;
-        let updated = transaction.execute(
-            "UPDATE memory_entries
-             SET state = ?1, updated_at = ?2
-             WHERE entry_id = ?3 AND scope_type = ?4 AND scope_id = ?5",
-            rusqlite::params![
-                state_name(MemoryState::Retired),
-                now,
-                entry_id,
-                scope_name(scope),
-                scope_id,
-            ],
-        )?;
-        if updated != 1 {
-            return Err(MemoryError::InvalidRequest(
-                "memory entry not found".to_string(),
-            ));
-        }
-        transaction.execute(
-            "DELETE FROM memory_entries_fts WHERE entry_id = ?1",
-            [entry_id.as_str()],
+        super::revocation_lifecycle::revoke_entry(
+            &transaction,
+            &entry_id,
+            scope_name(scope),
+            &scope_id,
+            &normalized_key,
+            &now,
         )?;
         let entry_id = MemoryEntryId::from_string(entry_id);
         let entry = load_entry(&transaction, &entry_id)?
