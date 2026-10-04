@@ -27,12 +27,17 @@ outstanding conflict.
 
 Inference becomes `Stale` after the configured interval (90 days by default)
 since the later of last recall and accepted verification. Equivalent extraction
-can verify stale inference and reactivate it after checking existing competition.
+can verify stale inference or inference retired by source removal and reactivate it
+after checking existing competition. Fresh evidence for a retired claim withholds
+both claims when a competing inference is still live.
 It cannot reactivate a retired replacement. Explicit entries never automatically
 become stale. Conflict and retirement take precedence over ageing.
 
 Maintenance runs on startup, background scans, and before memory reads or recall.
 It removes stale entries from the lexical index and refreshes affected projections.
+Automatic recall and successful on-demand `memory_search` or `memory_read`
+record use of still-valid inferred entries with the same clock. Inspection of
+Stale or Conflicted entries and Native listing do not extend their lifetime.
 Recall checks age before recording its timestamp, so overdue entries cannot
 renew themselves. A turn's already prepared snapshot remains immutable.
 

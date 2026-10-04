@@ -181,7 +181,7 @@ impl MemoryRuntime {
                     {
                         transaction.execute(
                             "UPDATE memory_entries SET updated_at = ?1,
-                                state = CASE WHEN state = 'stale' THEN 'active' ELSE state END
+                                state = CASE WHEN state IN ('stale', 'retired') THEN 'active' ELSE state END
                              WHERE entry_id = ?2",
                             rusqlite::params![timestamp, existing.entry_id],
                         )?;

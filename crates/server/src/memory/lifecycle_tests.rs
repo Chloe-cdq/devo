@@ -132,11 +132,20 @@ async fn inferred_staleness_boundary_withholds_recall_and_remains_inspectable() 
         entries(&runtime),
         vec![MemoryEntry {
             state: MemoryState::Stale,
-            ..original
+            ..original.clone()
         }]
     );
     assert_eq!(search(&runtime, /*state*/ None), vec![]);
-    assert_eq!(search(&runtime, Some(MemoryState::Stale)).len(), 1);
+    assert_eq!(
+        search(&runtime, Some(MemoryState::Stale)),
+        vec![devo_protocol::native::rpc_memory::MemorySearchEntry {
+            entry_id: original.entry_id,
+            scope: MemoryScope::User,
+            kind: MemoryKind::Preference,
+            state: MemoryState::Stale,
+            summary: "I prefer tabs.".into(),
+        }]
+    );
     assert_eq!(recall(&runtime, root.path()).await, vec![]);
     assert!(
         std::fs::read_to_string(root.path().join("user/MEMORY.md"))
@@ -196,7 +205,7 @@ fn fresh_equivalent_evidence_reactivates_stale_memory() {
             [original.entry_id.as_str()],
         )
         .unwrap();
-    contribute(
+    let source = contribute(
         &runtime,
         "(i prefer tabs)!",
         "formatting",
@@ -204,17 +213,30 @@ fn fresh_equivalent_evidence_reactivates_stale_memory() {
     );
     let actual = entries(&runtime).remove(0);
     let mut provenance = original.provenance.clone();
-    provenance.push(actual.provenance[1].clone());
+    provenance.push(devo_protocol::native::rpc_memory::MemoryProvenance {
+        source_session_id: Some(source.session_id.to_string()),
+        source_turn_id: Some(source.messages[0].turn_id.to_string()),
+        source_user_item_id: Some(source.messages[0].item_id.clone()),
+    });
     assert_eq!(
         actual,
         MemoryEntry {
             state: MemoryState::Active,
             updated_at: epoch() + Duration::days(91),
             provenance,
-            ..original
+            ..original.clone()
         }
     );
-    assert_eq!(search(&runtime, /*state*/ None).len(), 1);
+    assert_eq!(
+        search(&runtime, /*state*/ None),
+        vec![devo_protocol::native::rpc_memory::MemorySearchEntry {
+            entry_id: original.entry_id,
+            scope: MemoryScope::User,
+            kind: MemoryKind::Preference,
+            state: MemoryState::Active,
+            summary: "I prefer tabs.".into(),
+        }]
+    );
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-8.
@@ -270,8 +292,39 @@ async fn explicit_resolution_preserves_replacement_lineage_and_authority() {
             ..tabs.clone()
         })
     );
-    assert_eq!(tabs.entry_id, inferred.entry_id);
-    assert_eq!(spaces.origin, MemoryOrigin::ExplicitUser);
+    let source = remember_request("I prefer tabs.").source;
+    let provenance = devo_protocol::native::rpc_memory::MemoryProvenance {
+        source_session_id: Some(source.session_id.to_string()),
+        source_turn_id: source.turn_id.map(|id| id.to_string()),
+        source_user_item_id: source.user_item_id,
+    };
+    let mut tabs_provenance = inferred.provenance.clone();
+    tabs_provenance.push(provenance.clone());
+    assert_eq!(
+        tabs,
+        MemoryEntry {
+            origin: MemoryOrigin::ExplicitUser,
+            provenance: tabs_provenance,
+            ..inferred
+        }
+    );
+    assert_eq!(
+        spaces,
+        MemoryEntry {
+            entry_id: spaces.entry_id.clone(),
+            scope: MemoryScope::User,
+            scope_id: "user".into(),
+            kind: MemoryKind::Preference,
+            normalized_key: "i prefer spaces".into(),
+            body: "I prefer spaces.".into(),
+            origin: MemoryOrigin::ExplicitUser,
+            state: MemoryState::Active,
+            created_at: epoch(),
+            updated_at: epoch(),
+            replacement_entry_id: None,
+            provenance: vec![provenance],
+        }
+    );
     contribute(
         &runtime,
         "I prefer tabs.",
@@ -283,14 +336,17 @@ async fn explicit_resolution_preserves_replacement_lineage_and_authority() {
         Some(spaces.clone())
     );
     assert_eq!(
-        search(&runtime, /*state*/ None)
-            .iter()
-            .map(|entry| entry.entry_id.clone())
-            .collect::<Vec<_>>(),
-        vec![spaces.entry_id.clone()]
+        search(&runtime, /*state*/ None),
+        vec![devo_protocol::native::rpc_memory::MemorySearchEntry {
+            entry_id: spaces.entry_id.clone(),
+            scope: MemoryScope::User,
+            kind: MemoryKind::Preference,
+            state: MemoryState::Active,
+            summary: "I prefer spaces.".into(),
+        }]
     );
     let tabs_again = remember(&runtime, "I prefer tabs.").await;
-    assert_eq!(tabs_again.replacement_entry_id, None);
+    assert_eq!(tabs_again, tabs);
     assert_eq!(
         runtime.entry_by_id(&spaces.entry_id).unwrap(),
         Some(MemoryEntry {
@@ -331,7 +387,16 @@ async fn explicit_opposing_claim_resolves_conflicted_key() {
             ..inferred
         })
     );
-    assert_eq!(search(&runtime, /*state*/ None).len(), 1);
+    assert_eq!(
+        search(&runtime, /*state*/ None),
+        vec![devo_protocol::native::rpc_memory::MemorySearchEntry {
+            entry_id: explicit.entry_id,
+            scope: MemoryScope::User,
+            kind: MemoryKind::Preference,
+            state: MemoryState::Active,
+            summary: "I prefer spaces.".into(),
+        }]
+    );
 }
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-8.
@@ -341,7 +406,7 @@ async fn inferred_evidence_does_not_rewrite_explicit_revision() {
     let root = tempfile::tempdir().unwrap();
     let runtime = open_runtime(root.path());
     let original = remember(&runtime, "I prefer tabs.").await;
-    contribute(
+    let source = contribute(
         &runtime,
         "I prefer tabs.",
         "indentation",
@@ -349,7 +414,11 @@ async fn inferred_evidence_does_not_rewrite_explicit_revision() {
     );
     let actual = entries(&runtime).remove(0);
     let mut provenance = original.provenance.clone();
-    provenance.push(actual.provenance[1].clone());
+    provenance.push(devo_protocol::native::rpc_memory::MemoryProvenance {
+        source_session_id: Some(source.session_id.to_string()),
+        source_turn_id: Some(source.messages[0].turn_id.to_string()),
+        source_user_item_id: Some(source.messages[0].item_id.clone()),
+    });
     // Evidence ordering is chronological: the inferred fixture is later than the explicit write.
     assert_eq!(
         actual,
@@ -435,7 +504,28 @@ async fn explicit_resolution_is_scope_isolated() {
         panic!("remember result")
     };
     assert_eq!(entries(&runtime), before);
-    assert_eq!(selected.scope, MemoryScope::Project);
+    let source = remember_request("I prefer spaces.").source;
+    assert_eq!(
+        selected,
+        MemoryEntry {
+            entry_id: selected.entry_id.clone(),
+            scope: MemoryScope::Project,
+            scope_id: selected.scope_id.clone(),
+            kind: MemoryKind::Preference,
+            normalized_key: "i prefer spaces".into(),
+            body: "I prefer spaces.".into(),
+            origin: MemoryOrigin::ExplicitUser,
+            state: MemoryState::Active,
+            created_at: epoch(),
+            updated_at: epoch(),
+            replacement_entry_id: None,
+            provenance: vec![devo_protocol::native::rpc_memory::MemoryProvenance {
+                source_session_id: Some(source.session_id.to_string()),
+                source_turn_id: source.turn_id.map(|id| id.to_string()),
+                source_user_item_id: source.user_item_id,
+            }],
+        }
+    );
     assert_eq!(search(&runtime, /*state*/ None), vec![]);
 }
 

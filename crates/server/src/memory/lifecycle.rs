@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Duration, Utc};
 use devo_protocol::native::rpc_memory::MemoryScope;
-use rusqlite::Transaction;
+use rusqlite::{Connection, Transaction};
 
 use super::stored_values::parse_scope;
 use super::{MemoryError, MemoryRuntime, scope_name};
@@ -20,6 +20,24 @@ impl MemoryRuntime {
         .unwrap_or(Duration::MAX);
         now.checked_sub_signed(age)
             .unwrap_or(DateTime::<Utc>::MIN_UTC)
+    }
+
+    /// Successful on-demand use renews only inference that is still recallable.
+    /// Inspecting inactive entries must not extend their lifetime or revive them.
+    pub(super) fn record_on_demand_use(
+        &self,
+        connection: &Connection,
+        entry_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), MemoryError> {
+        connection.execute(
+            "UPDATE memory_entries SET last_recalled_at = ?1
+             WHERE entry_id = ?2 AND origin = 'inferred_session' AND state IN ('active', 'restored')
+               AND MAX(julianday(updated_at), COALESCE(julianday(last_recalled_at), julianday(updated_at)))
+                   > julianday(?3)",
+            rusqlite::params![now.to_rfc3339(), entry_id, self.inferred_expiry_cutoff(now).to_rfc3339()],
+        )?;
+        Ok(())
     }
 
     /// Expire only recallable inference. Its accepted verification timestamp is

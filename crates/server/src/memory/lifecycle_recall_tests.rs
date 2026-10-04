@@ -108,7 +108,7 @@ fn stale_verification_reconciles_competing_live_inference() {
         .into_iter()
         .find(|entry| entry.body == "I prefer spaces.")
         .unwrap();
-    contribute(
+    let source = contribute(
         &runtime,
         "I prefer tabs.",
         "another model label",
@@ -121,9 +121,20 @@ fn stale_verification_reconciles_competing_live_inference() {
             ..spaces
         })
     );
+    let mut provenance = tabs.provenance.clone();
+    provenance.push(devo_protocol::native::rpc_memory::MemoryProvenance {
+        source_session_id: Some(source.session_id.to_string()),
+        source_turn_id: Some(source.messages[0].turn_id.to_string()),
+        source_user_item_id: Some(source.messages[0].item_id.clone()),
+    });
     assert_eq!(
-        runtime.entry_by_id(&tabs.entry_id).unwrap().unwrap().state,
-        MemoryState::Conflicted
+        runtime.entry_by_id(&tabs.entry_id).unwrap(),
+        Some(MemoryEntry {
+            state: MemoryState::Conflicted,
+            updated_at: epoch() + Duration::days(91),
+            provenance,
+            ..tabs
+        })
     );
     assert_eq!(search(&runtime, /*state*/ None), vec![]);
 }
@@ -302,4 +313,169 @@ async fn recall_selection_rechecks_age_after_expiry_snapshot() {
         )
         .unwrap();
     assert_eq!(last_recalled, None);
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-8 / Entry Lifecycle and Retention.
+/// Verifies: fresh evidence for a source-retired claim withholds both incompatible inferred claims.
+#[tokio::test]
+async fn fresh_retired_evidence_withholds_competing_inference() {
+    for change in [SourceChange::Exclude, SourceChange::Delete] {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = open_runtime(root.path());
+        let source = contribute(&runtime, "I prefer tabs.", "indentation", epoch());
+        let sources = [devo_protocol::SessionId::try_from(source.session_id.as_str()).unwrap()];
+        match change {
+            SourceChange::Exclude => runtime.exclude_sources(&sources, epoch() + Duration::days(1)),
+            SourceChange::Delete => runtime.delete_sources(&sources, epoch() + Duration::days(1)),
+        }
+        .unwrap();
+        let retired = entries(&runtime).remove(0);
+        contribute(
+            &runtime,
+            "I prefer spaces.",
+            "indentation",
+            epoch() + Duration::days(2),
+        );
+        let spaces = entries(&runtime)
+            .into_iter()
+            .find(|entry| entry.body == "I prefer spaces.")
+            .unwrap();
+        let fresh = contribute(
+            &runtime,
+            "I prefer tabs.",
+            "indentation",
+            epoch() + Duration::days(3),
+        );
+        assert_eq!(
+            runtime.entry_by_id(&retired.entry_id).unwrap(),
+            Some(MemoryEntry {
+                state: MemoryState::Conflicted,
+                updated_at: epoch() + Duration::days(3),
+                provenance: vec![devo_protocol::native::rpc_memory::MemoryProvenance {
+                    source_session_id: Some(fresh.session_id.to_string()),
+                    source_turn_id: Some(fresh.messages[0].turn_id.to_string()),
+                    source_user_item_id: Some(fresh.messages[0].item_id.clone()),
+                }],
+                ..retired
+            })
+        );
+        assert_eq!(
+            runtime.entry_by_id(&spaces.entry_id).unwrap(),
+            Some(MemoryEntry {
+                state: MemoryState::Conflicted,
+                ..spaces
+            })
+        );
+        assert_eq!(search(&runtime, /*state*/ None), vec![]);
+        assert_eq!(recall(&runtime, root.path()).await, vec![]);
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-10 / Entry Lifecycle and Retention.
+/// Verifies: successful on-demand search and read renew valid inference through the injected clock.
+#[tokio::test]
+async fn on_demand_use_renews_inferred_lifetime() {
+    for access in ["read", "search"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut runtime = open_runtime(root.path());
+        contribute(&runtime, "I prefer tabs.", "indentation", epoch());
+        let original = entries(&runtime).remove(0);
+        runtime.clock = Arc::new(|| epoch() + Duration::days(89));
+        if access == "search" {
+            assert_eq!(
+                search(&runtime, /*state*/ None),
+                vec![devo_protocol::native::rpc_memory::MemorySearchEntry {
+                    entry_id: original.entry_id.clone(),
+                    scope: MemoryScope::User,
+                    kind: MemoryKind::Preference,
+                    state: MemoryState::Active,
+                    summary: "I prefer tabs.".into(),
+                }]
+            );
+        } else {
+            assert_eq!(
+                runtime
+                    .execute_command(MemoryCommand::Read(super::super::ReadMemoryRequest {
+                        entry_id: original.entry_id.clone(),
+                        workspace_root: root.path().to_path_buf(),
+                    }))
+                    .await
+                    .unwrap(),
+                MemoryCommandResult::Read(devo_protocol::native::rpc_memory::MemoryReadEntry {
+                    entry_id: original.entry_id.clone(),
+                    scope: MemoryScope::User,
+                    kind: MemoryKind::Preference,
+                    state: MemoryState::Active,
+                    body: "I prefer tabs.".into(),
+                    source_summary: "Inferred session memory (1 source)".into(),
+                })
+            );
+        }
+        runtime.clock = Arc::new(|| epoch() + Duration::days(178));
+        assert_eq!(entries(&runtime), vec![original.clone()]);
+        runtime.clock = Arc::new(|| epoch() + Duration::days(179));
+        assert_eq!(
+            entries(&runtime),
+            vec![MemoryEntry {
+                state: MemoryState::Stale,
+                ..original
+            }]
+        );
+    }
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-10 / Entry Lifecycle and Retention.
+/// Verifies: on-demand inspection of stale inference never renews its use timestamp or reactivates it.
+#[tokio::test]
+async fn inactive_on_demand_inspection_does_not_renew_inference() {
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = open_runtime(root.path());
+    contribute(&runtime, "I prefer tabs.", "indentation", epoch());
+    let original = entries(&runtime).remove(0);
+    runtime.clock = Arc::new(|| epoch() + Duration::days(90));
+    assert_eq!(
+        search(&runtime, Some(MemoryState::Stale)),
+        vec![devo_protocol::native::rpc_memory::MemorySearchEntry {
+            entry_id: original.entry_id.clone(),
+            scope: MemoryScope::User,
+            kind: MemoryKind::Preference,
+            state: MemoryState::Stale,
+            summary: "I prefer tabs.".into(),
+        }]
+    );
+    assert_eq!(
+        runtime
+            .execute_command(MemoryCommand::Read(super::super::ReadMemoryRequest {
+                entry_id: original.entry_id.clone(),
+                workspace_root: root.path().to_path_buf(),
+            }))
+            .await
+            .unwrap(),
+        MemoryCommandResult::Read(devo_protocol::native::rpc_memory::MemoryReadEntry {
+            entry_id: original.entry_id.clone(),
+            scope: MemoryScope::User,
+            kind: MemoryKind::Preference,
+            state: MemoryState::Stale,
+            body: "I prefer tabs.".into(),
+            source_summary: "Inferred session memory (1 source)".into(),
+        })
+    );
+    let last_recalled = runtime
+        .connection
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT last_recalled_at FROM memory_entries WHERE entry_id = ?1",
+            [original.entry_id.as_str()],
+            |row| row.get::<_, Option<String>>(/*idx*/ 0),
+        )
+        .unwrap();
+    assert_eq!(last_recalled, None);
+    assert_eq!(
+        entries(&runtime),
+        vec![MemoryEntry {
+            state: MemoryState::Stale,
+            ..original
+        }]
+    );
 }

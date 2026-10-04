@@ -38,7 +38,8 @@ impl MemoryRuntime {
         }
 
         let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
-        self.expire_inferred((self.clock)())?;
+        let now = (self.clock)();
+        self.expire_inferred(now)?;
         let mut pending_source_deletion = self.has_pending_source_deletions();
         let connection = self
             .connection
@@ -86,7 +87,7 @@ impl MemoryRuntime {
                 pending_source_deletion = true;
                 continue;
             }
-            return Ok(Page {
+            let result = Page {
                 data: entries
                     .into_iter()
                     .filter(|entry| !super::entries::contains_secret(&entry.body))
@@ -109,7 +110,11 @@ impl MemoryRuntime {
                     })
                     .collect(),
                 next_cursor: None,
-            });
+            };
+            for entry in &result.data {
+                self.record_on_demand_use(&connection, entry.entry_id.as_str(), now)?;
+            }
+            return Ok(result);
         }
     }
 
