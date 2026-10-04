@@ -12,6 +12,8 @@ impl MemoryRuntime {
                 "memory read requires a stable entry ID".into(),
             ));
         }
+        let now = (self.clock)();
+        self.expire_inferred(now)?;
         let pending_source_deletion = self.has_pending_source_deletions();
         let connection = self
             .connection
@@ -69,7 +71,7 @@ impl MemoryRuntime {
         if body.chars().count() > 4000 {
             bounded_body.push('…');
         }
-        Ok(MemoryReadEntry {
+        let entry = MemoryReadEntry {
             entry_id: request.entry_id,
             scope,
             kind: parse_kind(&kind)?,
@@ -80,6 +82,8 @@ impl MemoryRuntime {
             } else {
                 format!("{origin} ({evidence_count} {source})")
             },
-        })
+        };
+        self.record_on_demand_use(&connection, entry.entry_id.as_str(), now)?;
+        Ok(entry)
     }
 }

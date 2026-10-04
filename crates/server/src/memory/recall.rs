@@ -73,6 +73,9 @@ impl MemoryRuntime {
         if terms.is_empty() {
             return Ok(prepared);
         }
+        let now = (self.clock)();
+        self.expire_inferred(now)?;
+        let expiry_cutoff = self.inferred_expiry_cutoff(now).to_rfc3339();
         let mut pending_source_deletion = self.has_pending_source_deletions();
         let connection = self
             .connection
@@ -90,6 +93,9 @@ impl MemoryRuntime {
                     OR (e.scope_type = 'project' AND e.scope_id = ?3))
                AND e.state IN ('active', 'restored')
                AND (?4 = 0 OR e.origin = 'explicit_user')
+               AND (e.origin = 'explicit_user' OR
+                    MAX(julianday(e.updated_at), COALESCE(julianday(e.last_recalled_at), julianday(e.updated_at)))
+                    > julianday(?5))
                AND NOT EXISTS (
                    SELECT 1 FROM memory_revocations r
                    WHERE r.scope_type = e.scope_type AND r.scope_id = e.scope_id
@@ -109,7 +115,8 @@ impl MemoryRuntime {
                         fts_query,
                         USER_SCOPE_ID,
                         project.scope_id,
-                        pending_source_deletion
+                        pending_source_deletion,
+                        expiry_cutoff,
                     ],
                     |row| {
                         Ok((
@@ -201,7 +208,7 @@ impl MemoryRuntime {
                 prepared.entries.clear();
                 continue;
             }
-            let recalled_at = Utc::now().to_rfc3339();
+            let recalled_at = now.to_rfc3339();
             for entry in &prepared.entries {
                 transaction.execute(
                     "UPDATE memory_entries SET last_recalled_at = ?1 WHERE entry_id = ?2",

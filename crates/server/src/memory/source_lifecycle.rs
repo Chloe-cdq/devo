@@ -152,7 +152,11 @@ impl MemoryRuntime {
             )?);
         }
         for entry_id in recheck_entries {
-            proposal_reconciliation::reconcile_entry_after_source_change(&transaction, &entry_id)?;
+            proposal_reconciliation::reconcile_entry_after_source_change(
+                &transaction,
+                &entry_id,
+                self.inferred_expiry_cutoff(now),
+            )?;
         }
         transaction.commit()?;
         self.excluded_external_sources
@@ -235,6 +239,14 @@ impl MemoryRuntime {
                 "DELETE FROM memory_proposal_claims
                  WHERE legacy_unattributed = 0
                    AND NOT EXISTS (
+                     SELECT 1 FROM memory_proposal_claims AS anchored
+                     JOIN memory_entries AS authority ON authority.entry_id = anchored.entry_id
+                     WHERE anchored.scope_type = memory_proposal_claims.scope_type
+                       AND anchored.scope_id = memory_proposal_claims.scope_id
+                       AND anchored.proposal_key = memory_proposal_claims.proposal_key
+                       AND authority.scope_type = anchored.scope_type AND authority.scope_id = anchored.scope_id
+                       AND authority.origin = 'explicit_user' AND authority.state IN ('active', 'restored'))
+                   AND NOT EXISTS (
                      SELECT 1 FROM memory_proposal_claim_sources AS support
                      WHERE support.scope_type = memory_proposal_claims.scope_type
                        AND support.scope_id = memory_proposal_claims.scope_id
@@ -291,6 +303,7 @@ impl MemoryRuntime {
                 proposal_reconciliation::reconcile_entry_after_source_change(
                     &transaction,
                     &entry_id,
+                    self.inferred_expiry_cutoff(now),
                 )?;
             }
         }
@@ -324,6 +337,7 @@ impl MemoryRuntime {
 
     /// Prunes short-lived detail while retaining a minimal idempotency receipt.
     pub(crate) fn prune_expired(&self, now: DateTime<Utc>) -> Result<(), MemoryError> {
+        self.expire_inferred(now)?;
         let retention = Duration::try_days(
             self.config
                 .candidate_and_job_retention_days
@@ -350,12 +364,29 @@ impl MemoryRuntime {
              WHERE state = 'completed' AND julianday(updated_at) <= julianday(?1)",
             [cutoff.to_rfc3339()],
         )?;
+        let scopes = {
+            let mut statement = transaction.prepare(
+                "SELECT DISTINCT scope_type, scope_id FROM memory_candidates
+                 WHERE julianday(retention_until) <= julianday(?1)",
+            )?;
+            statement
+                .query_map([now.to_rfc3339()], |row| {
+                    Ok((
+                        row.get::<_, String>(/*idx*/ 0)?,
+                        row.get::<_, String>(/*idx*/ 1)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         transaction.execute(
             "DELETE FROM memory_candidates
              WHERE julianday(retention_until) <= julianday(?1)",
             [now.to_rfc3339()],
         )?;
         transaction.commit()?;
+        for (scope, scope_id) in scopes {
+            self.refresh_projection(&connection, parse_scope(&scope)?, &scope_id)?;
+        }
         Ok(())
     }
 }
