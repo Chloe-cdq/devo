@@ -17,6 +17,7 @@ pub(super) fn delete_source_records(
     connection: &mut rusqlite::Connection,
     sources: &[SessionId],
     now: DateTime<Utc>,
+    expiry_cutoff: DateTime<Utc>,
     related_memory: RelatedMemoryDeletion,
 ) -> Result<Vec<MemoryEntry>, MemoryError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -94,6 +95,14 @@ pub(super) fn delete_source_records(
             "DELETE FROM memory_proposal_claims
          WHERE legacy_unattributed = 0
            AND NOT EXISTS (
+             SELECT 1 FROM memory_proposal_claims AS anchored
+             JOIN memory_entries AS authority ON authority.entry_id = anchored.entry_id
+             WHERE anchored.scope_type = memory_proposal_claims.scope_type
+               AND anchored.scope_id = memory_proposal_claims.scope_id
+               AND anchored.proposal_key = memory_proposal_claims.proposal_key
+               AND authority.scope_type = anchored.scope_type AND authority.scope_id = anchored.scope_id
+               AND authority.origin = 'explicit_user' AND authority.state IN ('active', 'restored'))
+           AND NOT EXISTS (
              SELECT 1 FROM memory_proposal_claim_sources AS support
              WHERE support.scope_type = memory_proposal_claims.scope_type
                AND support.scope_id = memory_proposal_claims.scope_id
@@ -147,7 +156,11 @@ pub(super) fn delete_source_records(
             )?;
         }
         for entry_id in recheck_entries {
-            proposal_reconciliation::reconcile_entry_after_source_change(&transaction, &entry_id)?;
+            proposal_reconciliation::reconcile_entry_after_source_change(
+                &transaction,
+                &entry_id,
+                expiry_cutoff,
+            )?;
         }
     }
     let forgotten = forgotten_ids
@@ -174,7 +187,13 @@ impl MemoryRuntime {
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
-        let forgotten = delete_source_records(&mut connection, sources, now, related_memory)?;
+        let forgotten = delete_source_records(
+            &mut connection,
+            sources,
+            now,
+            self.inferred_expiry_cutoff(now),
+            related_memory,
+        )?;
         if let Err(projection_error) = self.refresh_deleted_source_projections(&connection, sources)
         {
             return Err(MemoryError::SourceDeletionCommitted {

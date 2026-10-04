@@ -189,7 +189,7 @@ async fn unbound_opposition_cannot_escape_known_authority_with_a_new_label() {
                 }
                 let projection =
                     std::fs::read_to_string(root.path().join("user/MEMORY.md")).unwrap();
-                assert!(!projection.contains("prefer spaces"));
+                assert_eq!(projection.contains("prefer spaces"), !explicit_authority);
             }
         }
     }
@@ -307,7 +307,7 @@ async fn v6_key_drift_repair_rebinds_all_memberships_and_withholds_unsafe_recall
         assert_eq!(
             snapshot,
             (
-                "8".into(),
+                "9".into(),
                 vec![
                     (
                         "indentation".into(),

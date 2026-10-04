@@ -477,7 +477,7 @@ async fn explicit_remember_preserves_incompatible_legacy_key_collision() {
                     normalized_key: "use foo1".to_owned(),
                     body: "Use foo1".to_owned(),
                     origin: MemoryOrigin::InferredSession,
-                    state: MemoryState::Active,
+                    state: MemoryState::Stale,
                     created_at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
                         .expect("created timestamp")
                         .with_timezone(&Utc),

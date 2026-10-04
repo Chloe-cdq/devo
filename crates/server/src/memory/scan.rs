@@ -66,10 +66,12 @@ impl MemoryRuntime {
                         let previous_timeout: u64 =
                             connection.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
                         connection.busy_timeout(Duration::ZERO)?;
+                        let now = (memory.clock)();
                         let result = super::source_deletion::delete_source_records(
                             &mut connection,
                             &sources,
-                            chrono::Utc::now(),
+                            now,
+                            memory.inferred_expiry_cutoff(now),
                             related_memory,
                         );
                         if let Err(error) =
@@ -146,7 +148,7 @@ impl MemoryRuntime {
         context: ScanContext,
     ) -> anyhow::Result<()> {
         let memory = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || memory.prune_expired(chrono::Utc::now())).await??;
+        tokio::task::spawn_blocking(move || memory.prune_expired((memory.clock)())).await??;
         if !self.config.enabled || self.config.max_sources_per_scan == 0 {
             return Ok(());
         }
