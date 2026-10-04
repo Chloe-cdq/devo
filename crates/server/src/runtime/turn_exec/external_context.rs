@@ -61,6 +61,7 @@ impl ServerRuntime {
         if let Some(memory) = &self.memory {
             memory.begin_external_context_sources(&sources);
         }
+        let mut marker_unavailable = false;
         for (source_id, path) in records {
             if let Some(path) = path {
                 let store = self.rollout_store.clone();
@@ -69,6 +70,7 @@ impl ServerRuntime {
                 })
                 .await;
                 if !matches!(marker, Ok(Ok(()))) {
+                    marker_unavailable = true;
                     if let Some(memory) = &self.memory {
                         memory.note_source_provenance_storage_failure();
                     }
@@ -80,6 +82,9 @@ impl ServerRuntime {
         }
         if let Some(memory) = &self.memory {
             memory.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
+        }
+        if marker_unavailable {
+            return Err("external-context history could not be persisted".into());
         }
         Ok(())
     }

@@ -32,10 +32,13 @@ mod runtime_test_support;
 pub(crate) mod scan;
 mod schema;
 mod source;
+mod source_eligibility;
 #[cfg(test)]
 mod source_intent_tests;
 mod source_lifecycle;
 mod source_provenance;
+#[cfg(test)]
+pub(crate) mod source_read_test_support;
 mod stored_values;
 #[cfg(test)]
 mod test_support;
@@ -61,7 +64,7 @@ use devo_protocol::native::rpc_memory::MemoryKind;
 use devo_protocol::native::rpc_memory::MemoryOrigin;
 use devo_protocol::native::rpc_memory::MemoryScope;
 use devo_protocol::native::rpc_memory::MemoryState;
-use devo_protocol::native::rpc_memory::MemoryStatus;
+use devo_protocol::native::rpc_memory::{MemorySourceExclusionReason, MemoryStatus};
 use devo_protocol::native::session::MemorySetting;
 use rusqlite::Connection;
 use thiserror::Error;
@@ -157,6 +160,7 @@ pub struct MemoryRuntime {
     source_recovery_pending: AtomicBool,
     pending_external_sources: Mutex<HashSet<SessionId>>,
     excluded_external_sources: Mutex<HashSet<String>>,
+    source_exclusion_reasons: Mutex<BTreeSet<MemorySourceExclusionReason>>,
 }
 
 #[derive(Default)]
@@ -233,6 +237,7 @@ impl MemoryRuntime {
             source_recovery_pending: AtomicBool::new(false),
             pending_external_sources: Mutex::new(HashSet::new()),
             excluded_external_sources: Mutex::new(excluded_external_sources),
+            source_exclusion_reasons: Mutex::new(BTreeSet::new()),
         };
         runtime.prune_expired((runtime.clock)())?;
         runtime.rebuild_projections()?;
@@ -516,6 +521,13 @@ impl MemoryRuntime {
             )?,
             last_successful_scan_at: last_successful_scan_at(&connection)?,
             error_classes,
+            source_exclusion_reasons: self
+                .source_exclusion_reasons
+                .lock()
+                .map_err(|_| MemoryError::LockPoisoned)?
+                .iter()
+                .copied()
+                .collect(),
         })
     }
 }

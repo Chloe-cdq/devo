@@ -179,6 +179,7 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             error_job_count: 0,
             last_successful_scan_at: None,
             error_classes: Vec::new(),
+            source_exclusion_reasons: Vec::new(),
         })
     );
     assert_eq!(
@@ -576,7 +577,8 @@ async fn native_memory_status_reports_disabled_runtime() -> Result<()> {
             "retryingJobCount": 0,
             "errorJobCount": 0,
             "lastSuccessfulScanAt": null,
-            "errorClasses": []
+            "errorClasses": [],
+            "sourceExclusionReasons": []
         })
     );
     Ok(())
@@ -648,6 +650,7 @@ async fn memory_status_reports_last_successful_scan_and_error_classes() -> Resul
                     .expect("timestamp")
             ),
             error_classes: vec!["provider_unavailable".to_string(), "unknown".to_string()],
+            source_exclusion_reasons: Vec::new(),
         }
     );
     Ok(())

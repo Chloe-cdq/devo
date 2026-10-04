@@ -1,6 +1,7 @@
 use super::*;
 use crate::memory::{MemoryCommand, MemoryCommandResult};
-use crate::support::initialize_connection;
+use crate::support::{initialize_connection, wait_for_session_notification};
+use devo_core::tools::AgentToolCoordinator;
 use pretty_assertions::assert_eq;
 
 enum SourceStoreFailure {
@@ -10,7 +11,7 @@ enum SourceStoreFailure {
     BothDatabases,
 }
 
-async fn hosted_web_survives_source_store_failure(failure: SourceStoreFailure) -> Result<()> {
+async fn hosted_web_with_source_store_failure(failure: SourceStoreFailure) -> Result<()> {
     let root = TempDir::new()?;
     std::fs::write(
         root.path().join("config.toml"),
@@ -75,8 +76,27 @@ async fn hosted_web_survives_source_store_failure(failure: SourceStoreFailure) -
         std::fs::remove_file(&projection)?;
         std::fs::create_dir(&projection)?;
     }
-    super::lineage::spawn_and_complete(&runtime, &mut notifications, parent, "Search the web")
-        .await?;
+    let child = Arc::clone(&runtime)
+        .spawn_agent(devo_protocol::SpawnAgentParams {
+            session_id: parent,
+            message: "Search the web".into(),
+            fork_turns: Some("none".into()),
+            max_turns: None,
+            tool_policy: devo_protocol::AgentToolPolicy::Inherit,
+            ephemeral: true,
+        })
+        .await?
+        .child_session_id;
+    let completed =
+        wait_for_session_notification(&mut notifications, "turn/completed", child).await?;
+    assert_eq!(
+        completed["params"]["turn"]["status"],
+        if matches!(failure, SourceStoreFailure::RolloutMarker) {
+            "failed"
+        } else {
+            "completed"
+        }
+    );
     runtime
         .memory
         .as_ref()
@@ -169,31 +189,31 @@ async fn hosted_web_survives_source_store_failure(failure: SourceStoreFailure) -
 }
 
 /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
-/// Verifies: a rollout marker failure preserves foreground Web and restart-safe source exclusion.
+/// Verifies: a canonical marker failure stops hosted Web publication and retains restart-safe source exclusion.
 #[tokio::test]
-async fn hosted_web_survives_rollout_marker_failure() -> Result<()> {
-    hosted_web_survives_source_store_failure(SourceStoreFailure::RolloutMarker).await
+async fn hosted_web_rejects_rollout_marker_failure() -> Result<()> {
+    hosted_web_with_source_store_failure(SourceStoreFailure::RolloutMarker).await
 }
 
 /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
 /// Verifies: rejected legacy ledger writes are never attempted and independent exclusion keeps Web healthy.
 #[tokio::test]
 async fn hosted_web_survives_index_ledger_failure() -> Result<()> {
-    hosted_web_survives_source_store_failure(SourceStoreFailure::IndexLedger).await
+    hosted_web_with_source_store_failure(SourceStoreFailure::IndexLedger).await
 }
 
 /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
 /// Verifies: committed independent exclusion survives projection failure and keeps old inferred content out of search after restart.
 #[tokio::test]
 async fn hosted_web_survives_committed_exclusion_projection_failure() -> Result<()> {
-    hosted_web_survives_source_store_failure(SourceStoreFailure::IndexLedgerAndProjection).await
+    hosted_web_with_source_store_failure(SourceStoreFailure::IndexLedgerAndProjection).await
 }
 
 /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
 /// Verifies: both exclusion databases can fail without blocking hosted Web; canonical history fences inferred memory across restart and repair.
 #[tokio::test]
 async fn hosted_web_survives_both_exclusion_databases_failing() -> Result<()> {
-    hosted_web_survives_source_store_failure(SourceStoreFailure::BothDatabases).await
+    hosted_web_with_source_store_failure(SourceStoreFailure::BothDatabases).await
 }
 
 enum MemoryStore {
@@ -269,11 +289,13 @@ async fn tool_search_survives_both_exclusion_databases_failing() -> Result<()> {
         root.path().join("config.toml"),
         "[memory]\nenabled = true\n[tools.web_search]\nmode = 'disabled'\n[tools.web_fetch]\nmode = 'disabled'\n",
     )?;
-    let runtime = build_runtime_with_default_tools(
+    let runtime = build_runtime_with_tools(
         root.path(),
         Arc::new(ToolSearchProvider {
             calls: std::sync::atomic::AtomicUsize::new(0),
+            tool_name: "ToolSearch",
         }),
+        Arc::new(devo_core::tools::create_default_tool_registry()),
     );
     let connection = initialized_connection(&runtime).await;
     let session = start_durable_session(&runtime, connection, root.path()).await?;
@@ -375,10 +397,10 @@ async fn unavailable_memory_retries_failed_ancestor_marker_before_restart() -> R
     let backup = root.path().join("rollout-backup.jsonl");
     std::fs::rename(&record.rollout_path, &backup)?;
     std::fs::create_dir(&record.rollout_path)?;
-    runtime
+    let marked = runtime
         .mark_external_context_used(/*rollout_path*/ None, SessionId::new(), Some(parent))
-        .await
-        .map_err(anyhow::Error::msg)?;
+        .await;
+    assert!(marked.is_err());
     std::fs::remove_dir(&record.rollout_path)?;
     std::fs::rename(&backup, &record.rollout_path)?;
     runtime.rollout_store.append_session_meta(&record)?;

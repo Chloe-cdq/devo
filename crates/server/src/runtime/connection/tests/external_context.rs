@@ -2,6 +2,8 @@ use super::*;
 use devo_core::{InternalRecordV2, ParsedRolloutLine, RolloutLineV2, parse_rollout_line};
 use pretty_assertions::assert_eq;
 
+#[path = "external_context_fork.rs"]
+mod fork;
 #[path = "external_context_lineage.rs"]
 mod lineage;
 
@@ -10,6 +12,7 @@ mod storage;
 
 struct ToolSearchProvider {
     calls: std::sync::atomic::AtomicUsize,
+    tool_name: &'static str,
 }
 
 struct HostedWebProvider {
@@ -99,9 +102,10 @@ fn durable_source_exclusion(root: &std::path::Path, source: SessionId) -> Result
     )?)
 }
 
-fn build_runtime_with_default_tools(
+fn build_runtime_with_tools(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
+    registry: Arc<devo_core::tools::ToolRegistry>,
 ) -> Arc<ServerRuntime> {
     let db = Arc::new(
         crate::db::Database::open(data_root.join("external_context.db"))
@@ -112,7 +116,7 @@ fn build_runtime_with_default_tools(
         ServerRuntimeDependencies::new(
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
-            Arc::new(devo_core::tools::create_default_tool_registry()),
+            registry,
             crate::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
@@ -149,7 +153,7 @@ async fn failed_external_marker_write_keeps_source_excluded() -> Result<()> {
                 /*parent_session_id*/ None
             )
             .await
-            .is_ok()
+            .is_err()
     );
     runtime
         .memory
@@ -200,7 +204,7 @@ async fn failed_parent_marker_still_excludes_entire_durable_ancestor_chain() -> 
         runtime
             .mark_external_context_used(/*rollout_path*/ None, child_id, Some(parent_id))
             .await
-            .is_ok()
+            .is_err()
     );
     let memory = runtime.memory.as_ref().context("memory runtime")?;
     for source in [child_id, parent_id, grandparent_id] {
@@ -253,7 +257,7 @@ impl ModelProviderSDK for ToolSearchProvider {
                 id: "search-tool".into(),
                 content: vec![devo_protocol::ResponseContent::ToolUse {
                     id: "tool-1".into(),
-                    name: "ToolSearch".into(),
+                    name: self.tool_name.into(),
                     input: serde_json::json!({"query":"select:read"}),
                 }],
                 stop_reason: Some(devo_protocol::StopReason::ToolUse),
@@ -325,8 +329,13 @@ async fn durable_turn_persists_tool_search_marker_on_dispatch() -> Result<()> {
     )?;
     let provider = Arc::new(ToolSearchProvider {
         calls: std::sync::atomic::AtomicUsize::new(0),
+        tool_name: "ToolSearch",
     });
-    let runtime = build_runtime_with_default_tools(root.path(), provider);
+    let runtime = build_runtime_with_tools(
+        root.path(),
+        provider,
+        Arc::new(devo_core::tools::create_default_tool_registry()),
+    );
     let connection_id = initialized_connection(&runtime).await;
     let session_id = start_durable_session(&runtime, connection_id, root.path()).await?;
     let record = runtime
@@ -354,6 +363,7 @@ async fn durable_text_only_turn_does_not_persist_external_context_marker() -> Re
     let root = TempDir::new()?;
     let provider = Arc::new(ToolSearchProvider {
         calls: std::sync::atomic::AtomicUsize::new(1),
+        tool_name: "ToolSearch",
     });
     let runtime = build_runtime_with_provider(root.path(), provider);
     let connection_id = initialized_connection(&runtime).await;
@@ -400,5 +410,65 @@ async fn subagent_external_context_marks_parent_session() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     assert_eq!(external_context_fact_count(&record.rollout_path)?, 1);
+    Ok(())
+}
+
+/// Trace: L2-DES-MEM-001 DD-7.
+/// Verifies: local Web and MCP dispatch use the real turn callback and write one durable fact across repeated invocations and restart.
+#[tokio::test]
+async fn local_web_and_mcp_dispatch_persist_one_fact() -> Result<()> {
+    for tool_name in ["web_fetch", "mcp__test__search"] {
+        let root = TempDir::new()?;
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[tools.web_search]\nmode='disabled'\n[tools.web_fetch]\nmode='disabled'\n",
+        )?;
+        // Substitute only the external I/O handler; the router, callback,
+        // canonical persistence, and restart recovery remain real.
+        let defaults = devo_core::tools::create_default_tool_registry();
+        let mut builder = devo_core::tools::ToolRegistryBuilder::new();
+        let mut spec = defaults
+            .spec("ToolSearch")
+            .context("tool search spec")?
+            .clone();
+        spec.name = tool_name.into();
+        builder.push_spec(spec);
+        builder.register_handler(
+            tool_name,
+            Arc::clone(defaults.get("ToolSearch").context("handler")?),
+        );
+        let provider = Arc::new(ToolSearchProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            tool_name,
+        });
+        let runtime =
+            build_runtime_with_tools(root.path(), provider.clone(), Arc::new(builder.build()));
+        let connection = initialized_connection(&runtime).await;
+        let session = start_durable_session(&runtime, connection, root.path()).await?;
+        let record = runtime
+            .session(session)
+            .await
+            .unwrap()
+            .record()
+            .await
+            .flatten()
+            .unwrap();
+        for _ in 0..2 {
+            provider.calls.store(0, std::sync::atomic::Ordering::SeqCst);
+            let turn = start_turn(&runtime, connection, session, "Use the external tool").await?;
+            assert_eq!(
+                completed_turn(&runtime, turn).await?.status,
+                TurnStatus::Completed
+            );
+        }
+        let restarted =
+            crate::persistence::RolloutStore::new(root.path().into(), /*event_log*/ None);
+        restarted.mark_external_context_used_at(&record.rollout_path, session)?;
+        assert_eq!(
+            external_context_fact_count(&record.rollout_path)?,
+            1,
+            "{tool_name}"
+        );
+    }
     Ok(())
 }

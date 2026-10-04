@@ -18,6 +18,26 @@ skipped to bound background input work.
 Automation identity is checked in both session metadata and persisted
 `SessionSource` field records. Malformed source values also exclude the session.
 
+Source evaluation checks indexed root identity and persistence before opening a
+journal. It then streams the shared source headers, skipping message and tool
+payloads, to inspect durable external-context facts, Native ephemeral identity,
+lineage, and automation source settings before loading transcript text. Every
+pre-attempt and pre-commit reread repeats this streaming admission check. A
+length change during a read invalidates its captured prefix instead of hiding
+newly appended facts. Immediately before extraction, the scanner rechecks live
+activity and source fences and releases work that is no longer eligible. Unknown
+or malformed source history fails closed. User forks remain excluded in their
+entirety; the first release does not separate new fork turns from borrowed history.
+
+Native `memory/status.sourceExclusionReasons` reports a bounded, deduplicated
+set of reasons observed by scans in the current runtime. It resets on restart;
+subsequent scans re-evaluate the durable sources. Codes are `external_context_used`,
+`ephemeral`, `non_root`, `automation`, `fork_history`, `not_persisted`,
+`source_unavailable`, `invalid_history`, `source_fenced`, and `active`, in that
+order. `source_fenced` includes pending deletion and provenance recovery.
+These diagnostics contain no session IDs, paths, transcript text, or provider
+output and are separate from storage error classes.
+
 Actual external-tool use first resolves the complete ancestor chain and closes
 memory admission for every source before publishing external content. Loaded
 actor snapshots retain ephemeral ancestors; the index retains unloaded durable
@@ -41,11 +61,20 @@ legacy exclusion rows, including reconciled receipts, through a separate
 read-only connection that does not hold the foreground database mutex.
 
 Canonical marker retry ownership belongs to session persistence even when memory
-cannot initialize. A failed marker is retried before the next ordinary append;
+cannot initialize. A failed canonical marker rejects external-tool publication
+even when optional memory is unavailable, and is retried before the next ordinary append;
 remaining ancestor markers are still attempted. This retry ownership is shared
 across store clones and needs no primary-database fallback. Ordinary session
 history remains the durable recovery authority when optional exclusion storage
 rejects writes.
+
+User forks copy the durable external-context fact even when their selected
+history retains no external tool calls. The original fact survives rollback,
+resume, and store restart; repeated marking writes no duplicate fact. Queries
+and repeated marking observe committed facts from other store instances. New
+external use in a user fork does not propagate backward through `fork_from_id`.
+Explicit remember requests from an excluded interactive root still run normal
+validation and credential rejection.
 
 Startup withholds inferred memory and extraction until background recovery has
 read canonical source facts and restored their exclusions. Recovery captures a
@@ -53,7 +82,8 @@ stable file prefix under the append lock and streams provenance outside that
 lock, skipping large message and tool payloads. Recovery and passive admission
 share one source-header decoder for Native and frozen legacy journals, including
 identities in legacy turn, item, and field records when a session header is absent.
-A known source with a crash tail or unsupported history version is quarantined
+A known source with malformed eligibility metadata, a crash tail, or an unsupported
+history version is quarantined
 independently; if source identity cannot be established, inference remains closed until recovery succeeds. The
 next scan or reconciliation retries pending storage repair. Memory status reports
 `degraded` and the content-free `source_provenance_storage` class for observed
