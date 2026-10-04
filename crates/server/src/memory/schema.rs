@@ -149,6 +149,12 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
     }
+    if previous_version_number < 9 {
+        transaction.execute_batch(
+            "DROP VIEW IF EXISTS memory_contested_proposal_claims;
+             DROP VIEW IF EXISTS memory_live_proposal_claims;",
+        )?;
+    }
     proposal_relations::create_live_view(&transaction)?;
     if previous_version_number == current_version {
         transaction.commit()?;

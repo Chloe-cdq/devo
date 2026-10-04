@@ -258,10 +258,6 @@ async fn explicit_conflict_resolution_retains_both_claim_associations() {
             _ => unreachable!("test choices"),
         };
         let mut expected = explicit;
-        expected.updated_at = chrono::DateTime::from_timestamp_millis(
-            (supporting.observed_at + Duration::hours(7)).timestamp_millis(),
-        )
-        .unwrap();
         expected.provenance.insert(
             expected.provenance.len() - 1,
             MemoryProvenance {
@@ -505,7 +501,6 @@ async fn proposal_migration_failure_rolls_back_and_can_retry() {
     );
     let explicit = remember(&runtime, "i prefer tabs").await;
     install_v5_active_competitor(&runtime);
-    runtime.rebuild_projections().unwrap();
     let before = runtime.list(ListMemoryRequest::default()).unwrap().data;
     let projection = std::fs::read(root.path().join("user/MEMORY.md")).unwrap();
     runtime

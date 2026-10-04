@@ -102,7 +102,7 @@ impl MemoryRuntime {
         context: ScanContext,
     ) -> anyhow::Result<()> {
         let memory = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || memory.prune_expired(chrono::Utc::now())).await??;
+        tokio::task::spawn_blocking(move || memory.prune_expired((memory.clock)())).await??;
         if !self.config.enabled || self.config.max_sources_per_scan == 0 {
             return Ok(());
         }

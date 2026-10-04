@@ -59,6 +59,9 @@ pub(super) fn create_live_view(transaction: &Transaction<'_>) -> Result<(), Memo
         "CREATE VIEW IF NOT EXISTS memory_live_proposal_claims AS
          SELECT claim.* FROM memory_proposal_claims AS claim
          WHERE claim.legacy_unattributed = 1 OR EXISTS (
+             SELECT 1 FROM memory_entries AS authority
+             WHERE authority.entry_id = claim.entry_id AND authority.origin = 'explicit_user'
+               AND authority.state IN ('active', 'restored')) OR EXISTS (
              SELECT 1 FROM memory_proposal_claim_sources AS support
              WHERE support.scope_type = claim.scope_type
                AND support.scope_id = claim.scope_id
@@ -184,6 +187,16 @@ pub(super) fn admit_inferred(
             source_session_id: Some(source_session_id),
         },
     )?;
+    if let Some(entry) = &existing {
+        let replacement: Option<String> = transaction.query_row(
+            "SELECT replacement_entry_id FROM memory_entries WHERE entry_id = ?1",
+            [&entry.entry_id],
+            |row| row.get(0),
+        )?;
+        if replacement.is_some() {
+            return Ok(InferredAdmission::ExplicitAuthority);
+        }
+    }
     if let Some(entry) = &existing
         && entry.origin == MemoryOrigin::ExplicitUser
     {

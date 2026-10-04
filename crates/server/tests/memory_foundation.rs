@@ -237,14 +237,14 @@ async fn default_memory_runtime_is_disabled_and_schema_is_idempotent() {
             |row| row.get(0),
         )
         .expect("read memory schema version");
-    assert_eq!(schema_version, "8");
+    assert_eq!(schema_version, "9");
 }
 
 /// Trace: L2-DES-MEM-001 Rev 3 DD-4/DD-8
 /// Verifies: future and malformed schema versions are rejected before any schema mutation.
 #[test]
 fn unsupported_memory_schema_is_rejected_without_downgrade() -> Result<()> {
-    for unsupported_version in ["9", "future"] {
+    for unsupported_version in ["10", "future"] {
         let data_root = TempDir::new()?;
         let memory_root = data_root.path().join("memory");
         std::fs::create_dir_all(&memory_root)?;
@@ -379,7 +379,7 @@ fn legacy_memory_jobs_schema_is_migrated() -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(schema_version, "8");
+    assert_eq!(schema_version, "9");
     Ok(())
 }
 
@@ -590,7 +590,12 @@ async fn native_memory_status_reports_disabled_runtime() -> Result<()> {
 async fn memory_status_reports_last_successful_scan_and_error_classes() -> Result<()> {
     let data_root = TempDir::new()?;
     let memory_root = data_root.path().join("memory");
-    let runtime = MemoryRuntime::open(memory_root.clone(), MemoryConfig::default())?;
+    // Keep job detail while testing status reporting independently of retention.
+    let config = MemoryConfig {
+        candidate_and_job_retention_days: u64::MAX,
+        ..MemoryConfig::default()
+    };
+    let runtime = MemoryRuntime::open(memory_root.clone(), config.clone())?;
     drop(runtime);
 
     let connection = Connection::open(memory_root.join("memory.sqlite3"))?;
@@ -617,7 +622,7 @@ async fn memory_status_reports_last_successful_scan_and_error_classes() -> Resul
     )?;
     drop(connection);
 
-    let runtime = MemoryRuntime::open(memory_root, MemoryConfig::default())?;
+    let runtime = MemoryRuntime::open(memory_root, config)?;
     let status = match runtime.execute_command(MemoryCommand::Status).await? {
         MemoryCommandResult::Status(status) => status,
         MemoryCommandResult::Remember(_)

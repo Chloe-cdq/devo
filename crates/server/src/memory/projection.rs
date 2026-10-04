@@ -44,6 +44,9 @@ pub(super) fn render_projection(scope: MemoryScope, entries: &[MemoryEntry]) -> 
                 entry.created_at.to_rfc3339(),
                 entry.updated_at.to_rfc3339(),
             ));
+            if let Some(replacement) = &entry.replacement_entry_id {
+                projection.push_str(&format!("  - replacement_entry_id: {replacement}\n"));
+            }
             if !entry.provenance.is_empty() {
                 projection.push_str("  - sources:\n");
                 for source in &entry.provenance {
