@@ -33,6 +33,8 @@ mod source_eligibility;
 mod source_intent_tests;
 mod source_lifecycle;
 mod source_provenance;
+#[cfg(test)]
+pub(crate) mod source_read_test_support;
 mod stored_values;
 #[cfg(test)]
 mod test_support;

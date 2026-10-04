@@ -328,6 +328,20 @@ impl MemoryRuntime {
                         extra.remove(key);
                     }
                 }
+                // The awaited snapshot read may have overlapped a new turn or
+                // external-context intent. Revalidate before sending any text.
+                let active = context.activity.is_active(session_id).await;
+                let fenced = self.scan_source_has_intent(&source_id).await;
+                if active || fenced {
+                    self.note_source_exclusion(if fenced {
+                        SourceExclusion::SourceFenced
+                    } else {
+                        SourceExclusion::Active
+                    });
+                    let memory = Arc::clone(&self);
+                    tokio::task::spawn_blocking(move || memory.release_job(&claim)).await??;
+                    break;
+                }
                 let response =
                     tokio::time::timeout(Duration::from_secs(60), provider.completion(request))
                         .await;

@@ -22,7 +22,10 @@ Source evaluation checks indexed root identity and persistence before opening a
 journal. It then streams the shared source headers, skipping message and tool
 payloads, to inspect durable external-context facts, Native ephemeral identity,
 lineage, and automation source settings before loading transcript text. Every
-pre-attempt and pre-commit reread repeats this streaming admission check. Unknown
+pre-attempt and pre-commit reread repeats this streaming admission check. A
+length change during a read invalidates its captured prefix instead of hiding
+newly appended facts. Immediately before extraction, the scanner rechecks live
+activity and source fences and releases work that is no longer eligible. Unknown
 or malformed source history fails closed. User forks remain excluded in their
 entirety; the first release does not separate new fork turns from borrowed history.
 

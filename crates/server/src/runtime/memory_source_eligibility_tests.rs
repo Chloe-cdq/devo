@@ -186,3 +186,61 @@ async fn excluded_external_source_can_remember_only_validated_explicit_content()
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-7.
+/// Verifies: an exclusion arriving after the pre-attempt read prevents any extractor request.
+#[tokio::test]
+async fn external_fence_after_source_read_prevents_extraction() -> Result<()> {
+    use crate::memory::source_read_test_support::{ReadPoint, on_read};
+
+    let (root, runtime, provider) = setup(/*sources*/ 1, /*permits*/ 1)?;
+    let metadata = runtime.deps.db.list_root_sessions()?[0].clone();
+    let path = runtime
+        .deps
+        .db
+        .get_session_index(&metadata.session_id)?
+        .unwrap()
+        .rollout_path
+        .unwrap();
+    let memory = Arc::clone(runtime.memory.as_ref().unwrap());
+    let store = runtime.rollout_store.clone();
+    let marker_path = path.clone();
+    // Skip admission's first read; mark the completed pre-attempt snapshot.
+    let _hook = on_read(&path, ReadPoint::Complete, /*skip_reads*/ 1, move || {
+        memory.begin_external_context_sources(&[metadata.session_id]);
+        store
+            .mark_external_context_used_at(&marker_path, metadata.session_id)
+            .unwrap();
+    });
+    scan(&runtime, root.path()).await?;
+    let entries = runtime
+        .memory
+        .as_ref()
+        .unwrap()
+        .execute_command(crate::memory::MemoryCommand::List(
+            crate::memory::ListMemoryRequest::default(),
+        ))
+        .await?;
+    let crate::memory::MemoryCommandResult::List(entries) = entries else {
+        panic!("list result")
+    };
+    let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+    let job = connection.query_row(
+        "SELECT state, attempt_count, lease_owner, lease_until FROM memory_jobs
+         WHERE source_session_id = ?1",
+        [metadata.session_id.to_string()],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
+    )?;
+    assert_eq!(
+        (provider.calls.load(Ordering::SeqCst), entries.data, job),
+        (0, Vec::new(), ("pending".into(), 0, None, None))
+    );
+    Ok(())
+}

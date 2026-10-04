@@ -43,6 +43,11 @@ pub(crate) struct SourceMessage {
 pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSource>> {
     let mut file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
+    #[cfg(test)]
+    super::source_read_test_support::run(
+        path,
+        super::source_read_test_support::ReadPoint::AfterMetadata,
+    );
     if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
         return Ok(None);
     }
@@ -56,9 +61,18 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
         return Ok(None);
     }
     file.rewind()?;
+    #[cfg(test)]
+    super::source_read_test_support::run(
+        path,
+        super::source_read_test_support::ReadPoint::BeforeTranscript,
+    );
+    // A bounded prefix must not hide facts appended after length capture.
+    if file.metadata()?.len() != metadata.len() {
+        return Ok(None);
+    }
     let mut bytes = Vec::new();
-    file.take(metadata.len()).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+    file.by_ref().take(metadata.len()).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != metadata.len() || file.metadata()?.len() != metadata.len() {
         return Ok(None);
     }
     let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -481,6 +495,11 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     }
     // Complete raw bytes include edits, settings, rollback, and non-text activity.
     let watermark = format!("{:x}", Sha256::digest(&bytes));
+    #[cfg(test)]
+    super::source_read_test_support::run(
+        path,
+        super::source_read_test_support::ReadPoint::Complete,
+    );
     Ok(Some(ExtractableSource {
         session_id: SessionId::from_string(session.id.to_string()),
         workspace_root: session.cwd,
