@@ -20,6 +20,13 @@ operation. The three caller-facing operations remain `prepare_turn`,
 `enqueue_source`, and `execute_command`; identity, storage, and revocation
 remain owned by Memory.
 
+Memory search queries and list text filters match literal substrings in entry
+bodies and normalized keys. Percent signs, underscores, and exclamation marks
+are ordinary text, not query syntax. Matching retains the existing ASCII
+case-insensitive behavior. Search queries retain the existing trimming and
+1-to-1024-character validation; absent or empty list text applies no text
+restriction.
+
 Mixed session settings patches compare permission targets with canonical
 persisted settings before appending a permission field. Repairing a rejected
 actor notification preserves the existing explicit sandbox without appending
