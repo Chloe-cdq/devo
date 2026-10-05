@@ -38,6 +38,7 @@ impl MemoryRuntime {
         }
 
         let scope_id = self.scope_id(request.scope, &request.workspace_root)?;
+        let query = escape_like_text(&request.query);
         let now = (self.clock)();
         self.expire_inferred(now)?;
         let mut pending_source_deletion = self.has_pending_source_deletions();
@@ -53,7 +54,7 @@ impl MemoryRuntime {
                AND scope_id = ?2
                AND (?3 IS NULL OR kind = ?3)
                AND ((?4 IS NULL AND state IN ('active', 'restored')) OR state = ?4)
-               AND (body LIKE '%' || ?5 || '%' OR normalized_key LIKE '%' || ?5 || '%')
+               AND (body LIKE '%' || ?5 || '%' ESCAPE '!' OR normalized_key LIKE '%' || ?5 || '%' ESCAPE '!')
                AND (?7 = 0 OR origin = 'explicit_user')
              ORDER BY updated_at DESC, entry_id ASC
              LIMIT ?6",
@@ -65,7 +66,7 @@ impl MemoryRuntime {
                         scope_id,
                         request.kind.map(kind_name),
                         request.state.map(state_name),
-                        request.query.as_str(),
+                        query.as_str(),
                         SEARCH_LIMIT,
                         pending_source_deletion,
                     ],
@@ -140,7 +141,7 @@ impl MemoryRuntime {
                AND (?3 IS NULL OR kind = ?3)
                AND (?4 IS NULL OR state = ?4)
                AND (?5 IS NULL OR origin = ?5)
-               AND (?6 IS NULL OR body LIKE '%' || ?6 || '%' OR normalized_key LIKE '%' || ?6 || '%')
+               AND (?6 IS NULL OR body LIKE '%' || ?6 || '%' ESCAPE '!' OR normalized_key LIKE '%' || ?6 || '%' ESCAPE '!')
                AND (?9 = 0 OR origin = 'explicit_user')
              ORDER BY updated_at DESC, entry_id ASC
              LIMIT ?7 OFFSET ?8";
@@ -151,6 +152,7 @@ impl MemoryRuntime {
         let kind = request.kind.map(kind_name);
         let state = request.state.map(state_name);
         let origin = request.origin.map(origin_name);
+        let text = request.text.as_deref().map(escape_like_text);
         loop {
             let mut statement = connection.prepare(query)?;
             let ids = statement
@@ -161,7 +163,7 @@ impl MemoryRuntime {
                         kind,
                         state,
                         origin,
-                        request.text.as_deref(),
+                        text.as_deref(),
                         i64::from(limit) + 1,
                         i64::try_from(offset).map_err(|_| {
                             MemoryError::InvalidRequest("memory cursor is too large".into())
@@ -193,4 +195,10 @@ impl MemoryRuntime {
             });
         }
     }
+}
+
+fn escape_like_text(text: &str) -> String {
+    text.replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_")
 }
