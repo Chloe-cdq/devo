@@ -34,7 +34,12 @@ pub(super) fn delete_source_records(
             "SELECT DISTINCT entry.entry_id, entry.scope_type, entry.scope_id, entry.normalized_key
              FROM memory_entries AS entry
              JOIN memory_evidence AS evidence ON evidence.entry_id = entry.entry_id
-             WHERE evidence.session_id = ?1",
+             WHERE evidence.session_id = ?1
+             UNION
+             SELECT entry.entry_id, entry.scope_type, entry.scope_id, entry.normalized_key
+             FROM memory_entries AS entry
+             JOIN memory_deleted_source_entries AS retry ON retry.entry_id = entry.entry_id
+             WHERE retry.source_session_id = ?1",
         )?;
             statement
                 .query_map([&source_id], |row| {
@@ -47,6 +52,15 @@ pub(super) fn delete_source_records(
                 })?
                 .collect::<Result<Vec<_>, _>>()?
         };
+        // Keep identities until session removal succeeds, so retries can still
+        // select related revocation after canonical evidence has been erased.
+        for (entry_id, _, _, _) in &affected_entries {
+            transaction.execute(
+                "INSERT OR IGNORE INTO memory_deleted_source_entries
+                 (source_session_id, entry_id) VALUES (?1, ?2)",
+                rusqlite::params![source_id, entry_id],
+            )?;
+        }
         let affected_groups = {
             let mut statement = transaction.prepare(
                 "SELECT DISTINCT scope_type, scope_id, proposal_key

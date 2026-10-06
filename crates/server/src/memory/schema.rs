@@ -96,6 +96,13 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
             excluded_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS memory_deleted_source_entries (
+            source_session_id TEXT NOT NULL,
+            entry_id TEXT NOT NULL,
+            PRIMARY KEY(source_session_id, entry_id),
+            FOREIGN KEY(entry_id) REFERENCES memory_entries(entry_id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS memory_deleted_source_scopes (
             source_session_id TEXT NOT NULL,
             scope_type TEXT NOT NULL,

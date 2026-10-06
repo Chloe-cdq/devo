@@ -298,3 +298,87 @@ async fn related_deletion_invalidates_search_without_losing_unrelated_candidates
     drop(reservation);
     Ok(())
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-6, Entry Lifecycle and Retention.
+/// Verifies: a failed ordinary deletion remains retryable with related revocation after restart.
+#[tokio::test]
+async fn related_memory_retry_after_rollout_failure_revokes_explicit_memory() -> Result<()> {
+    let (root, runtime, provider) = setup(/*sources*/ 2, /*permits*/ 0)?;
+    let sources = runtime.deps.db.list_root_sessions()?;
+    let source_id = sources[0].session_id;
+    let other_id = sources[1].session_id;
+    let entry = remember(&runtime, source_id, root.path(), "I prefer tabs").await?;
+    let unrelated = remember(&runtime, other_id, root.path(), "I prefer Rust").await?;
+    let rollout = root
+        .path()
+        .join("sessions")
+        .join(format!("source-{source_id}.jsonl"));
+    let journal = std::fs::read(&rollout)?;
+    std::fs::write(&rollout, "{\"unknown_record\":{}}\n")?;
+    let connection_id = connect(&runtime).await?;
+    let failed = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 13, "method": "session/delete", "params": {"sessionId": source_id}
+            }),
+        )
+        .await
+        .context("failed delete response")?;
+    assert!(
+        failed.get("error").is_some(),
+        "rollout deletion must fail: {failed}"
+    );
+    assert!(runtime.deps.db.get_session(&source_id)?.is_some());
+    let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+    let preserved: (String, i64, i64, i64, i64) = connection.query_row(
+        "SELECT state, (SELECT COUNT(*) FROM memory_revocations WHERE normalized_key = entry.normalized_key), (SELECT COUNT(*) FROM memory_evidence WHERE session_id = ?2), (SELECT COUNT(*) FROM memory_entries_fts WHERE entry_id = entry.entry_id), (SELECT COUNT(*) FROM memory_deleted_source_entries WHERE source_session_id = ?2) FROM memory_entries entry WHERE entry_id = ?1",
+        rusqlite::params![entry.entry_id.as_str(), source_id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    assert_eq!(preserved, ("active".into(), 0, 0, 1, 1));
+    drop(connection);
+    std::fs::write(&rollout, journal)?;
+    drop(runtime);
+    let runtime = open_scan_runtime(root.path(), provider)?;
+    runtime.memory.as_ref().unwrap().reconcile_source_intents();
+    let connection_id = connect(&runtime).await?;
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 14, "method": "session/delete", "params": {
+                    "sessionId": source_id, "relatedMemory": "forget"
+                }
+            }),
+        )
+        .await
+        .context("retry delete response")?;
+    assert_eq!(response.get("error"), None);
+    assert!(runtime.deps.db.get_session(&source_id)?.is_none());
+    runtime.memory.as_ref().unwrap().reconcile_source_intents();
+    let connection = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+    let forgotten: (String, i64, i64, i64, i64) = connection.query_row(
+        "SELECT state, (SELECT COUNT(*) FROM memory_revocations WHERE normalized_key = entry.normalized_key AND restored_at IS NULL), (SELECT COUNT(*) FROM memory_evidence WHERE session_id = ?2), (SELECT COUNT(*) FROM memory_entries_fts WHERE entry_id = entry.entry_id), (SELECT COUNT(*) FROM memory_deleted_source_entries WHERE source_session_id = ?2) FROM memory_entries entry WHERE entry_id = ?1",
+        rusqlite::params![entry.entry_id.as_str(), source_id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    assert_eq!(forgotten, ("retired".into(), 1, 0, 0, 0));
+    let active = runtime
+        .memory
+        .as_ref()
+        .unwrap()
+        .execute_command(MemoryCommand::List(ListMemoryRequest {
+            state: Some(MemoryState::Active),
+            ..ListMemoryRequest::default()
+        }))
+        .await?;
+    assert_eq!(
+        active,
+        MemoryCommandResult::List(devo_protocol::native::page::Page {
+            data: vec![unrelated],
+            next_cursor: None,
+        })
+    );
+    Ok(())
+}

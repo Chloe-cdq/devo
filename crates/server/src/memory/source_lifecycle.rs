@@ -79,6 +79,50 @@ impl MemoryRuntime {
                 }
             }
         }
+        if let Some(db) = self.deletion_ledger.as_ref() {
+            let release_retry_entries = (|| -> Result<(), MemoryError> {
+                let sources = {
+                    let connection = self
+                        .connection
+                        .lock()
+                        .map_err(|_| MemoryError::LockPoisoned)?;
+                    let mut statement = connection.prepare(
+                        "SELECT DISTINCT source_session_id FROM memory_deleted_source_entries",
+                    )?;
+                    statement
+                        .query_map([], |row| row.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                let mut completed = Vec::new();
+                for source in sources {
+                    let source_id = SessionId::try_from(source.as_str())
+                        .map_err(|error| MemoryError::InvalidStoredValue(error.to_string()))?;
+                    match db.get_session(&source_id) {
+                        Ok(None) => completed.push(source),
+                        Ok(Some(_)) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, %source, "failed to inspect deleted session")
+                        }
+                    }
+                }
+                let mut connection = self
+                    .connection
+                    .lock()
+                    .map_err(|_| MemoryError::LockPoisoned)?;
+                let transaction = connection.transaction()?;
+                for source in completed {
+                    transaction.execute(
+                        "DELETE FROM memory_deleted_source_entries WHERE source_session_id = ?1",
+                        [source],
+                    )?;
+                }
+                transaction.commit()?;
+                Ok(())
+            })();
+            if let Err(error) = release_retry_entries {
+                tracing::warn!(%error, "memory source retry identity cleanup remains pending");
+            }
+        }
         // Projection repair owns its durable scopes after canonical cleanup has
         // released the source fence. It must not hide surviving inferred entries.
         let Ok(connection) = self.connection.lock() else {
