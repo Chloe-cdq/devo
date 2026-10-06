@@ -30,8 +30,9 @@ cannot commit, so callers can retry their explicitly selected policy.
 If rollout or session-index removal fails after canonical cleanup, Memory keeps
 only the affected entry IDs associated with that source. This association survives
 restart, so retrying with `forget` still uses the normal revocation path even after
-evidence removal. Reconciliation releases these retry IDs once the session index
-confirms deletion; it does not retain the deleted evidence or conversation text.
+evidence removal. Identity merging transfers these associations to the retained
+entry. Reconciliation releases these retry IDs once the session index confirms
+deletion; it does not retain the deleted evidence or conversation text.
 
 Projection refresh is derived work. Its failure does not undo canonical cleanup
 or fail session deletion. Memory retains the affected projection scopes for a

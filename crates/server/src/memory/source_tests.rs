@@ -824,3 +824,6 @@ fn automation_source_with_contribution_on_is_excluded() {
 
 #[path = "source_identity_tests.rs"]
 mod identity_tests;
+
+#[path = "source_read_race_tests.rs"]
+mod read_race_tests;

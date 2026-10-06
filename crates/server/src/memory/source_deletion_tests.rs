@@ -105,3 +105,51 @@ async fn pending_source_deletion_rejects_explicit_remember() {
         .unwrap();
     assert_eq!(counts, (0, 0));
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 DD-6, Entry Lifecycle and Retention.
+/// Verifies: merging a legacy identity preserves failed-deletion associations for normal revocation.
+#[tokio::test]
+async fn related_memory_retry_preserves_merged_legacy_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let request = remember_request("FOO=1");
+    runtime
+        .execute_command(MemoryCommand::Remember(request.clone()))
+        .await
+        .unwrap();
+    let source = devo_protocol::SessionId::new();
+    runtime.connection.lock().unwrap().execute(
+        "INSERT INTO memory_entries(entry_id, scope_type, scope_id, kind, normalized_key, body, origin, state, created_at, updated_at)
+         VALUES('legacy-assignment', 'user', 'user', 'preference', 'foo1', 'FOO=1', 'inferred_session', 'active', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    runtime.connection.lock().unwrap().execute(
+        "INSERT INTO memory_evidence VALUES('legacy-evidence', 'legacy-assignment', ?1, NULL, NULL, '2026-09-01T00:00:00Z', 'legacy-watermark')",
+        [source.to_string()],
+    ).unwrap();
+    runtime
+        .delete_sources(
+            &[source],
+            chrono::Utc::now(),
+            RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
+    runtime
+        .execute_command(MemoryCommand::Remember(request))
+        .await
+        .unwrap();
+    runtime
+        .delete_sources(&[source], chrono::Utc::now(), RelatedMemoryDeletion::Forget)
+        .unwrap();
+    let connection = runtime.connection.lock().unwrap();
+    let stored: (String, i64, i64, i64) = connection.query_row(
+        "SELECT state,
+           (SELECT COUNT(*) FROM memory_revocations WHERE normalized_key = entry.normalized_key AND restored_at IS NULL),
+           (SELECT COUNT(*) FROM memory_entries_fts WHERE entry_id = entry.entry_id),
+           (SELECT COUNT(*) FROM memory_deleted_source_entries WHERE source_session_id = ?1 AND entry_id = entry.entry_id)
+         FROM memory_entries entry",
+        [source.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).unwrap();
+    assert_eq!(stored, ("retired".into(), 1, 0, 1));
+}

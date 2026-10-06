@@ -161,6 +161,11 @@ pub(super) fn merge_entry_records<'a>(
             rusqlite::params![keeper_id, duplicate_id],
         )?;
         transaction.execute(
+            "INSERT OR IGNORE INTO memory_deleted_source_entries(source_session_id, entry_id)
+             SELECT source_session_id, ?1 FROM memory_deleted_source_entries WHERE entry_id = ?2",
+            rusqlite::params![keeper_id, duplicate_id],
+        )?;
+        transaction.execute(
             "DELETE FROM memory_entries WHERE entry_id = ?1",
             [duplicate_id],
         )?;
