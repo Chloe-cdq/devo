@@ -23,6 +23,10 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 #[path = "support/subagent_lifecycle.rs"]
+#[expect(
+    dead_code,
+    reason = "push_scripts and build_runtime_with_workspace_config are used by other integration test targets"
+)]
 mod support;
 
 use support::ScriptedProvider;

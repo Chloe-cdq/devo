@@ -13,7 +13,7 @@ use crate::support::{
 
 #[path = "model_events.rs"]
 #[allow(dead_code)]
-mod model_events;
+pub(crate) mod model_events;
 
 use model_events::tool_call_events;
 
