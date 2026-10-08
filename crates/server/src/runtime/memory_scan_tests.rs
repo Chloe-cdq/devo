@@ -295,6 +295,9 @@ fn open_scan_runtime(
     runtime
         .rollout_store
         .index_rollout_metadata(&runtime.deps.db)?;
+    // Direct fixture scans bypass enqueue_source's recovery step. Finish it
+    // before tests mutate source journals or expect extraction to begin.
+    runtime.memory.as_ref().unwrap().reconcile_source_intents();
     Ok(runtime)
 }
 
@@ -349,7 +352,14 @@ async fn deleting_processed_source_removes_its_memory() -> Result<()> {
     let crate::memory::MemoryCommandResult::List(before) = before else {
         panic!("list result")
     };
-    assert_eq!(before.data.len(), 1);
+    assert_eq!(
+        before.data.len(),
+        1,
+        "scan status: {:?}",
+        memory
+            .execute_command(crate::memory::MemoryCommand::Status)
+            .await?
+    );
 
     assert_eq!(
         runtime

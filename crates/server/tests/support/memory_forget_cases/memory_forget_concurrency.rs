@@ -81,19 +81,21 @@ async fn direct_first_blocks_confirmation() -> Result<()> {
         "Find my tab preference",
     )
     .await?;
-    let direct_runtime = Arc::clone(&runtime);
-    let direct_entry_id = direct.entry_id.clone();
-    let direct_task = tokio::spawn(async move {
-        run_turn(
-            &direct_runtime,
-            direct_connection,
-            direct_session,
-            &mut direct_notifications,
-            &format!("Forget memory entry {direct_entry_id}"),
-        )
-        .await
-    });
+    start_turn_with_approval_policy(
+        &runtime,
+        direct_connection,
+        direct_session,
+        &format!("Forget memory entry {}", direct.entry_id),
+        Some("never"),
+    )
+    .await?;
     executor.wait_until_started().await?;
+    // The deliberate block may outlast the normal five-second completion wait.
+    // Start that wait only after release, even when this interval takes longer.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(6)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
     run_turn(
         &runtime,
         confirmation_connection,
@@ -113,7 +115,9 @@ async fn direct_first_blocks_confirmation() -> Result<()> {
         Some("invalid input: memory forget mutation is already in flight")
     );
     executor.release();
-    direct_task.await??;
+    wait_for_parent_turn_completed(&mut direct_notifications, direct_session)
+        .await
+        .context("direct forget completion")?;
     let active_response = runtime
         .handle_incoming(
             confirmation_connection,
