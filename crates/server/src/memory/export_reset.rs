@@ -21,6 +21,11 @@ impl MemoryRuntime {
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
+        // Check under the storage lock so cleanup cannot commit and clear its
+        // intent between this check and reading canonical source provenance.
+        if self.has_pending_source_deletions() {
+            return Err(MemoryError::StorageBusy);
+        }
         let transaction = connection.unchecked_transaction()?;
         let result = self.render_scope_export(&transaction, request.scope, &scope_id)?;
         transaction.commit()?;

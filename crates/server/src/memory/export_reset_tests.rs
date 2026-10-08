@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use devo_protocol::native::ids::{ItemId, SessionId, TurnId};
-use devo_protocol::native::rpc_memory::{MemoryKind, MemoryScope};
+use devo_protocol::native::rpc_memory::{MemoryKind, MemoryResetResult, MemoryScope};
 use devo_protocol::native::session::MemorySetting;
 use pretty_assertions::assert_eq;
 
@@ -244,8 +244,13 @@ async fn reset_projection_failure_is_repaired_on_restart() {
         panic!("committed reset error");
     };
     assert_eq!(
-        (result.cleared_entry_count, result.ignore_sources_before),
-        (1, epoch())
+        *result,
+        MemoryResetResult {
+            scope: MemoryScope::User,
+            cleared_entry_count: 1,
+            cleared_candidate_count: 0,
+            ignore_sources_before: epoch(),
+        }
     );
     drop(memory);
     std::fs::remove_dir(&path).unwrap();
@@ -290,7 +295,15 @@ async fn repeated_reset_never_lowers_watermark() {
     else {
         panic!("reset result");
     };
-    assert_eq!(result.ignore_sources_before, future);
+    assert_eq!(
+        result,
+        MemoryResetResult {
+            scope: MemoryScope::User,
+            cleared_entry_count: 0,
+            cleared_candidate_count: 0,
+            ignore_sources_before: future,
+        }
+    );
 }
 
 /// Trace: L2-DES-MEM-001 Privacy and Authority. Pending source cleanup fences exports.
@@ -314,6 +327,39 @@ async fn export_is_unavailable_while_source_cleanup_is_pending() {
         )))
         .await;
     assert!(matches!(result, Err(MemoryError::StorageBusy)));
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 Privacy and Authority.
+/// Clearing the ledger after a snapshot cannot authorize withdrawn provenance.
+#[tokio::test]
+async fn export_rejects_pending_cleanup_even_when_ledger_clears_before_return() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(crate::db::Database::open(root.path().join("devo.db")).unwrap());
+    let mut memory = open(&root.path().join("memory"));
+    memory.attach_deletion_ledger(Arc::clone(&db));
+    let remembered = remember_request("Use tabs");
+    let source_id = remembered.source.session_id;
+    memory
+        .execute_command(MemoryCommand::Remember(remembered))
+        .await
+        .unwrap();
+    let before = memory
+        .export(request(MemoryScope::User, Path::new("")))
+        .unwrap();
+    assert!(before.markdown.contains(&source_id.to_string()));
+    db.record_memory_source_deletions(&[source_id]).unwrap();
+
+    // Run the snapshot phase, then let cleanup finish before the command's
+    // final pending-intent check. Both phases use the real storage paths.
+    let snapshot = memory.export(request(MemoryScope::User, Path::new("")));
+    memory.reconcile_source_intents();
+    assert!(!memory.has_pending_source_deletions());
+    let after = memory
+        .export(request(MemoryScope::User, Path::new("")))
+        .unwrap();
+    assert!(after.markdown.contains("Use tabs"));
+    assert!(!after.markdown.contains(&source_id.to_string()));
+    assert!(matches!(snapshot, Err(MemoryError::StorageBusy)));
 }
 
 /// Trace: L2-DES-MEM-001 DD-3, DD-9. Reset removes all selected artifacts and preserves their other-scope peers.
@@ -342,7 +388,7 @@ async fn reset_removes_selected_artifacts_and_preserves_other_scope_artifacts() 
     };
     assert_eq!(
         result,
-        devo_protocol::native::rpc_memory::MemoryResetResult {
+        MemoryResetResult {
             scope: MemoryScope::User,
             cleared_entry_count: 1,
             cleared_candidate_count: 1,
