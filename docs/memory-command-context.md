@@ -1,12 +1,18 @@
 # Memory command context
 
-Direct Native User `memory/remember` and `memory/forget` commands resolve the
-same session context. One Native Session selector supplies the source session
+Direct Native User `memory/remember`, `memory/forget`, and `memory/reset`
+commands resolve the same session context. One Native Session selector supplies the source session
 and workspace. Multiple distinct Native Session selectors are ambiguous. When
 there are no Native Session selectors, the existing delivery subscription is
 the fallback. A validated current-user-item binding takes precedence for a
 root-agent action; direct selection does not replace that authorization check.
 User selection and candidate workspaces derive from the same selector snapshot.
+User reset requires an unambiguous interactive session after the global memory
+gate; Project reset resolves one canonical Project identity and verifies its
+interactive source. Export uses inspection context and requires no User session
+binding. Both export and reset require an explicit scope. See
+[memory-export-reset.md](memory-export-reset.md) for their wire and lifecycle
+contracts.
 
 The server passes `MemoryUserSessionSelection` (selected, unbound, or ambiguous)
 to a forget request. Memory resolves the stored entry's actual scope before

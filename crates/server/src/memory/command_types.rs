@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::{ItemId, MemoryEntryId};
 use devo_protocol::native::rpc_memory::{
-    MemoryEntry, MemoryForgetParams, MemoryForgetResult, MemoryKind, MemoryListResult,
-    MemoryOrigin, MemoryReadEntry, MemoryScope, MemorySearchResult, MemoryState, MemoryStatus,
+    MemoryEntry, MemoryExportResult, MemoryForgetParams, MemoryForgetResult, MemoryKind,
+    MemoryListResult, MemoryOrigin, MemoryReadEntry, MemoryResetResult, MemoryScope,
+    MemorySearchResult, MemoryState, MemoryStatus,
 };
 use devo_protocol::native::session::MemorySetting;
 use devo_protocol::{SessionId, TurnId};
@@ -27,6 +28,15 @@ pub enum MemoryCommand {
     Search(SearchMemoryRequest),
     /// Read bounded entry content and provenance within the caller's workspace.
     Read(ReadMemoryRequest),
+    /// Export all safe canonical entries and lifecycle metadata in one scope.
+    Export(ScopedMemoryRequest),
+    /// Clear one scope and atomically advance its source exclusion watermark.
+    Reset(ScopedMemoryRequest),
+    /// Verify a direct Native User reset caller before clearing the User scope.
+    ResetUser {
+        user_session: MemoryUserSessionSelection,
+        sessions: Vec<ProjectMemorySession>,
+    },
     /// Resolve Native Session candidates to one canonical Project scope and
     /// execute the requested management operation within that scope.
     Project {
@@ -38,6 +48,10 @@ pub enum MemoryCommand {
 /// Project-scoped management operations accepted by [`MemoryCommand::Project`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectMemoryOperation {
+    /// Export the selected Project memory scope.
+    Export,
+    /// Reset the selected Project memory scope.
+    Reset,
     /// Validate, commit, and project an explicit Project memory request.
     Remember {
         text: String,
@@ -91,6 +105,10 @@ pub enum MemoryCommandResult {
     Search(MemorySearchResult),
     /// Result of [`MemoryCommand::Read`].
     Read(MemoryReadEntry),
+    /// Result of a scoped export command.
+    Export(MemoryExportResult),
+    /// Result of a committed scoped reset command.
+    Reset(MemoryResetResult),
 }
 
 /// Input passed through the server-owned memory command seam for an explicit
@@ -263,4 +281,11 @@ pub struct PreparedMemory {
     pub project_scope_id: Option<String>,
     pub entries: Vec<devo_protocol::native::rpc_memory::MemoryRecallEntry>,
     pub snapshot_revision: String,
+}
+
+/// Explicit scope and server-resolved workspace for export and reset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedMemoryRequest {
+    pub scope: MemoryScope,
+    pub workspace_root: PathBuf,
 }

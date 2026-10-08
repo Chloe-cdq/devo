@@ -251,3 +251,46 @@ pub struct MemoryStatus {
     #[serde(default)]
     pub source_exclusion_reasons: Vec<MemorySourceExclusionReason>,
 }
+
+/// Parameters for exporting one explicit memory scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExportParams {
+    pub scope: MemoryScope,
+}
+
+/// Parameters for resetting one scope. Clients confirm the scope before dispatch.
+/// No default scope is permitted for this destructive command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryResetParams {
+    pub scope: MemoryScope,
+}
+
+/// Content-free lifecycle metadata included in a portable memory export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryScopeLifecycle {
+    pub ignore_sources_before: Option<DateTime<Utc>>,
+    pub last_rebuild_at: Option<DateTime<Utc>>,
+    pub revocation_count: u64,
+}
+
+/// Portable readable bundle without raw candidates, extraction output, or transcripts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExportResult {
+    pub scope: MemoryScope,
+    pub markdown: String,
+    pub lifecycle: MemoryScopeLifecycle,
+}
+
+/// Canonical outcome of a scoped reset, committed atomically with its exclusion fence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryResetResult {
+    pub scope: MemoryScope,
+    pub cleared_entry_count: u64,
+    pub cleared_candidate_count: u64,
+    pub ignore_sources_before: DateTime<Utc>,
+}

@@ -30,6 +30,8 @@ async fn remember(runtime: &MemoryRuntime, request: MemoryRememberRequest) -> Me
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }
@@ -56,6 +58,8 @@ async fn list(
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }
@@ -207,7 +211,7 @@ async fn v4_database_rekeys_only_explicit_rows_and_reopens_idempotently() {
     assert_eq!(
         stored,
         (
-            "9".to_string(),
+            "10".to_string(),
             "Please remember that I prefer dark mode".to_string(),
             1,
             1
@@ -517,7 +521,7 @@ async fn schema_upgrade_rekeys_and_merges_legacy_equivalent_entries() {
     assert_eq!(
         stored,
         (
-            "9".to_string(),
+            "10".to_string(),
             2,
             0,
             Some("2031-01-01T00:00:00Z".to_string())
