@@ -587,3 +587,5 @@ async fn superseded_inference_cannot_reactivate_after_authority_retires() {
 }
 #[path = "lifecycle_recall_tests.rs"]
 mod recall_tests;
+#[path = "scan_receipt_tests.rs"]
+mod scan_receipt_tests;

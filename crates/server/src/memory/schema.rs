@@ -114,6 +114,7 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
             source_session_id TEXT NOT NULL,
             source_watermark TEXT NOT NULL,
             completed_at TEXT NOT NULL,
+            job_kind TEXT,
             PRIMARY KEY(source_session_id, source_watermark)
         );
 
@@ -161,6 +162,11 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
             "DROP VIEW IF EXISTS memory_contested_proposal_claims;
              DROP VIEW IF EXISTS memory_live_proposal_claims;",
         )?;
+    }
+    if previous_version_number < 10 {
+        // Existing receipts lost their job kind; keep it unknown rather than
+        // attributing maintenance completions to source scans.
+        ensure_column(&transaction, "memory_job_receipts", "job_kind", "TEXT")?;
     }
     proposal_relations::create_live_view(&transaction)?;
     if previous_version_number == current_version {

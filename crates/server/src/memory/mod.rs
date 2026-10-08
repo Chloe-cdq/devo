@@ -82,7 +82,7 @@ pub use command_types::{
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "9";
+const MEMORY_SCHEMA_VERSION: &str = "10";
 const USER_SCOPE_ID: &str = "user";
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 100;
@@ -598,6 +598,7 @@ fn last_successful_scan_at(connection: &Connection) -> Result<Option<DateTime<Ut
              WHERE state = 'completed' AND job_kind = 'source_scan'
              UNION ALL
              SELECT completed_at AS timestamp FROM memory_job_receipts
+             WHERE job_kind = 'source_scan'
          ) ORDER BY julianday(timestamp) DESC LIMIT 1)",
         [],
         |row| row.get::<_, Option<String>>(0),
