@@ -117,6 +117,42 @@ impl MemoryConfig {
     }
 }
 
+const fn default_memory_setting_on() -> MemorySetting {
+    MemorySetting::On
+}
+
+const fn default_min_source_idle_hours() -> u64 {
+    6
+}
+
+const fn default_source_window_days() -> u64 {
+    30
+}
+
+const fn default_inferred_stale_after_days() -> u64 {
+    90
+}
+
+const fn default_candidate_and_job_retention_days() -> u64 {
+    30
+}
+
+const fn default_max_sources_per_scan() -> u32 {
+    2
+}
+
+const fn default_max_entries_per_turn() -> u32 {
+    12
+}
+
+const fn default_max_prompt_tokens() -> u32 {
+    2_000
+}
+
+const fn default_min_rate_limit_remaining_percent() -> u8 {
+    25
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,40 +199,4 @@ mod tests {
             MemorySetting::Off
         );
     }
-}
-
-const fn default_memory_setting_on() -> MemorySetting {
-    MemorySetting::On
-}
-
-const fn default_min_source_idle_hours() -> u64 {
-    6
-}
-
-const fn default_source_window_days() -> u64 {
-    30
-}
-
-const fn default_inferred_stale_after_days() -> u64 {
-    90
-}
-
-const fn default_candidate_and_job_retention_days() -> u64 {
-    30
-}
-
-const fn default_max_sources_per_scan() -> u32 {
-    2
-}
-
-const fn default_max_entries_per_turn() -> u32 {
-    12
-}
-
-const fn default_max_prompt_tokens() -> u32 {
-    2_000
-}
-
-const fn default_min_rate_limit_remaining_percent() -> u8 {
-    25
 }
