@@ -354,8 +354,8 @@ impl MemoryRuntime {
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
-            "INSERT OR IGNORE INTO memory_job_receipts(source_session_id, source_watermark, completed_at)
-             SELECT source_session_id, source_watermark, updated_at FROM memory_jobs
+            "INSERT OR IGNORE INTO memory_job_receipts(source_session_id, source_watermark, completed_at, job_kind)
+             SELECT source_session_id, source_watermark, updated_at, job_kind FROM memory_jobs
              WHERE state = 'completed' AND julianday(updated_at) <= julianday(?1)",
             [cutoff.to_rfc3339()],
         )?;

@@ -44,3 +44,12 @@ renew themselves. A turn's already prepared snapshot remains immutable.
 Schema version 9 transactionally refreshes proposal-authority views while retaining
 entry IDs, keys, evidence, and replacement links. Lifecycle tests inject a clock
 and cover the exact 90-day boundary, renewal, restart, and conflict resolution.
+
+Schema version 10 retains the job kind in minimal receipts after completed job
+details expire. `lastSuccessfulScanAt` counts completed source scans only, both
+before and after pruning and restart; maintenance jobs never advance it.
+Existing receipts without recoverable job kinds keep an unknown (`NULL`) kind.
+They continue to prevent replay of their source watermarks but are excluded from
+scan-time reporting. An upgraded database can therefore report no successful
+scan time until a known source scan completes. Raw candidates and completed job
+details still expire after the configured retention period (30 days by default).
