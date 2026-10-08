@@ -32,6 +32,9 @@ mod runtime_test_support;
 pub(crate) mod scan;
 mod schema;
 mod source;
+mod source_deletion;
+#[cfg(test)]
+mod source_deletion_tests;
 mod source_eligibility;
 #[cfg(test)]
 mod source_intent_tests;
@@ -57,7 +60,6 @@ use chrono::Utc;
 use devo_core::MemoryConfig;
 use devo_protocol::SessionId;
 use devo_protocol::native::page::Page;
-#[cfg(test)]
 use devo_protocol::native::rpc_memory::MemoryEntry;
 use devo_protocol::native::rpc_memory::MemoryForgetResult;
 use devo_protocol::native::rpc_memory::MemoryKind;
@@ -119,6 +121,8 @@ pub enum MemoryError {
     Database(#[from] rusqlite::Error),
     #[error("memory database lock was poisoned")]
     LockPoisoned,
+    #[error("memory storage is busy")]
+    StorageBusy,
     #[error("memory database returned an invalid count: {0}")]
     InvalidCount(i64),
     #[error("memory database returned an invalid timestamp: {0}")]
@@ -139,6 +143,12 @@ pub enum MemoryError {
     SecretContentRejected,
     #[error("memory database contains an invalid value: {0}")]
     InvalidStoredValue(String),
+    #[error("memory source deletion committed but projection refresh failed: {projection_error}")]
+    SourceDeletionCommitted {
+        forgotten: Vec<MemoryEntry>,
+        #[source]
+        projection_error: Box<MemoryError>,
+    },
     #[error("memory forget committed but projection refresh failed: {projection_error}")]
     ForgetCommitted {
         result: Box<MemoryForgetResult>,

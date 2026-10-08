@@ -575,7 +575,13 @@ fn deleted_source_cannot_be_reclaimed_or_committed() {
     let claim = runtime.claim_source(&source, now).unwrap().unwrap();
     let session_id = devo_protocol::SessionId::try_from(source.session_id.as_str()).unwrap();
 
-    runtime.delete_sources(&[session_id], now).unwrap();
+    runtime
+        .delete_sources(
+            &[session_id],
+            now,
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
     assert_eq!(runtime.claim_source(&source, now).unwrap(), None);
     runtime
         .commit_extraction(&claim, &source, &[candidate], now)
@@ -612,7 +618,13 @@ fn deleting_sources_retires_only_after_final_evidence() {
         .unwrap();
 
     let first_id = devo_protocol::SessionId::try_from(first.session_id.as_str()).unwrap();
-    runtime.delete_sources(&[first_id], now).unwrap();
+    runtime
+        .delete_sources(
+            &[first_id],
+            now,
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
     let remaining = runtime.list(ListMemoryRequest::default()).unwrap().data;
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].state, MemoryState::Active);
@@ -626,7 +638,13 @@ fn deleting_sources_retires_only_after_final_evidence() {
     );
 
     let second_id = devo_protocol::SessionId::try_from(second.session_id.as_str()).unwrap();
-    runtime.delete_sources(&[second_id], now).unwrap();
+    runtime
+        .delete_sources(
+            &[second_id],
+            now,
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
     let retired = runtime.list(ListMemoryRequest::default()).unwrap().data;
     assert_eq!(retired.len(), 1);
     assert_eq!(retired[0].state, MemoryState::Retired);
@@ -710,9 +728,23 @@ fn retrying_source_deletion_repairs_projection_after_commit() {
     std::fs::write(&projection_dir, "blocked").unwrap();
     let source_id = devo_protocol::SessionId::try_from(source.session_id.as_str()).unwrap();
 
-    assert!(runtime.delete_sources(&[source_id], now).is_err());
+    assert!(
+        runtime
+            .delete_sources(
+                &[source_id],
+                now,
+                devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve
+            )
+            .is_err()
+    );
     std::fs::remove_file(&projection_dir).unwrap();
-    runtime.delete_sources(&[source_id], now).unwrap();
+    runtime
+        .delete_sources(
+            &[source_id],
+            now,
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
     let projection = std::fs::read_to_string(projection_dir.join("MEMORY.md")).unwrap();
     assert!(projection.contains("state: retired"));
     assert!(!projection.contains(source.session_id.as_str()));
@@ -734,7 +766,13 @@ async fn unrelated_projection_failure_does_not_block_source_deletion() {
     std::fs::write(&projection_dir, "blocked").unwrap();
 
     let source_id = devo_protocol::SessionId::new();
-    runtime.delete_sources(&[source_id], Utc::now()).unwrap();
+    runtime
+        .delete_sources(
+            &[source_id],
+            Utc::now(),
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
 }
 
 /// Trace: L2-DES-MEM-001 Entry Lifecycle and Retention
@@ -751,7 +789,13 @@ fn fresh_source_reactivates_entry_retired_by_source_deletion() {
         .commit_extraction(&claim, &first, std::slice::from_ref(&candidate), now)
         .unwrap();
     let first_id = devo_protocol::SessionId::try_from(first.session_id.as_str()).unwrap();
-    runtime.delete_sources(&[first_id], now).unwrap();
+    runtime
+        .delete_sources(
+            &[first_id],
+            now,
+            devo_protocol::native::rpc_session::RelatedMemoryDeletion::Preserve,
+        )
+        .unwrap();
 
     let mut second = first.clone();
     second.session_id = SessionId::from_legacy_uuid(uuid::Uuid::new_v4());

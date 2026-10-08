@@ -348,7 +348,7 @@ async fn pending_deletion_hides_explicit_entry_provenance() {
     assert!(forgotten.forgotten.unwrap().provenance.is_empty());
 
     let mut request = remember_request("Keep keyboard shortcuts");
-    request.source.session_id = source_id;
+    request.source.session_id = devo_protocol::SessionId::new();
     let remembered = runtime
         .execute_command(MemoryCommand::Remember(request))
         .await

@@ -1,4 +1,5 @@
 use super::*;
+use devo_protocol::native::rpc_session::RelatedMemoryDeletion;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
@@ -192,7 +193,13 @@ async fn explicit_authority_survives_inferred_source_removal() {
             .collect::<Vec<_>>();
         match change {
             SourceChange::Exclude => runtime.exclude_sources(&sources, epoch() + Duration::days(2)),
-            SourceChange::Delete => runtime.delete_sources(&sources, epoch() + Duration::days(2)),
+            SourceChange::Delete => runtime
+                .delete_sources(
+                    &sources,
+                    epoch() + Duration::days(2),
+                    RelatedMemoryDeletion::Preserve,
+                )
+                .map(|_| ()),
         }
         .unwrap();
         contribute(
@@ -260,7 +267,13 @@ async fn source_reconciliation_does_not_reactivate_overdue_inference() {
             SourceChange::Exclude => {
                 runtime.exclude_sources(&sources, epoch() + Duration::days(90))
             }
-            SourceChange::Delete => runtime.delete_sources(&sources, epoch() + Duration::days(90)),
+            SourceChange::Delete => runtime
+                .delete_sources(
+                    &sources,
+                    epoch() + Duration::days(90),
+                    RelatedMemoryDeletion::Preserve,
+                )
+                .map(|_| ()),
         }
         .unwrap();
         assert_eq!(
@@ -326,7 +339,13 @@ async fn fresh_retired_evidence_withholds_competing_inference() {
         let sources = [devo_protocol::SessionId::try_from(source.session_id.as_str()).unwrap()];
         match change {
             SourceChange::Exclude => runtime.exclude_sources(&sources, epoch() + Duration::days(1)),
-            SourceChange::Delete => runtime.delete_sources(&sources, epoch() + Duration::days(1)),
+            SourceChange::Delete => runtime
+                .delete_sources(
+                    &sources,
+                    epoch() + Duration::days(1),
+                    RelatedMemoryDeletion::Preserve,
+                )
+                .map(|_| ()),
         }
         .unwrap();
         let retired = entries(&runtime).remove(0);
