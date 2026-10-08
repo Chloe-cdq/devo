@@ -1334,6 +1334,7 @@ async fn native_project_memory_rejects_active_turn_selector_conflict() -> Result
         turn_start.get("result").is_some(),
         "turn/start failed: {turn_start}"
     );
+    let active_session_id = active_session.to_string();
     let source_user_item_id = loop {
         let notification = tokio::time::timeout(
             Duration::from_secs(/*seconds*/ 2),
@@ -1342,7 +1343,7 @@ async fn native_project_memory_rejects_active_turn_selector_conflict() -> Result
         .await?
         .context("active turn notification channel closed")?;
         if notification["method"] == "item/started"
-            && notification["params"]["item"]["sessionId"] == active_session.to_string()
+            && notification["params"]["item"]["sessionId"] == active_session_id.as_str()
         {
             break notification["params"]["item"]["id"]
                 .as_str()

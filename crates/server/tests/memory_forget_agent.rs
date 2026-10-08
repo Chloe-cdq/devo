@@ -26,14 +26,12 @@ mod fork;
 #[path = "support/memory_forget_runtime.rs"]
 #[allow(dead_code)]
 mod memory_forget_runtime_support;
-#[path = "support/model_events.rs"]
-mod model_events;
 #[path = "support/subagent_lifecycle.rs"]
 #[allow(dead_code)]
 mod support;
 
+use memory_forget_runtime_support::model_events::{text_events, tool_call_events};
 use memory_forget_runtime_support::tool_result;
-use model_events::{text_events, tool_call_events};
 use support::{
     build_runtime_with_workspace_config, initialize_connection, start_parent_session,
     start_turn_with_approval_policy, wait_for_parent_turn_completed,
@@ -449,7 +447,7 @@ async fn failed_pending_mutation_can_retry_the_same_candidate() -> Result<()> {
         "ALTER TABLE memory_revocations RENAME TO memory_revocations_unavailable",
         [],
     )?;
-    harness.run_turn(&confirmation).await?;
+    harness.run_turn(confirmation).await?;
     let requests = provider.requests();
     let failed_result =
         tool_result(&requests[3], "memory-forget").context("failed memory forget tool result")?;
@@ -469,7 +467,7 @@ async fn failed_pending_mutation_can_retry_the_same_candidate() -> Result<()> {
         [],
     )?;
 
-    harness.run_turn(&confirmation).await?;
+    harness.run_turn(confirmation).await?;
     let retired = harness
         .list(MemoryScope::User, MemoryState::Retired)
         .await?;

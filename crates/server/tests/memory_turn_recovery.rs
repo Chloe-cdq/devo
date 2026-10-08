@@ -15,12 +15,11 @@ mod approval_recovery;
 #[path = "support/memory_forget_runtime.rs"]
 #[allow(dead_code)]
 mod memory_forget_runtime_support;
-#[path = "support/model_events.rs"]
-#[allow(dead_code)]
-mod model_events;
 #[path = "support/subagent_lifecycle.rs"]
 #[allow(dead_code)]
 mod support;
+
+use memory_forget_runtime_support::model_events;
 
 /// Trace: L2-DES-MEM-001 Rev 4 DD-6; L2-DES-CONTEXT-004.
 /// A recovered root turn must retain its authoritative current user message
