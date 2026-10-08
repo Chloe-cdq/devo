@@ -26,6 +26,9 @@ pub(crate) struct ExtractableSource {
     pub(crate) session_contribution: MemorySetting,
     pub(crate) observed_at: DateTime<Utc>,
     pub(crate) watermark: String,
+    /// Prior full-journal fingerprint, for upgrading existing scan receipts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) legacy_watermark: Option<String>,
     pub(crate) messages: Vec<SourceMessage>,
 }
 
@@ -87,12 +90,37 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     let mut snapshot_contribution = MemorySetting::Inherit;
     let mut field_contribution = None;
     let mut native_session_pending = false;
+    let mut watermark = Sha256::new();
 
-    for raw in text.lines().filter(|line| !line.trim().is_empty()) {
+    for raw in text.split_inclusive('\n') {
+        if raw.trim().is_empty() {
+            watermark.update(raw.as_bytes());
+            continue;
+        }
         let Ok(parsed) = parse_rollout_line(raw) else {
             // Unlike interactive resume, extraction never tolerates a crash tail.
             return Ok(None);
         };
+        // A background call may be accounted to this retained source itself.
+        // Its verified accounting record neither changes extractable history nor
+        // makes the session active. All semantic journal bytes remain in the hash.
+        if let ParsedRolloutLine::V2(line) = &parsed
+            && let RolloutLineV2::Internal {
+                session_id,
+                turn_id: None,
+                entry: InternalRecordV2::UsageRecord { record },
+                ..
+            } = line.as_ref()
+            && record.session_id == *session_id
+            && record.turn_id.is_none()
+            && record.purpose == devo_protocol::native::usage::UsagePurpose::MemoryExtraction
+        {
+            if inverse.project_line(line).is_err() {
+                return Ok(None);
+            }
+            continue;
+        }
+        watermark.update(raw.as_bytes());
         let lines = match parsed {
             ParsedRolloutLine::Legacy(line) => vec![*line],
             ParsedRolloutLine::V2(line) => {
@@ -493,8 +521,10 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     if messages.is_empty() || super::entries::contains_secret(&source_text) {
         return Ok(None);
     }
-    // Complete raw bytes include edits, settings, rollback, and non-text activity.
-    let watermark = format!("{:x}", Sha256::digest(&bytes));
+    // Preserve the raw-byte identity of every semantic journal line.
+    let watermark = format!("{:x}", watermark.finalize());
+    let legacy_watermark = format!("{:x}", Sha256::digest(&bytes));
+    let legacy_watermark = (legacy_watermark != watermark).then_some(legacy_watermark);
     #[cfg(test)]
     super::source_read_test_support::run(
         path,
@@ -506,6 +536,7 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
         session_contribution: field_contribution.unwrap_or(snapshot_contribution),
         observed_at,
         watermark,
+        legacy_watermark,
         messages,
     }))
 }
@@ -517,3 +548,7 @@ use external::{external_tool, external_tool_name};
 #[cfg(test)]
 #[path = "source_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "source_usage_tests.rs"]
+mod usage_tests;

@@ -307,7 +307,7 @@ async fn v6_key_drift_repair_rebinds_all_memberships_and_withholds_unsafe_recall
         assert_eq!(
             snapshot,
             (
-                "10".into(),
+                "11".into(),
                 vec![
                     (
                         "indentation".into(),

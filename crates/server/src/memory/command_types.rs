@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use devo_protocol::native::ids::{ItemId, MemoryEntryId};
 use devo_protocol::native::rpc_memory::{
     MemoryEntry, MemoryExportResult, MemoryForgetParams, MemoryForgetResult, MemoryKind,
-    MemoryListResult, MemoryOrigin, MemoryReadEntry, MemoryResetResult, MemoryScope,
-    MemorySearchResult, MemoryState, MemoryStatus,
+    MemoryListResult, MemoryOrigin, MemoryReadEntry, MemoryRebuildResult, MemoryResetResult,
+    MemoryScope, MemorySearchResult, MemoryState, MemoryStatus,
 };
 use devo_protocol::native::session::MemorySetting;
 use devo_protocol::{SessionId, TurnId};
@@ -32,6 +32,12 @@ pub enum MemoryCommand {
     Export(ScopedMemoryRequest),
     /// Clear one scope and atomically advance its source exclusion watermark.
     Reset(ScopedMemoryRequest),
+    /// Authorize a deliberate, scoped background rebuild from retained history.
+    Rebuild {
+        scope: MemoryScope,
+        user_session: MemoryUserSessionSelection,
+        sessions: Vec<ProjectMemorySession>,
+    },
     /// Verify a direct Native User reset caller before clearing the User scope.
     ResetUser {
         user_session: MemoryUserSessionSelection,
@@ -109,6 +115,8 @@ pub enum MemoryCommandResult {
     Export(MemoryExportResult),
     /// Result of a committed scoped reset command.
     Reset(MemoryResetResult),
+    /// Durable acceptance of a scoped background rebuild.
+    Rebuild(MemoryRebuildResult),
 }
 
 /// Input passed through the server-owned memory command seam for an explicit

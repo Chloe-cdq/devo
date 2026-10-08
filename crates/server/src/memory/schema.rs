@@ -68,6 +68,16 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
             restored_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS memory_rebuild_requests (
+            rebuild_id TEXT PRIMARY KEY NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            reset_fence TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',
+            UNIQUE(scope_type, scope_id, reset_fence)
+        );
+
         CREATE TABLE IF NOT EXISTS memory_jobs (
             job_id TEXT PRIMARY KEY NOT NULL,
             job_kind TEXT NOT NULL DEFAULT 'source_scan',
@@ -79,6 +89,7 @@ pub(super) fn create_schema(connection: &Connection) -> Result<(), MemoryError> 
             lease_until TEXT,
             lease_owner TEXT,
             claimed_at TEXT,
+            rebuild_id TEXT REFERENCES memory_rebuild_requests(rebuild_id),
             retry_at TEXT,
             error_class TEXT,
             created_at TEXT NOT NULL,
@@ -167,6 +178,14 @@ fn migrate_schema(connection: &Connection) -> Result<(), MemoryError> {
         // Existing receipts lost their job kind; keep it unknown rather than
         // attributing maintenance completions to source scans.
         ensure_column(&transaction, "memory_job_receipts", "job_kind", "TEXT")?;
+    }
+    if previous_version_number < 11 {
+        ensure_column(
+            &transaction,
+            "memory_jobs",
+            "rebuild_id",
+            "TEXT REFERENCES memory_rebuild_requests(rebuild_id)",
+        )?;
     }
     proposal_relations::create_live_view(&transaction)?;
     if previous_version_number == current_version {

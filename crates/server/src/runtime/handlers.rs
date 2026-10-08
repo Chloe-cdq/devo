@@ -8,6 +8,7 @@ mod history;
 mod memory;
 mod memory_forget;
 mod memory_management;
+mod memory_rebuild;
 mod memory_source;
 mod message_edit;
 mod message_edit_restore;

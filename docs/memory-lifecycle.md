@@ -53,3 +53,6 @@ They continue to prevent replay of their source watermarks but are excluded from
 scan-time reporting. An upgraded database can therefore report no successful
 scan time until a known source scan completes. Raw candidates and completed job
 details still expire after the configured retention period (30 days by default).
+
+Schema version 11 adds explicit scoped rebuild authorization and job links.
+See [memory-rebuild.md](memory-rebuild.md) for replay, cancellation, and recovery.

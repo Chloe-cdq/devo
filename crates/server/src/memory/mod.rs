@@ -28,11 +28,15 @@ mod proposal_relations;
 mod proposal_relations_tests;
 mod queries;
 mod read;
+mod rebuild;
+#[cfg(test)]
+mod rebuild_tests;
 mod recall;
 mod revocation_lifecycle;
 #[cfg(test)]
 mod runtime_test_support;
 pub(crate) mod scan;
+mod scan_source;
 mod schema;
 mod source;
 mod source_deletion;
@@ -45,6 +49,7 @@ mod source_lifecycle;
 mod source_provenance;
 #[cfg(test)]
 pub(crate) mod source_read_test_support;
+mod source_worker;
 mod stored_values;
 #[cfg(test)]
 mod test_support;
@@ -85,7 +90,7 @@ pub use command_types::{
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
-const MEMORY_SCHEMA_VERSION: &str = "10";
+const MEMORY_SCHEMA_VERSION: &str = "11";
 const USER_SCOPE_ID: &str = "user";
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 100;
@@ -372,6 +377,13 @@ impl MemoryRuntime {
                 }
                 self.export(request).map(MemoryCommandResult::Export)
             }
+            MemoryCommand::Rebuild {
+                scope,
+                user_session,
+                sessions,
+            } => self
+                .authorize_rebuild(scope, user_session, sessions)
+                .map(MemoryCommandResult::Rebuild),
             MemoryCommand::ResetUser {
                 user_session,
                 sessions,
@@ -595,6 +607,7 @@ impl MemoryRuntime {
                 "SELECT COUNT(*) FROM memory_jobs WHERE state = 'error'",
             )?,
             last_successful_scan_at: last_successful_scan_at(&connection)?,
+            rebuild: self.rebuild_status(&connection)?,
             error_classes,
             source_exclusion_reasons: self
                 .source_exclusion_reasons

@@ -305,6 +305,10 @@ impl ServerRuntime {
                 self.handle_native_memory_management(connection_id, id?, "memory/export", params)
                     .await,
             ),
+            "memory/rebuild" => Some(
+                self.handle_native_memory_rebuild(connection_id, id?, params)
+                    .await,
+            ),
             "memory/reset" => Some(
                 self.handle_native_memory_management(connection_id, id?, "memory/reset", params)
                     .await,

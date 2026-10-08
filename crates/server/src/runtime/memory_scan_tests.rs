@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "memory_rebuild_tests.rs"]
+mod rebuild_tests;
+
 #[path = "memory_scan_deletion_tests.rs"]
 mod deletion_tests;
 #[path = "memory_scan_latency_tests.rs"]

@@ -36,9 +36,11 @@ feature gate is evaluated before caller validation. The response contains
 `scope`, `clearedEntryCount`, `clearedCandidateCount`, and `ignoreSourcesBefore`.
 
 One SQLite transaction removes all entries in the selected scope, their lexical
-index and evidence, short-lived candidates, proposal claims and source bindings,
-and revocations. It advances that scope's `ignore_sources_before` watermark.
-Other scopes and shared source jobs/receipts are preserved. Resetting an empty
+index and evidence, short-lived candidates, proposal claims and source bindings.
+Revocation tombstones remain so a later rebuild cannot revive forgotten
+identities. It advances that scope's `ignore_sources_before` watermark.
+Other scopes and shared source jobs/receipts are preserved. Outstanding rebuild
+authorizations and jobs in the selected scope are cancelled. Resetting an empty
 scope still writes a watermark; repeated resets cannot lower it if the clock
 moves backward. Explicit future remember commands can add entries normally.
 
@@ -48,7 +50,7 @@ watermark cannot recreate entries, candidates, or proposal claims, including
 when the extraction task started before reset or the server restarted. A later
 journal timestamp does not make old cited evidence eligible. New eligible
 sources after reset contribute normally. Deliberate rescan of older history is
-reserved for the future `memory/rebuild` operation.
+available only through explicitly authorized [memory/rebuild](memory-rebuild.md).
 
 `MEMORY.md` is atomically regenerated after the reset transaction commits. If
 projection replacement fails, the reset remains committed and Native returns a

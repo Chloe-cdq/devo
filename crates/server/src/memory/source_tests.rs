@@ -11,7 +11,7 @@ const SESSION: &str = "00000000-0000-0000-0000-0000000000b1";
 const TURN: &str = "00000000-0000-0000-0000-0000000000b2";
 const ITEM: &str = "00000000-0000-0000-0000-0000000000b3";
 
-fn legacy(workspace: &Path) -> Vec<Value> {
+pub(super) fn legacy(workspace: &Path) -> Vec<Value> {
     let fixture = include_str!("../../../core/tests/fixtures/rollout_v1/basic_session.jsonl");
     let mut lines: Vec<Value> = fixture
         .lines()
@@ -22,7 +22,7 @@ fn legacy(workspace: &Path) -> Vec<Value> {
     lines
 }
 
-fn write_lines(dir: &TempDir, lines: &[Value]) -> PathBuf {
+pub(super) fn write_lines(dir: &TempDir, lines: &[Value]) -> PathBuf {
     let path = dir.path().join("source.jsonl");
     let text = lines
         .iter()
@@ -68,6 +68,7 @@ fn reads_only_explicit_user_and_assistant_text_with_source_identity() {
             session_contribution: MemorySetting::Inherit,
             observed_at: "2026-07-01T12:00:11Z".parse().unwrap(),
             watermark: source.watermark.clone(),
+            legacy_watermark: None,
             messages: vec![
                 SourceMessage {
                     turn_id: TurnId::from_string(TURN.into()),

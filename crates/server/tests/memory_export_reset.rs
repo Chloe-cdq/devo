@@ -336,7 +336,8 @@ async fn native_export_is_unpaginated_redacted_and_reset_clears_candidates() -> 
             ))
         },
     )?;
-    assert_eq!(counts, (0, 0, 0));
+    // Reset keeps revocations so rebuilding retained history cannot revive forgotten identities.
+    assert_eq!(counts, (0, 0, 1));
     Ok(())
 }
 

@@ -145,7 +145,7 @@ fn credential_v6_migration_rolls_back_and_retries_without_partial_cleanup() {
     connection
         .execute_batch(
             "CREATE TRIGGER fail_version_write BEFORE UPDATE ON memory_schema_meta
-         WHEN NEW.key = 'schema_version' AND NEW.value = '10'
+         WHEN NEW.key = 'schema_version' AND NEW.value = '11'
          BEGIN SELECT RAISE(ABORT, 'version write blocked'); END;",
         )
         .unwrap();

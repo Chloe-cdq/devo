@@ -2,6 +2,7 @@ use super::entries::{contains_secret, normalize_body};
 use super::entry_identity::{IdentityResolutionMode, MemoryEntryIdentity};
 use super::extraction::ExtractionCandidate;
 use super::jobs::JobClaim;
+use super::rebuild::{ScanTarget, rebuild_authorized};
 use super::source::ExtractableSource;
 use super::stored_values::parse_timestamp;
 use super::{MemoryError, MemoryRuntime, kind_name, scope_name};
@@ -28,9 +29,21 @@ impl MemoryRuntime {
         if self.source_has_intent(source.session_id.as_str()) {
             return Ok(());
         }
+        let expected_watermark = match &claim.target {
+            ScanTarget::Automatic => source.watermark.clone(),
+            ScanTarget::Rebuild(request) => format!("rebuild:{}:{}", request.id, source.watermark),
+        };
+        if claim.watermark != expected_watermark {
+            return Ok(());
+        }
         let timestamp = now.to_rfc3339_opts(SecondsFormat::Millis, /*use_z*/ true);
         let mut prepared = Vec::new();
         for candidate in candidates {
+            if let ScanTarget::Rebuild(request) = &claim.target
+                && candidate.scope != request.scope
+            {
+                continue;
+            }
             let body = normalize_body(&candidate.body)?;
             if contains_secret(&body) || contains_secret(&candidate.key) {
                 continue;
@@ -51,6 +64,11 @@ impl MemoryRuntime {
                 ));
             }
             let scope_id = self.scope_id(candidate.scope, &source.workspace_root)?;
+            if let ScanTarget::Rebuild(request) = &claim.target
+                && scope_id != request.scope_id
+            {
+                continue;
+            }
             let observed_at = source
                 .messages
                 .iter()
@@ -65,6 +83,11 @@ impl MemoryRuntime {
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let ScanTarget::Rebuild(request) = &claim.target
+            && !rebuild_authorized(&transaction, request)?
+        {
+            return Ok(());
+        }
         let owned: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_jobs
              WHERE job_id = ?1 AND lease_owner = ?2 AND state = 'running' AND lease_until > ?3
@@ -78,7 +101,7 @@ impl MemoryRuntime {
                 claim.owner,
                 timestamp,
                 source.session_id.as_str(),
-                source.watermark
+                claim.watermark
             ],
             |row| row.get(0),
         )?;
@@ -109,10 +132,11 @@ impl MemoryRuntime {
                 "SELECT ignore_sources_before FROM memory_scope_state WHERE scope_type = ?1 AND scope_id = ?2",
                 rusqlite::params![scope, scope_id], |row| row.get::<_, Option<String>>(0),
             ).optional()?.flatten();
-            if reset
-                .map(|value| parse_timestamp(&value))
-                .transpose()?
-                .is_some_and(|cutoff| observed_at <= cutoff)
+            if matches!(claim.target, ScanTarget::Automatic)
+                && reset
+                    .map(|value| parse_timestamp(&value))
+                    .transpose()?
+                    .is_some_and(|cutoff| observed_at <= cutoff)
             {
                 continue;
             }

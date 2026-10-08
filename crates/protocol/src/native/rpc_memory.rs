@@ -250,6 +250,9 @@ pub struct MemoryStatus {
     /// The bounded set is reset on restart and populated by subsequent scans.
     #[serde(default)]
     pub source_exclusion_reasons: Vec<MemorySourceExclusionReason>,
+    /// Content-free aggregate progress for explicitly authorized rebuilds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild: Option<MemoryRebuildStatus>,
 }
 
 /// Parameters for exporting one explicit memory scope.
@@ -293,4 +296,34 @@ pub struct MemoryResetResult {
     pub cleared_entry_count: u64,
     pub cleared_candidate_count: u64,
     pub ignore_sources_before: DateTime<Utc>,
+}
+
+/// Parameters for deliberately reprocessing retained eligible history.
+/// Clients confirm the explicit scope before dispatch; there is no default scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRebuildParams {
+    pub scope: MemoryScope,
+}
+
+/// Durable acceptance of a background rebuild. Retries in one reset epoch
+/// share the same identity; this response does not imply extraction has finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRebuildResult {
+    pub scope: MemoryScope,
+    pub rebuild_id: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// Aggregate rebuild progress. These counts contain no source paths or content.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRebuildStatus {
+    pub pending_request_count: u64,
+    pub pending_job_count: u64,
+    pub running_job_count: u64,
+    pub retrying_job_count: u64,
+    pub completed_job_count: u64,
+    pub error_job_count: u64,
 }

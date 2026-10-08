@@ -38,6 +38,7 @@ fn contribute(
         session_contribution: MemorySetting::On,
         observed_at: now - Duration::hours(7),
         watermark: "finished-source".into(),
+        legacy_watermark: None,
         messages: vec![SourceMessage {
             turn_id: turn_id.clone(),
             item_id: ItemId::new(),
@@ -86,6 +87,7 @@ async fn remember(runtime: &MemoryRuntime, body: &str) -> MemoryEntry {
         | MemoryCommandResult::Read(_)
         | MemoryCommandResult::Export(_)
         | MemoryCommandResult::Reset(_)
+        | MemoryCommandResult::Rebuild(_)
         | MemoryCommandResult::Search(_) => panic!("remember result"),
     }
 }
