@@ -9,6 +9,9 @@ mod competing_projection;
 mod entries;
 mod entry_identity;
 mod equivalence;
+mod export_reset;
+#[cfg(test)]
+mod export_reset_tests;
 mod extraction;
 mod forget;
 mod identity;
@@ -78,7 +81,7 @@ pub use command_types::{
     MemoryForgetSelector, MemoryForgetSource, MemoryRememberRequest, MemorySourceBinding,
     MemorySourceContext, MemoryUserSessionSelection, PrepareMemoryRequest, PreparedMemory,
     PreparedMemoryForgetRequest, ProjectMemoryOperation, ProjectMemorySession,
-    ProjectMemorySessionActivity, ReadMemoryRequest, SearchMemoryRequest,
+    ProjectMemorySessionActivity, ReadMemoryRequest, ScopedMemoryRequest, SearchMemoryRequest,
 };
 
 const MEMORY_DATABASE_FILENAME: &str = "memory.sqlite3";
@@ -146,6 +149,12 @@ pub enum MemoryError {
     #[error("memory source deletion committed but projection refresh failed: {projection_error}")]
     SourceDeletionCommitted {
         forgotten: Vec<MemoryEntry>,
+        #[source]
+        projection_error: Box<MemoryError>,
+    },
+    #[error("memory reset committed but projection refresh failed: {projection_error}")]
+    ResetCommitted {
+        result: Box<devo_protocol::native::rpc_memory::MemoryResetResult>,
         #[source]
         projection_error: Box<MemoryError>,
     },
@@ -357,13 +366,50 @@ impl MemoryRuntime {
                 }
                 Ok(MemoryCommandResult::Read(self.read(request)?))
             }
+            MemoryCommand::Export(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                self.export(request).map(MemoryCommandResult::Export)
+            }
+            MemoryCommand::ResetUser {
+                user_session,
+                sessions,
+            } => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                let source = match user_session {
+                    MemoryUserSessionSelection::Selected(session_id) => sessions
+                        .iter()
+                        .find(|session| session.session_id == session_id)
+                        .and_then(|session| session.source),
+                    MemoryUserSessionSelection::Unbound | MemoryUserSessionSelection::Ambiguous => {
+                        None
+                    }
+                };
+                ensure_interactive_memory_source(source)?;
+                self.reset(ScopedMemoryRequest {
+                    scope: MemoryScope::User,
+                    workspace_root: PathBuf::new(),
+                })
+                .map(MemoryCommandResult::Reset)
+            }
+            MemoryCommand::Reset(request) => {
+                if !self.config.enabled {
+                    return Err(MemoryError::Disabled);
+                }
+                self.reset(request).map(MemoryCommandResult::Reset)
+            }
             MemoryCommand::Project {
                 candidates,
                 operation,
             } => {
                 if !self.config.enabled {
                     return match operation {
-                        ProjectMemoryOperation::Remember { .. } => Err(MemoryError::Disabled),
+                        ProjectMemoryOperation::Remember { .. }
+                        | ProjectMemoryOperation::Export
+                        | ProjectMemoryOperation::Reset => Err(MemoryError::Disabled),
                         ProjectMemoryOperation::List { .. } => {
                             Ok(MemoryCommandResult::List(Page {
                                 data: Vec::new(),
@@ -381,12 +427,28 @@ impl MemoryRuntime {
                                 .and_then(|candidate| candidate.source)
                         })
                     }
-                    ProjectMemoryOperation::List { .. } => None,
+                    ProjectMemoryOperation::List { .. }
+                    | ProjectMemoryOperation::Export
+                    | ProjectMemoryOperation::Reset => None,
                 };
                 let selected = self.resolve_project_memory_source(candidates)?;
                 let selected_session_id = selected.session_id;
                 let workspace_root = selected.workspace_root;
                 match operation {
+                    ProjectMemoryOperation::Export => self
+                        .export(ScopedMemoryRequest {
+                            scope: MemoryScope::Project,
+                            workspace_root,
+                        })
+                        .map(MemoryCommandResult::Export),
+                    ProjectMemoryOperation::Reset => {
+                        ensure_interactive_memory_source(selected.source)?;
+                        self.reset(ScopedMemoryRequest {
+                            scope: MemoryScope::Project,
+                            workspace_root,
+                        })
+                        .map(MemoryCommandResult::Reset)
+                    }
                     ProjectMemoryOperation::Remember { text, kind, source } => {
                         ensure_interactive_memory_source(bound_source.unwrap_or(selected.source))?;
                         Ok(MemoryCommandResult::Remember(self.remember(
@@ -425,6 +487,9 @@ impl MemoryRuntime {
         };
         if self.has_pending_source_deletions() {
             match &mut result {
+                // A source fence may arrive while export waits for storage. Never
+                // return a bundle containing provenance from pending cleanup.
+                Ok(MemoryCommandResult::Export(_)) => return Err(MemoryError::StorageBusy),
                 Ok(MemoryCommandResult::Remember(entry)) => entry.provenance.clear(),
                 Ok(MemoryCommandResult::List(page)) => {
                     for entry in &mut page.data {

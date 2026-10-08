@@ -86,6 +86,8 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected = MemoryEntry {
@@ -138,6 +140,8 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected_after_repeat = MemoryEntry {
@@ -177,6 +181,8 @@ async fn explicit_restore_reuses_retired_legacy_inferred_entry() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
@@ -286,6 +292,8 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected = MemoryEntry {
@@ -345,6 +353,8 @@ async fn explicit_remember_merges_existing_canonical_and_legacy_aliases() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
@@ -429,6 +439,8 @@ async fn explicit_remember_preserves_incompatible_legacy_key_collision() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected remembered entry"),
     };
     let expected_remembered = MemoryEntry {
@@ -462,6 +474,8 @@ async fn explicit_remember_preserves_incompatible_legacy_key_collision() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
@@ -567,6 +581,8 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected prepared forget"),
     };
     let forgotten = match runtime
@@ -580,6 +596,8 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected forget result"),
     };
     let expected_forgotten = MemoryEntry {
@@ -642,6 +660,8 @@ async fn exact_forget_preserves_stable_id_without_merging_legacy_neighbor() {
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => panic!("expected memory list"),
     };
     assert_eq!(
@@ -693,7 +713,7 @@ fn startup_rebuilds_tombstone_only_scope_projection() {
     drop(runtime);
     assert_eq!(
         fs::read_to_string(projection_path).expect("read rebuilt projection"),
-        "# User Memory\n\n<!-- Generated from SQLite. Read-only; manual edits are not canonical. -->\n\n_No memory entries._\n"
+        "# User Memory\n\n<!-- Generated from SQLite. Read-only; manual edits are not canonical. -->\n\n_No memory entries._\n\n## Lifecycle\n\n- revocation_count: 1\n"
     );
 }
 
@@ -732,6 +752,6 @@ fn startup_rebuilds_scope_state_only_project_projection() {
     drop(runtime);
     assert_eq!(
         fs::read_to_string(projection_path).expect("read rebuilt projection"),
-        "# Project Memory\n\n<!-- Generated from SQLite. Read-only; manual edits are not canonical. -->\n\n_No memory entries._\n"
+        "# Project Memory\n\n<!-- Generated from SQLite. Read-only; manual edits are not canonical. -->\n\n_No memory entries._\n\n## Lifecycle\n\n- ignore_sources_before: 2026-01-02T00:00:00+00:00\n\n- revocation_count: 0\n"
     );
 }

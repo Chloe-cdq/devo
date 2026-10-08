@@ -125,6 +125,8 @@ pub(super) fn complete_forget_execution(
         | Ok(crate::memory::MemoryCommandResult::PreparedForget(_))
         | Ok(crate::memory::MemoryCommandResult::List(_))
         | Ok(crate::memory::MemoryCommandResult::Read(_))
+        | Ok(crate::memory::MemoryCommandResult::Export(_))
+        | Ok(crate::memory::MemoryCommandResult::Reset(_))
         | Ok(crate::memory::MemoryCommandResult::Search(_)) => {
             Err(MemoryForgetExecutionError::UnexpectedResult)
         }

@@ -26,6 +26,8 @@ async fn remember(runtime: &MemoryRuntime, request: MemoryRememberRequest) -> Me
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }
@@ -54,6 +56,8 @@ async fn list(
         | MemoryCommandResult::PreparedForget(_)
         | MemoryCommandResult::Forget(_)
         | MemoryCommandResult::Read(_)
+        | MemoryCommandResult::Export(_)
+        | MemoryCommandResult::Reset(_)
         | MemoryCommandResult::Search(_) => {
             panic!("unexpected memory command result")
         }

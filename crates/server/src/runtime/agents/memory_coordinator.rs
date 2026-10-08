@@ -90,6 +90,8 @@ pub(super) async fn remember(
         | crate::memory::MemoryCommandResult::Forget(_)
         | crate::memory::MemoryCommandResult::List(_)
         | crate::memory::MemoryCommandResult::Read(_)
+        | crate::memory::MemoryCommandResult::Export(_)
+        | crate::memory::MemoryCommandResult::Reset(_)
         | crate::memory::MemoryCommandResult::Search(_) => Err(ToolCallError::InternalError(
             "memory_remember returned an unexpected result".to_string(),
         )),
@@ -225,7 +227,9 @@ pub(super) async fn search(
         .map_err(memory_tool_error)?;
     let result = match result {
         crate::memory::MemoryCommandResult::Search(result) => result,
-        crate::memory::MemoryCommandResult::Status(_)
+        crate::memory::MemoryCommandResult::Export(_)
+        | crate::memory::MemoryCommandResult::Reset(_)
+        | crate::memory::MemoryCommandResult::Status(_)
         | crate::memory::MemoryCommandResult::Remember(_)
         | crate::memory::MemoryCommandResult::PreparedForget(_)
         | crate::memory::MemoryCommandResult::Forget(_)
@@ -285,6 +289,8 @@ pub(super) async fn read(
         | crate::memory::MemoryCommandResult::PreparedForget(_)
         | crate::memory::MemoryCommandResult::Forget(_)
         | crate::memory::MemoryCommandResult::List(_)
+        | crate::memory::MemoryCommandResult::Export(_)
+        | crate::memory::MemoryCommandResult::Reset(_)
         | crate::memory::MemoryCommandResult::Search(_) => Err(ToolCallError::InternalError(
             "memory_read returned an unexpected result".to_string(),
         )),
@@ -318,6 +324,7 @@ fn memory_tool_error(error: crate::memory::MemoryError) -> ToolCallError {
         | crate::memory::MemoryError::InvalidTimestamp(_)
         | crate::memory::MemoryError::ProjectIdentity(_)
         | crate::memory::MemoryError::InvalidStoredValue(_)
+        | crate::memory::MemoryError::ResetCommitted { .. }
         | crate::memory::MemoryError::ForgetCommitted { .. } => {
             ToolCallError::InternalError("memory operation is unavailable".to_string())
         }

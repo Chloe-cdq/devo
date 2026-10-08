@@ -16,7 +16,7 @@ use super::entry_identity::{
     IdentityResolutionMode, MemoryEntryIdentity, MemoryIdentityResolution,
 };
 use super::identity;
-use super::projection::{render_projection, write_atomic_projection};
+use super::projection::write_atomic_projection;
 use super::stored_values::{parse_kind, parse_origin, parse_scope, parse_state, parse_timestamp};
 use super::{
     MemoryError, MemoryRememberRequest, MemoryRuntime, USER_SCOPE_ID, kind_name, origin_name,
@@ -386,9 +386,9 @@ impl MemoryRuntime {
         scope: MemoryScope,
         scope_id: &str,
     ) -> Result<(), MemoryError> {
-        let entries = load_scope_entries(connection, scope, scope_id)?;
-        let mut projection = render_projection(scope, &entries);
-        super::competing_projection::append_claims(connection, scope, scope_id, &mut projection)?;
+        let projection = self
+            .render_scope_export(connection, scope, scope_id)?
+            .markdown;
         let directory = match scope {
             MemoryScope::User => self.memory_root.join("user"),
             MemoryScope::Project => self.memory_root.join("projects").join(scope_id),
@@ -483,7 +483,7 @@ pub(super) fn load_entry(
     }))
 }
 
-fn load_scope_entries(
+pub(super) fn load_scope_entries(
     connection: &Connection,
     scope: MemoryScope,
     scope_id: &str,

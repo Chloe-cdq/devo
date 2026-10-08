@@ -301,6 +301,14 @@ impl ServerRuntime {
                 })
                 .expect("serialize runtime/ping response"),
             ),
+            "memory/export" => Some(
+                self.handle_native_memory_management(connection_id, id?, "memory/export", params)
+                    .await,
+            ),
+            "memory/reset" => Some(
+                self.handle_native_memory_management(connection_id, id?, "memory/reset", params)
+                    .await,
+            ),
             "memory/status" => Some(self.handle_native_memory_status(id?, params).await),
             "memory/remember" => Some(
                 self.handle_native_memory_remember(connection_id, id?, params)
