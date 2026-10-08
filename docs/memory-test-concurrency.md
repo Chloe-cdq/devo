@@ -282,3 +282,137 @@ Recorded command outputs, per-run exit codes, timestamps, diagnostic patch, and
 summary CSVs are preserved in `.issue-50-evidence/` in the investigation worktree.
 The report includes the relevant failure output so its conclusions remain
 reviewable without those local logs.
+
+## Follow-up: remaining failures and `main` comparison
+
+The follow-up uses PR #57 revision
+`d32bf0c2284e067dc45e34b07fd78d33869f0ca6` for the investigation report;
+the Rust test changes are identical to the saved fixed executable above.
+The fetched `origin/main` revision is
+`045d17af7caffb5c50742a6b14119519c65ef0a1`, also the merge base of this
+branch and main. Its comparison checkout is a separate managed worktree.
+
+### What can be compared
+
+Main does not contain `crates/server/src/memory/`, the scan fixture, memory
+forget support, or any of the seven tests in this issue. It retains a different
+`crates/core/src/memory.rs` extraction/consolidation implementation. Therefore
+the exact source-intent and durable-forget cases cannot be run on main. A missing
+test is not a passing control, and these findings do not establish the
+introducing commit of either remaining failure.
+
+The shared `wait_for_session_notification` and
+`wait_for_parent_turn_completed` implementations are identical on main and this
+branch. They have a five-second deadline and accept the same session notification
+shapes. The durability fixture uses `Notify::notify_one` for both snapshot-ready
+and release signals, which retain a permit if the receiver has not started
+waiting; its scripted provider sequence is ordered around the snapshot barrier.
+No lost-notification defect was reproduced by the runs below. The presence of
+the shared timeout on main alone does not establish that the historical timeout
+was inherited from main.
+
+The reader-lock assertion fires before the test's deletion-independence
+assertion: its two-second setup probe did not observe a SQLite error while the
+reader was held. The recorded failure subsequently joined the commit and ledger
+threads successfully after reader release. Thus the recorded failure is not
+itself evidence that deletion intent waited on the memory commit. It does not
+identify why the lock was not observed within the setup deadline. SQLite's
+[rollback-mode locking description](https://www.sqlite.org/lockingv3.html)
+distinguishes RESERVED (new readers allowed) from PENDING (new readers blocked),
+which is the transition this probe attempts to observe. Scheduling and storage
+latency remain candidates, not confirmed causes.
+
+### Additional measured repetitions
+
+The same immutable baseline and fixed executables were used with
+`RUST_MIN_STACK=16777216`, launch-only loopback `NO_PROXY`, and no timeout changes.
+Main compilation ran concurrently, so ambient compiler load was again not
+controlled.
+
+| Binary / selector | Concurrency | Runs | Results |
+| --- | --- | --- | --- |
+| baseline `memory` | 64 harness threads | 5 | 3 passed; 2 failed |
+| fixed `memory` | 64 harness threads | 5 | 5 passed, 252/252 each |
+| fixed exact historical durability test | up to 4 separate test processes, 1 harness thread each | 50 | 50 passed |
+| fixed exact reader-lock test | up to 4 separate test processes, 1 harness thread each | 50 | 50 passed |
+| fixed exact reader-lock test | up to 32 separate test processes, 1 harness thread each | 64 | 64 passed |
+
+The baseline harness durations were 15.38, 15.36, 17.02, 21.27, and 23.98
+seconds. The fixed durations were 22.44, 19.70, 18.75, 22.40, and 20.09 seconds.
+Each failed baseline run passed 249/252. Both failed
+`changing_source_during_extraction_discards_candidates` with
+`Error: deadline has elapsed` and
+`source_delete_survives_memory_storage_error` while indexing an empty entry
+list. The third run also failed
+`permanent_failure_is_safe_and_does_not_break_foreground` (expected status
+`(1, 1, [credentials_unavailable])`, observed `(0, 0, [])`); the fourth also failed
+`source_eligibility_tests::external_fence_after_source_read_prevents_extraction`
+with `Error: Query returned no rows`. Neither remaining durability nor
+reader-lock symptom recurred in these full-filter comparisons.
+
+Exact repetitions invoked the saved fixed binary as follows:
+
+```powershell
+& $binary memory_forget_durability::durable_commit_with_projection_failure_invalidates_search_and_confirmation --exact --test-threads=1 --nocapture
+& $binary memory::source_intent_tests::deletion_intent_does_not_wait_for_blocked_memory_commit --exact --test-threads=1 --nocapture
+```
+
+The separate-process limits above describe the launching PowerShell
+`ForEach-Object -Parallel -ThrottleLimit` value, not `--test-threads`. These
+bounded results did not reproduce either remaining failure and do not prove
+either historical failure impossible. The differing workloads do not support a
+controlled estimate of their failure probability.
+
+The main server library build selected 435 tests: 433 passed, 1 failed,
+1 ignored, in 9.43 seconds (the Cargo command took 437.05 seconds including
+7 minutes 6 seconds of compilation). Its failure was:
+
+```text
+runtime::connection::tests::native_task_read_and_list
+panicked at crates\server\src\runtime\connection.rs:8019:22:
+process task must reach a terminal snapshot
+```
+
+This main test polls a process task at most 100 times, sleeping 50 milliseconds
+between polls. Three exact single-thread reruns against the same executable
+failed once (6.04 seconds) and passed twice (4.41, 4.08 seconds). This establishes
+an intermittent process-task test failure on main under this environment; it
+does not establish whether shell startup, task scheduling, or another process
+layer caused the terminal snapshot delay. It is deferred as requested, with no
+main code or timeout changes. The investigation branch already has a longer
+polling window for this unrelated test in its baseline; that pre-existing change
+is outside PR #57.
+
+The library failure stopped Cargo before its selected integration target ran.
+The already-built main `subagent_lifecycle` executable was then run directly
+three times with 64 harness threads: 15/15 passed each time, in 1.52, 1.57,
+and 1.52 seconds. These tests exercise the shared notification/completion path
+without the new server memory implementation. No shared completion timeout
+recurred in those runs.
+
+Main executable SHA-256 values:
+
+- Server library:
+  `1B9AB0F2CBBD4AF2B2280AD0F75F7AD891F7FBD8DB26F4D17FC49BBE6278240E`.
+- Subagent lifecycle:
+  `A43865818E837ACB4B1D6930CEAB2CB24DCA66397A152D7F87A808FF21C6C1D7`.
+
+Comparison commands (same launch-shell loopback and stack settings as above):
+
+```powershell
+$env:CARGO_TARGET_DIR = 'C:\Users\58253\code\devo\target\issue-50-verified'
+cargo test --offline -p devo-server --lib --test subagent_lifecycle --jobs 2 -- --test-threads=22
+& $mainLibrary runtime::connection::tests::native_task_read_and_list --exact --test-threads=1 --nocapture
+& $mainLifecycle --test-threads=64
+```
+
+`$mainLibrary` and `$mainLifecycle` name the two built main executables whose
+hashes are recorded above. Main and feature test binaries differ and their test
+counts are not a performance comparison. The process-task failure is separate
+from the historical durability and reader-lock cases; it must not be used to
+assign either remaining memory symptom to main.
+
+No further production fix or timeout increase is justified by these additional
+observations. A defect reproduced on main will be recorded and deferred as
+requested; an unreproduced defect remains unresolved rather than being assigned
+to main or declared fixed.
