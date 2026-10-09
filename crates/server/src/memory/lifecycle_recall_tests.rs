@@ -507,7 +507,7 @@ async fn busy_storage_does_not_queue_foreground_recall() {
     let runtime = Arc::new(open_runtime(root.path()));
     contribute(&runtime, "I prefer tabs.", "indentation", epoch());
     let (held_rx, release_tx, worker) =
-        super::super::test_support::hold_storage(Arc::clone(&runtime));
+        super::super::contention_test_support::hold_storage(Arc::clone(&runtime));
     held_rx.await.unwrap();
     let result = runtime
         .prepare_turn(PrepareMemoryRequest {

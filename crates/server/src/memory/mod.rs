@@ -6,6 +6,8 @@
 pub(crate) mod command_execution;
 mod command_types;
 mod competing_projection;
+#[cfg(test)]
+pub(crate) mod contention_test_support;
 mod entries;
 mod entry_identity;
 mod equivalence;
@@ -52,7 +54,7 @@ pub(crate) mod source_read_test_support;
 mod source_worker;
 mod stored_values;
 #[cfg(test)]
-pub(crate) mod test_support;
+mod test_support;
 #[cfg(test)]
 mod tests;
 

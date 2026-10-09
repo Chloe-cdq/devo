@@ -188,7 +188,8 @@ async fn memory_contention_keeps_turns_and_ping_available() -> Result<()> {
         }
     })).await.context("subscribe automation")?;
     let memory = runtime.memory.as_ref().context("memory")?;
-    let (held, release, worker) = crate::memory::test_support::hold_storage(Arc::clone(memory));
+    let (held, release, worker) =
+        crate::memory::contention_test_support::hold_storage(Arc::clone(memory));
     held.await?;
     let result = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
         for session in [root, automation] {
