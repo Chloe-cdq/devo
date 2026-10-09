@@ -105,6 +105,7 @@ async fn reset_fences_old_evidence_but_keeps_other_scopes_and_new_sources() {
         session_contribution: MemorySetting::On,
         observed_at: epoch() - Duration::hours(1),
         watermark: "old-snapshot".into(),
+        legacy_watermarks: Vec::new(),
         messages: vec![SourceMessage {
             turn_id: turn.clone(),
             item_id: ItemId::new(),
@@ -403,7 +404,6 @@ async fn reset_removes_selected_artifacts_and_preserves_other_scope_artifacts() 
         "memory_candidates",
         "memory_proposal_claims",
         "memory_proposal_claim_sources",
-        "memory_revocations",
     ] {
         let rows = db
             .prepare(&format!(
@@ -421,6 +421,10 @@ async fn reset_removes_selected_artifacts_and_preserves_other_scope_artifacts() 
             .unwrap();
         assert_eq!(rows, vec![("project".into(), 1)], "{table}");
     }
+    let revocations = db.prepare("SELECT scope_type, COUNT(*) FROM memory_revocations GROUP BY scope_type ORDER BY scope_type").unwrap()
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))).unwrap()
+        .collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(revocations, vec![("project".into(), 1), ("user".into(), 1)]);
     let index_and_evidence: (u64, u64) = db
         .query_row(
             "SELECT

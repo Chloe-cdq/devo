@@ -92,6 +92,7 @@ pub(super) async fn remember(
         | crate::memory::MemoryCommandResult::Read(_)
         | crate::memory::MemoryCommandResult::Export(_)
         | crate::memory::MemoryCommandResult::Reset(_)
+        | crate::memory::MemoryCommandResult::Rebuild(_)
         | crate::memory::MemoryCommandResult::Search(_) => Err(ToolCallError::InternalError(
             "memory_remember returned an unexpected result".to_string(),
         )),
@@ -229,6 +230,7 @@ pub(super) async fn search(
         crate::memory::MemoryCommandResult::Search(result) => result,
         crate::memory::MemoryCommandResult::Export(_)
         | crate::memory::MemoryCommandResult::Reset(_)
+        | crate::memory::MemoryCommandResult::Rebuild(_)
         | crate::memory::MemoryCommandResult::Status(_)
         | crate::memory::MemoryCommandResult::Remember(_)
         | crate::memory::MemoryCommandResult::PreparedForget(_)
@@ -291,6 +293,7 @@ pub(super) async fn read(
         | crate::memory::MemoryCommandResult::List(_)
         | crate::memory::MemoryCommandResult::Export(_)
         | crate::memory::MemoryCommandResult::Reset(_)
+        | crate::memory::MemoryCommandResult::Rebuild(_)
         | crate::memory::MemoryCommandResult::Search(_) => Err(ToolCallError::InternalError(
             "memory_read returned an unexpected result".to_string(),
         )),

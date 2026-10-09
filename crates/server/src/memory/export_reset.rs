@@ -115,6 +115,32 @@ impl MemoryRuntime {
                 projection_revision = projection_revision + 1, ignore_sources_before = excluded.ignore_sources_before",
             rusqlite::params![scope_name(request.scope), scope_id, cutoff.to_rfc3339()],
         )?;
+        let revoked_inference = {
+            let mut statement = transaction.prepare(
+                "SELECT e.normalized_key, e.body FROM memory_entries e
+                 JOIN memory_revocations r ON r.scope_type = e.scope_type AND r.scope_id = e.scope_id
+                    AND r.normalized_key = e.normalized_key
+                 WHERE e.scope_type = ?1 AND e.scope_id = ?2 AND e.origin = 'inferred_session'",
+            )?;
+            statement
+                .query_map(
+                    rusqlite::params![scope_name(request.scope), scope_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (stored_key, body) in revoked_inference {
+            let identity = super::entry_identity::MemoryEntryIdentity::from_body(&body);
+            if stored_key == identity.legacy_inferred_key && stored_key != identity.canonical_key {
+                super::revocation_lifecycle::canonicalize_revocation_identity(
+                    &transaction,
+                    scope_name(request.scope),
+                    &scope_id,
+                    &identity.canonical_key,
+                    &stored_key,
+                )?;
+            }
+        }
         transaction.execute(
             "DELETE FROM memory_entries_fts WHERE entry_id IN (
                 SELECT entry_id FROM memory_entries WHERE scope_type = ?1 AND scope_id = ?2)",
@@ -132,7 +158,6 @@ impl MemoryRuntime {
         for table in [
             "memory_proposal_claim_sources",
             "memory_proposal_claims",
-            "memory_revocations",
             "memory_deleted_source_scopes",
         ] {
             transaction.execute(
@@ -144,6 +169,16 @@ impl MemoryRuntime {
             "DELETE FROM memory_entries WHERE scope_type = ?1 AND scope_id = ?2",
             rusqlite::params![scope_name(request.scope), scope_id],
         )? as u64;
+        transaction.execute(
+            "UPDATE memory_jobs SET state = 'cancelled', lease_owner = NULL, lease_until = NULL
+             WHERE rebuild_id IN (SELECT rebuild_id FROM memory_rebuild_requests
+                 WHERE scope_type = ?1 AND scope_id = ?2) AND state IN ('pending', 'running', 'retrying')",
+            rusqlite::params![scope_name(request.scope), scope_id],
+        )?;
+        transaction.execute(
+            "UPDATE memory_rebuild_requests SET state = 'cancelled' WHERE scope_type = ?1 AND scope_id = ?2",
+            rusqlite::params![scope_name(request.scope), scope_id],
+        )?;
         transaction.commit()?;
         let result = MemoryResetResult {
             scope: request.scope,

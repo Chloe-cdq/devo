@@ -72,7 +72,8 @@ impl ServerRuntime {
         let result = match memory.execute_command(command).await {
             Ok(MemoryCommandResult::Export(result)) => serde_json::to_value(result),
             Ok(MemoryCommandResult::Reset(result)) => serde_json::to_value(result),
-            Ok(MemoryCommandResult::Status(_))
+            Ok(MemoryCommandResult::Rebuild(_))
+            | Ok(MemoryCommandResult::Status(_))
             | Ok(MemoryCommandResult::Remember(_))
             | Ok(MemoryCommandResult::PreparedForget(_))
             | Ok(MemoryCommandResult::Forget(_))

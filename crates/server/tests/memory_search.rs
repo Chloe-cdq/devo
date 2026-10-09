@@ -76,7 +76,8 @@ async fn runtime_search_returns_bounded_active_and_restored_projections() {
         | MemoryCommandResult::Read(_)
         | MemoryCommandResult::List(_)
         | MemoryCommandResult::Export(_)
-        | MemoryCommandResult::Reset(_) => panic!("expected search result"),
+        | MemoryCommandResult::Reset(_)
+        | MemoryCommandResult::Rebuild(_) => panic!("expected search result"),
     };
     assert_eq!(
         result,

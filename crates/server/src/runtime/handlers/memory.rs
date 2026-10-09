@@ -43,6 +43,7 @@ impl ServerRuntime {
                 | Ok(MemoryCommandResult::Read(_))
                 | Ok(MemoryCommandResult::Export(_))
                 | Ok(MemoryCommandResult::Reset(_))
+                | Ok(MemoryCommandResult::Rebuild(_))
                 | Ok(MemoryCommandResult::Search(_)) => {
                     tracing::error!("memory status command returned an unexpected result");
                     unavailable_memory_status(configured_enabled)
@@ -207,6 +208,7 @@ impl ServerRuntime {
             | Ok(MemoryCommandResult::Read(_))
             | Ok(MemoryCommandResult::Export(_))
             | Ok(MemoryCommandResult::Reset(_))
+            | Ok(MemoryCommandResult::Rebuild(_))
             | Ok(MemoryCommandResult::Search(_)) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
@@ -297,6 +299,7 @@ impl ServerRuntime {
             | Ok(MemoryCommandResult::Read(_))
             | Ok(MemoryCommandResult::Export(_))
             | Ok(MemoryCommandResult::Reset(_))
+            | Ok(MemoryCommandResult::Rebuild(_))
             | Ok(MemoryCommandResult::Search(_)) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
@@ -368,5 +371,6 @@ fn unavailable_memory_status(enabled: bool) -> devo_protocol::native::rpc_memory
         last_successful_scan_at: None,
         error_classes: Vec::new(),
         source_exclusion_reasons: Vec::new(),
+        rebuild: None,
     }
 }

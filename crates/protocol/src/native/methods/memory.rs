@@ -1,8 +1,8 @@
 use super::{Idempotency, MethodSpec, schema_of};
 use crate::native::rpc_memory::{
     MemoryEntry, MemoryExportParams, MemoryExportResult, MemoryForgetParams, MemoryForgetResult,
-    MemoryListParams, MemoryListResult, MemoryRememberParams, MemoryResetParams, MemoryResetResult,
-    MemoryStatus, MemoryStatusParams,
+    MemoryListParams, MemoryListResult, MemoryRebuildParams, MemoryRebuildResult,
+    MemoryRememberParams, MemoryResetParams, MemoryResetResult, MemoryStatus, MemoryStatusParams,
 };
 
 pub(super) const STATUS: MethodSpec = MethodSpec {
@@ -54,6 +54,15 @@ pub(super) const RESET: MethodSpec = MethodSpec {
     name: "memory/reset",
     params_schema: schema_of::<MemoryResetParams>,
     result_schema: schema_of::<MemoryResetResult>,
+    error_codes: &[],
+    required_capability: None,
+    idempotency: Idempotency::None,
+};
+
+pub(super) const REBUILD: MethodSpec = MethodSpec {
+    name: "memory/rebuild",
+    params_schema: schema_of::<MemoryRebuildParams>,
+    result_schema: schema_of::<MemoryRebuildResult>,
     error_codes: &[],
     required_capability: None,
     idempotency: Idempotency::None,

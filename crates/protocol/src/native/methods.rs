@@ -108,6 +108,7 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
     memory::LIST,
     memory::EXPORT,
     memory::RESET,
+    memory::REBUILD,
     MethodSpec {
         name: "subscription/create",
         params_schema: schema_of::<SubscriptionCreateParams>,

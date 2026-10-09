@@ -1,6 +1,7 @@
 use super::super::*;
 use super::session_memory::MemorySettingsPatchPlan;
 use super::session_memory::PersistMemorySettingsError;
+use crate::memory::scan::ScanTrigger;
 use devo_core::SessionSettingsField;
 use devo_protocol::native::rpc_session::RollbackMode;
 
@@ -292,8 +293,11 @@ impl ServerRuntime {
         }
 
         if !summary.ephemeral && source.is_interactive() {
-            self.runtime_arc()
-                .schedule_memory_scan(summary.session_id, passive_context);
+            self.runtime_arc().schedule_memory_scan(
+                summary.session_id,
+                passive_context,
+                ScanTrigger::SessionStart,
+            );
         }
 
         tracing::info!(

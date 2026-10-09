@@ -307,6 +307,14 @@ export type SubscriptionUnsubscribeParams = { subscriptionId: SubscriptionId, };
     push_decl::<native::rpc_admin::SkillSetEnabledParams>(&cfg, &mut output);
     push_decl::<native::rpc_admin::SkillSetEnabledResult>(&cfg, &mut output);
 
+    push_decl::<native::rpc_memory::MemoryScope>(&cfg, &mut output);
+    push_decl::<native::rpc_memory::MemorySourceExclusionReason>(&cfg, &mut output);
+    push_decl::<native::rpc_memory::MemoryStatusParams>(&cfg, &mut output);
+    push_decl::<native::rpc_memory::MemoryStatus>(&cfg, &mut output);
+    push_decl::<native::rpc_memory::MemoryRebuildParams>(&cfg, &mut output);
+    push_decl::<native::rpc_memory::MemoryRebuildResult>(&cfg, &mut output);
+    push_decl::<native::rpc_memory::MemoryRebuildStatus>(&cfg, &mut output);
+
     push_decl::<McpListParams>(&cfg, &mut output);
     push_decl::<McpServerInfo>(&cfg, &mut output);
     push_decl::<McpListResult>(&cfg, &mut output);

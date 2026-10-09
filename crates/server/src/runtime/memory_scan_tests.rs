@@ -1,4 +1,8 @@
 use super::*;
+use crate::memory::scan::ScanTrigger;
+
+#[path = "memory_rebuild_tests.rs"]
+mod rebuild_tests;
 
 #[path = "memory_scan_deletion_tests.rs"]
 mod deletion_tests;
@@ -304,7 +308,16 @@ fn open_scan_runtime(
 }
 
 async fn scan(runtime: &Arc<ServerRuntime>, root: &std::path::Path) -> Result<()> {
+    scan_triggered(runtime, root, ScanTrigger::SessionStart).await
+}
+
+async fn scan_triggered(
+    runtime: &Arc<ServerRuntime>,
+    root: &std::path::Path,
+    trigger: ScanTrigger,
+) -> Result<()> {
     let context = crate::memory::scan::ScanContext {
+        trigger,
         db: Arc::clone(&runtime.deps.db),
         model_context: runtime.deps.context_for_workspace(root).await?,
         usage_ledger: runtime.usage_ledger.clone(),
@@ -674,6 +687,7 @@ async fn invalidated_claim_never_sends_transcript() -> Result<()> {
         .unwrap()?
         .path();
     let context = crate::memory::scan::ScanContext {
+        trigger: ScanTrigger::SessionStart,
         db: Arc::clone(&runtime.deps.db),
         model_context: runtime.deps.context_for_workspace(root.path()).await?,
         usage_ledger: runtime.usage_ledger.clone(),
@@ -770,6 +784,7 @@ async fn scan_reports_missing_credentials_without_quota() -> Result<()> {
         )?);
         for _ in 0..2 {
             let context = crate::memory::scan::ScanContext {
+                trigger: ScanTrigger::SessionStart,
                 db: Arc::clone(&runtime.deps.db),
                 model_context: runtime.deps.context_for_workspace(root.path()).await?,
                 usage_ledger: runtime.usage_ledger.clone(),

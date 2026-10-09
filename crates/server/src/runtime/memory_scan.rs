@@ -1,5 +1,5 @@
 use super::{ServerRuntime, SessionId};
-use crate::memory::scan::{MemorySourceWork, ScanContext, SourceActivity};
+use crate::memory::scan::{MemorySourceWork, ScanContext, ScanTrigger, SourceActivity};
 use std::sync::{Arc, Weak};
 
 struct RuntimeSourceActivity(Weak<ServerRuntime>);
@@ -17,11 +17,13 @@ impl ServerRuntime {
         self: &Arc<Self>,
         triggering_session: SessionId,
         model_context: Arc<crate::session_context::SessionRuntimeContext>,
+        trigger: ScanTrigger,
     ) {
         let Some(memory) = self.memory.as_ref().map(Arc::clone) else {
             return;
         };
         let context = ScanContext {
+            trigger,
             db: Arc::clone(&self.deps.db),
             model_context,
             usage_ledger: self.usage_ledger.clone(),

@@ -2,15 +2,15 @@
 //! runs on the blocking pool, outside the foreground session and turn tasks.
 use super::MemoryRuntime;
 use super::extraction::{build_extraction_request, parse_candidates};
-use super::jobs::{JobFailure, MAX_ATTEMPTS};
-use super::source::{ExtractableSource, MAX_SOURCE_BYTES, read_source};
+use super::jobs::{JobFailure, MAX_ATTEMPTS, SourceJobAction};
+use super::rebuild::ScanTarget;
+use super::source::{ExtractableSource, read_source};
 use async_trait::async_trait;
 use devo_protocol::SessionId;
 use devo_protocol::native::rpc_memory::MemorySourceExclusionReason as SourceExclusion;
 use devo_protocol::native::session::MemorySetting;
 use devo_provider::ModelProviderSDK;
 use devo_provider::error::ProviderError;
-use std::io::{BufReader, Read};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +21,14 @@ pub(crate) trait SourceActivity: Send + Sync {
     async fn is_active(&self, session_id: SessionId) -> bool;
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ScanTrigger {
+    SessionStart,
+    ExplicitRebuild,
+}
+
 pub(crate) struct ScanContext {
+    pub(crate) trigger: ScanTrigger,
     pub(crate) db: Arc<crate::db::Database>,
     pub(crate) usage_ledger: crate::usage_ledger::UsageLedger,
     pub(crate) triggering_session: SessionId,
@@ -43,108 +50,6 @@ pub(crate) enum MemorySourceWork {
 }
 
 impl MemoryRuntime {
-    /// Owns passive source scheduling and durable source-intent reconciliation.
-    pub(crate) fn enqueue_source(self: &Arc<Self>, work: MemorySourceWork) {
-        match work {
-            MemorySourceWork::DeleteSources {
-                sources,
-                related_memory,
-                reply,
-            } => {
-                let memory = Arc::clone(self);
-                let _ = std::thread::spawn(move || {
-                    // Foreground deletion commits canonical records only. Durable
-                    // scope markers leave projection I/O to reconciliation.
-                    let result = (|| {
-                        let mut connection =
-                            memory.connection.try_lock().map_err(|error| match error {
-                                std::sync::TryLockError::WouldBlock => {
-                                    super::MemoryError::StorageBusy
-                                }
-                                std::sync::TryLockError::Poisoned(_) => {
-                                    super::MemoryError::LockPoisoned
-                                }
-                            })?;
-                        let previous_timeout: u64 =
-                            connection.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
-                        connection.busy_timeout(Duration::ZERO)?;
-                        let now = (memory.clock)();
-                        let result = super::source_deletion::delete_source_records(
-                            &mut connection,
-                            &sources,
-                            now,
-                            memory.inferred_expiry_cutoff(now),
-                            related_memory,
-                        );
-                        if let Err(error) =
-                            connection.busy_timeout(Duration::from_millis(previous_timeout))
-                        {
-                            tracing::warn!(%error, "failed to restore memory storage timeout");
-                        }
-                        result
-                    })();
-                    let _ = reply.send(result);
-                });
-            }
-            MemorySourceWork::Scan(context) => {
-                let memory = Arc::clone(self);
-                tokio::spawn(async move {
-                    let repair = Arc::clone(&memory);
-                    if let Err(error) = tokio::task::spawn_blocking(move || {
-                        repair.reconcile_source_intents();
-                    })
-                    .await
-                    {
-                        tracing::warn!(%error, "memory source reconciliation task failed");
-                    }
-                    if let Err(error) = memory.run_background_scan(context).await {
-                        tracing::warn!(%error, error_class = "storage_error", "background memory scan failed");
-                    }
-                });
-            }
-            MemorySourceWork::Reconcile => {
-                let start = {
-                    let mut state = self
-                        .reconcile_state
-                        .lock()
-                        .expect("reconcile state poisoned");
-                    state.pending = true;
-                    if state.running {
-                        false
-                    } else {
-                        state.running = true;
-                        true
-                    }
-                };
-                if !start {
-                    return;
-                }
-                let memory = Arc::clone(self);
-                let _ = std::thread::spawn(move || {
-                    loop {
-                        let pending = {
-                            let mut state = memory
-                                .reconcile_state
-                                .lock()
-                                .expect("reconcile state poisoned");
-                            if state.pending {
-                                state.pending = false;
-                                true
-                            } else {
-                                state.running = false;
-                                false
-                            }
-                        };
-                        if !pending {
-                            break;
-                        }
-                        memory.reconcile_source_intents();
-                    }
-                });
-            }
-        }
-    }
-
     pub(crate) async fn run_background_scan(
         self: Arc<Self>,
         context: ScanContext,
@@ -154,6 +59,33 @@ impl MemoryRuntime {
         if !self.config.enabled || self.config.max_sources_per_scan == 0 {
             return Ok(());
         }
+        // Ordinary learning must not wait for another scope's deferred rebuild.
+        // An explicit rebuild invocation never authorizes an ordinary scan.
+        if matches!(context.trigger, ScanTrigger::SessionStart) {
+            self.run_source_scan(&context, ScanTarget::Automatic)
+                .await?;
+        }
+        let memory = Arc::clone(&self);
+        let rebuilds = tokio::task::spawn_blocking(move || memory.pending_rebuilds()).await??;
+        for request in rebuilds {
+            loop {
+                let (admitted, complete) = self
+                    .run_source_scan(&context, ScanTarget::Rebuild(request.clone()))
+                    .await?;
+                if complete || admitted == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn run_source_scan(
+        self: &Arc<Self>,
+        context: &ScanContext,
+        target: ScanTarget,
+    ) -> anyhow::Result<(u32, bool)> {
         let configured_small = context
             .model_context
             .config_store
@@ -210,8 +142,11 @@ impl MemoryRuntime {
                 }
             })
         };
-        if initialization_failure.is_none() && !self.quota_allows(provider.as_ref()) {
-            return Ok(());
+        if matches!(target, ScanTarget::Automatic)
+            && initialization_failure.is_none()
+            && !self.quota_allows(provider.as_ref())
+        {
+            return Ok((0, false));
         }
         let db = Arc::clone(&context.db);
         let indexes = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -222,77 +157,80 @@ impl MemoryRuntime {
         })
         .await??;
         let mut admitted = 0;
+        let mut deferred = false;
         for index in indexes.into_iter().flatten() {
-            if admitted >= self.config.max_sources_per_scan
-                || (initialization_failure.is_none() && !self.quota_allows(provider.as_ref()))
-            {
+            let budget_available = admitted < self.config.max_sources_per_scan
+                && (initialization_failure.is_some() || self.quota_allows(provider.as_ref()));
+            if matches!(target, ScanTarget::Automatic) && !budget_available {
                 break;
+            }
+            if let ScanTarget::Rebuild(request) = &target {
+                if index.metadata.created_at > request.requested_at {
+                    continue;
+                }
+                let memory = Arc::clone(self);
+                let workspace = index.metadata.cwd.clone();
+                let scope = request.scope;
+                let scope_id =
+                    tokio::task::spawn_blocking(move || memory.scope_id(scope, &workspace)).await?;
+                if !scope_id.is_ok_and(|id| id == request.scope_id) {
+                    self.cancel_rebuild_source(&request.id, &index.metadata.session_id.to_string())
+                        .await?;
+                    continue;
+                }
             }
             let session_id = index.metadata.session_id;
             let source_id = session_id.to_string();
-            let exclusion = if index.metadata.ephemeral {
-                Some(SourceExclusion::Ephemeral)
-            } else if index.metadata.parent_session_id.is_some()
-                || index.metadata.agent_path.is_some()
-            {
-                Some(SourceExclusion::NonRoot)
-            } else if index.metadata.fork_from_id.is_some() {
-                Some(SourceExclusion::ForkHistory)
-            } else if index.rollout_path.is_none() {
-                Some(SourceExclusion::NotPersisted)
-            } else {
-                None
-            };
-            if let Some(reason) = exclusion {
-                self.note_source_exclusion(reason);
-                continue;
-            }
-            let path = index.rollout_path.expect("persistent source path");
-            let header_path = path.clone();
-            let exclusion = tokio::task::spawn_blocking(move || {
-                let file = std::fs::File::open(header_path)?;
-                Ok::<_, std::io::Error>(crate::persistence::read_source_eligibility(
-                    BufReader::new(file.take(MAX_SOURCE_BYTES + 1)),
-                ))
-            })
-            .await?
-            .unwrap_or(Err(SourceExclusion::SourceUnavailable));
-            match exclusion {
-                Ok(identity) if identity == source_id => {}
-                Ok(_) => {
-                    self.note_source_exclusion(SourceExclusion::InvalidHistory);
+            let (path, source) = match self.read_scan_source(context, index).await? {
+                super::scan_source::SourceAdmission::Ready { path, source } => (path, source),
+                super::scan_source::SourceAdmission::Deferred => {
+                    deferred = true;
                     continue;
                 }
-                Err(reason) => {
-                    self.note_source_exclusion(reason);
+                super::scan_source::SourceAdmission::Excluded => {
+                    if let ScanTarget::Rebuild(request) = &target {
+                        self.cancel_rebuild_source(&request.id, &source_id).await?;
+                    }
+                    continue;
+                }
+            };
+            if let ScanTarget::Rebuild(request) = &target {
+                let memory = Arc::clone(self);
+                let workspace = source.workspace_root.clone();
+                let scope = request.scope;
+                let scope_id =
+                    tokio::task::spawn_blocking(move || memory.scope_id(scope, &workspace)).await?;
+                if !scope_id.is_ok_and(|id| id == request.scope_id)
+                    || self
+                        .config
+                        .resolve_contribution(source.session_contribution)
+                        != MemorySetting::On
+                {
+                    self.cancel_rebuild_source(&request.id, &source_id).await?;
+                    continue;
+                }
+                if chrono::Utc::now().signed_duration_since(source.observed_at)
+                    < self.minimum_source_idle()
+                {
+                    deferred = true;
                     continue;
                 }
             }
-            if self.scan_source_has_intent(&source_id).await {
-                self.note_source_exclusion(SourceExclusion::SourceFenced);
-                continue;
-            }
-            if context.activity.is_active(session_id).await {
-                self.note_source_exclusion(SourceExclusion::Active);
-                continue;
-            }
-            let read_path = path.clone();
-            let source = tokio::task::spawn_blocking(move || read_source(&read_path))
-                .await?
-                .ok()
-                .flatten();
-            let Some(source) = source else {
-                self.note_source_exclusion(SourceExclusion::InvalidHistory);
-                continue;
-            };
-            if source.session_id.as_str() != source_id.as_str() {
-                self.note_source_exclusion(SourceExclusion::InvalidHistory);
-                continue;
-            }
-            let memory = Arc::clone(&self);
+            let memory = Arc::clone(self);
             let claim_source = source.clone();
-            let claim = tokio::task::spawn_blocking(move || {
-                memory.claim_source(&claim_source, chrono::Utc::now())
+            let claim_target = target.clone();
+            let claim = tokio::task::spawn_blocking(move || match &claim_target {
+                ScanTarget::Automatic => memory.claim_source(&claim_source, chrono::Utc::now()),
+                ScanTarget::Rebuild(_) => memory.source_job(
+                    &claim_source,
+                    chrono::Utc::now(),
+                    &claim_target,
+                    if budget_available {
+                        SourceJobAction::Claim
+                    } else {
+                        SourceJobAction::Queue
+                    },
+                ),
             })
             .await??;
             let Some(mut claim) = claim else {
@@ -300,7 +238,7 @@ impl MemoryRuntime {
             };
             admitted += 1;
             if let Some(failure) = initialization_failure {
-                let memory = Arc::clone(&self);
+                let memory = Arc::clone(self);
                 tokio::task::spawn_blocking(move || {
                     memory.fail_job(&claim, failure, chrono::Utc::now())
                 })
@@ -319,7 +257,7 @@ impl MemoryRuntime {
                     || self.scan_source_has_intent(&source_id).await
                     || !self.quota_allows(provider.as_ref())
                 {
-                    let memory = Arc::clone(&self);
+                    let memory = Arc::clone(self);
                     tokio::task::spawn_blocking(move || memory.release_job(&claim)).await??;
                     break;
                 }
@@ -329,7 +267,7 @@ impl MemoryRuntime {
                     .ok()
                     .flatten();
                 if !latest.as_ref().is_some_and(source_still_eligible) {
-                    let memory = Arc::clone(&self);
+                    let memory = Arc::clone(self);
                     let source = source.clone();
                     tokio::task::spawn_blocking(move || {
                         memory.commit_extraction(&claim, &source, &[], chrono::Utc::now())
@@ -386,8 +324,22 @@ impl MemoryRuntime {
                     } else {
                         SourceExclusion::Active
                     });
-                    let memory = Arc::clone(&self);
+                    let memory = Arc::clone(self);
                     tokio::task::spawn_blocking(move || memory.release_job(&claim)).await??;
+                    break;
+                }
+                let memory = Arc::clone(self);
+                let dispatch_claim = claim.clone();
+                let dispatch_source = source.clone();
+                if !tokio::task::spawn_blocking(move || {
+                    memory.dispatch_authorized(
+                        &dispatch_claim,
+                        &dispatch_source,
+                        chrono::Utc::now(),
+                    )
+                })
+                .await??
+                {
                     break;
                 }
                 let response =
@@ -413,7 +365,7 @@ impl MemoryRuntime {
                     } else {
                         Vec::new()
                     };
-                    let memory = Arc::clone(&self);
+                    let memory = Arc::clone(self);
                     let source = source.clone();
                     let commit_claim = claim.clone();
                     let commit = tokio::task::spawn_blocking(move || {
@@ -426,7 +378,7 @@ impl MemoryRuntime {
                     })
                     .await?;
                     if commit.is_err() {
-                        let memory = Arc::clone(&self);
+                        let memory = Arc::clone(self);
                         tokio::task::spawn_blocking(move || {
                             memory.fail_job(&claim, JobFailure::Storage, chrono::Utc::now())
                         })
@@ -435,7 +387,7 @@ impl MemoryRuntime {
                     break;
                 }
                 let failure = result.expect_err("successful extraction handled above");
-                let memory = Arc::clone(&self);
+                let memory = Arc::clone(self);
                 let failed_claim = claim.clone();
                 tokio::task::spawn_blocking(move || {
                     memory.fail_job(&failed_claim, failure, chrono::Utc::now())
@@ -450,10 +402,16 @@ impl MemoryRuntime {
                 if !self.quota_allows(provider.as_ref()) {
                     break;
                 }
-                let memory = Arc::clone(&self);
+                let memory = Arc::clone(self);
                 let source = source.clone();
+                let retry_target = target.clone();
                 let next = tokio::task::spawn_blocking(move || {
-                    memory.claim_source(&source, chrono::Utc::now())
+                    memory.source_job(
+                        &source,
+                        chrono::Utc::now(),
+                        &retry_target,
+                        SourceJobAction::Claim,
+                    )
                 })
                 .await??;
                 let Some(next) = next else {
@@ -462,7 +420,15 @@ impl MemoryRuntime {
                 claim = next;
             }
         }
-        Ok(())
+        let complete = match target {
+            ScanTarget::Automatic => true,
+            ScanTarget::Rebuild(request) => {
+                let memory = Arc::clone(self);
+                tokio::task::spawn_blocking(move || memory.finish_rebuild_pass(&request, deferred))
+                    .await??
+            }
+        };
+        Ok((admitted, complete))
     }
 
     fn quota_allows(&self, provider: &dyn ModelProviderSDK) -> bool {

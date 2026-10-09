@@ -165,7 +165,7 @@ fn receipt_kind_migration_rolls_back_and_retries() {
          INSERT INTO memory_job_receipts VALUES ('legacy', 'done', '2030-01-01T02:00:00Z');
          UPDATE memory_schema_meta SET value = '9' WHERE key = 'schema_version';
          CREATE TRIGGER reject_receipt_version BEFORE UPDATE ON memory_schema_meta
-         WHEN NEW.value = '10' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+         WHEN NEW.value = '11' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
         )
         .unwrap();
     assert!(schema::create_schema(&connection).is_err());
