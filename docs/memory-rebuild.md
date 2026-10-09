@@ -58,7 +58,10 @@ Foreground usage and all semantic journal changes continue to affect eligibility
 Reset, startup, migration, and ordinary scans never create rebuild authorization.
 A later scheduled scan may resume an already authorized request after restart,
 quota recovery, or an idle source becoming available. Restart alone does not start an extractor. Reissuing the scoped command can also resume the same
-request. An explicit rebuild invocation does not append an ordinary scan.
+request. A normal interactive session start runs its bounded automatic scan first,
+then attempts to resume already authorized rebuilds. A deferred rebuild in one
+Project does not suppress ordinary learning in another. An explicit rebuild
+invocation runs only authorized rebuilds and does not append an ordinary scan.
 
 `memory/status.rebuild` appears after the first accepted rebuild and contains
 `pendingRequestCount`, `pendingJobCount`, `runningJobCount`, `retryingJobCount`,

@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::memory::scan::ScanTrigger;
 use crate::memory::{MemoryCommand, MemoryCommandResult, MemoryUserSessionSelection};
 use devo_protocol::native::rpc_memory::MemoryRebuildParams;
 
@@ -75,7 +76,11 @@ impl ServerRuntime {
             tokio::spawn(async move {
                 if let Some(summary) = runtime.session_summary_snapshot(session_id).await {
                     match runtime.deps.context_for_workspace(&summary.cwd).await {
-                        Ok(context) => runtime.schedule_memory_scan(session_id, context),
+                        Ok(context) => runtime.schedule_memory_scan(
+                            session_id,
+                            context,
+                            ScanTrigger::ExplicitRebuild,
+                        ),
                         Err(_) => tracing::warn!(
                             error_class = "provider_unavailable",
                             "memory rebuild context unavailable"

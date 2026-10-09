@@ -21,7 +21,14 @@ pub(crate) trait SourceActivity: Send + Sync {
     async fn is_active(&self, session_id: SessionId) -> bool;
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ScanTrigger {
+    SessionStart,
+    ExplicitRebuild,
+}
+
 pub(crate) struct ScanContext {
+    pub(crate) trigger: ScanTrigger,
     pub(crate) db: Arc<crate::db::Database>,
     pub(crate) usage_ledger: crate::usage_ledger::UsageLedger,
     pub(crate) triggering_session: SessionId,
@@ -52,9 +59,14 @@ impl MemoryRuntime {
         if !self.config.enabled || self.config.max_sources_per_scan == 0 {
             return Ok(());
         }
+        // Ordinary learning must not wait for another scope's deferred rebuild.
+        // An explicit rebuild invocation never authorizes an ordinary scan.
+        if matches!(context.trigger, ScanTrigger::SessionStart) {
+            self.run_source_scan(&context, ScanTarget::Automatic)
+                .await?;
+        }
         let memory = Arc::clone(&self);
         let rebuilds = tokio::task::spawn_blocking(move || memory.pending_rebuilds()).await??;
-        let rebuilding = !rebuilds.is_empty();
         for request in rebuilds {
             loop {
                 let (admitted, complete) = self
@@ -65,10 +77,6 @@ impl MemoryRuntime {
                 }
                 tokio::task::yield_now().await;
             }
-        }
-        if !rebuilding {
-            self.run_source_scan(&context, ScanTarget::Automatic)
-                .await?;
         }
         Ok(())
     }

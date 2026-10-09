@@ -202,7 +202,7 @@ async fn rebuild_reevaluates_queued_source_eligibility() -> Result<()> {
         )
         .await?;
         anyhow::ensure!(accepted.get("result").is_some(), "rebuild: {accepted}");
-        scan(&runtime, root.path()).await?;
+        scan_triggered(&runtime, root.path(), ScanTrigger::ExplicitRebuild).await?;
         let mut metadata = runtime.deps.db.list_root_sessions()?[0].clone();
         let path = runtime
             .deps
@@ -254,7 +254,7 @@ async fn rebuild_reevaluates_queued_source_eligibility() -> Result<()> {
             runtime.deps.db.upsert_session(&metadata, Some(&path))?;
         }
         *provider.quota.lock().unwrap() = Some(100);
-        scan(&runtime, root.path()).await?;
+        scan_triggered(&runtime, root.path(), ScanTrigger::ExplicitRebuild).await?;
         let status = rpc(&runtime, connection, "memory/status", json!({})).await?;
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0, "{case}");
         assert_eq!(status["result"]["entryCount"], json!(0), "{case}");
@@ -288,7 +288,7 @@ async fn rebuild_pending_jobs_resume_after_restart_and_quota_recovery() -> Resul
     )
     .await?;
     anyhow::ensure!(accepted.get("result").is_some(), "rebuild: {accepted}");
-    scan(&runtime, root.path()).await?;
+    scan_triggered(&runtime, root.path(), ScanTrigger::ExplicitRebuild).await?;
     let status = rpc(&runtime, connection, "memory/status", json!({})).await?;
     assert_eq!(status["result"]["rebuild"]["pendingJobCount"], json!(3));
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
@@ -297,7 +297,7 @@ async fn rebuild_pending_jobs_resume_after_restart_and_quota_recovery() -> Resul
     let runtime = open_scan_runtime(root.path(), Arc::clone(&provider))?;
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     *provider.quota.lock().unwrap() = Some(25);
-    scan(&runtime, root.path()).await?;
+    scan_triggered(&runtime, root.path(), ScanTrigger::ExplicitRebuild).await?;
     assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
     let connection = connect(&runtime).await?;
     let status = rpc(&runtime, connection, "memory/status", json!({})).await?;
@@ -361,7 +361,7 @@ async fn reset_during_rebuild_reread_prevents_provider_dispatch() -> Result<()> 
             )))
             .unwrap();
     });
-    scan(&runtime, root.path()).await?;
+    scan_triggered(&runtime, root.path(), ScanTrigger::ExplicitRebuild).await?;
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     let status = rpc(&runtime, connection, "memory/status", json!({})).await?;
     assert_eq!(status["result"]["entryCount"], json!(0));
@@ -423,6 +423,7 @@ async fn project_rebuild_ignores_active_sources_in_other_projects() -> Result<()
     .await?;
     Arc::clone(runtime.memory.as_ref().unwrap())
         .run_background_scan(crate::memory::scan::ScanContext {
+            trigger: ScanTrigger::ExplicitRebuild,
             db: Arc::clone(&runtime.deps.db),
             model_context: runtime.deps.context_for_workspace(root.path()).await?,
             usage_ledger: runtime.usage_ledger.clone(),
@@ -517,7 +518,7 @@ async fn project_identity_change_during_rebuild_prevents_dispatch() -> Result<()
     let _hook = on_read(&path, ReadPoint::Complete, /*skip_reads*/ 1, move || {
         std::fs::create_dir(&git).unwrap();
     });
-    scan(&runtime, root.path()).await?;
+    scan_triggered(&runtime, root.path(), ScanTrigger::ExplicitRebuild).await?;
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -579,6 +580,7 @@ async fn legacy_receipts_survive_rebuild_accounting_and_restart() -> Result<()> 
             // A later-listed trigger receives the first source's accounting before its own claim.
             Arc::clone(runtime.memory.as_ref().unwrap())
                 .run_background_scan(crate::memory::scan::ScanContext {
+                    trigger: ScanTrigger::ExplicitRebuild,
                     db: Arc::clone(&runtime.deps.db),
                     model_context: runtime.deps.context_for_workspace(root.path()).await?,
                     usage_ledger: runtime.usage_ledger.clone(), triggering_session: trigger,

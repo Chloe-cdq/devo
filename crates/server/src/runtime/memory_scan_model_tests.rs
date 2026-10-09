@@ -15,6 +15,7 @@ async fn scan_reports_unknown_extraction_model() -> Result<()> {
     )?);
     for _ in 0..2 {
         let context = crate::memory::scan::ScanContext {
+            trigger: ScanTrigger::SessionStart,
             db: Arc::clone(&runtime.deps.db),
             model_context: runtime.deps.context_for_workspace(root.path()).await?,
             usage_ledger: runtime.usage_ledger.clone(),
