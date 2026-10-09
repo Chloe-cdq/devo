@@ -66,23 +66,33 @@ checks. The obsolete core extraction/consolidation skeleton has no remaining
 callers and is removed; the core keeps only query context and tool contracts.
 
 Acceptance tests passed on Windows and Unix on 2026-10-09 at source commit
-`d39bb4a8e6284384b4a1fc5f5f9ea93380ec35a2`.
-[Memory acceptance](https://github.com/Chloe-cdq/devo/actions/runs/37896011392)
+`3a7bc4675b7ac13e4b7142b966ec2d2ffa0dda27`, including the foreground recall
+failure observability correction.
+[Memory acceptance](https://github.com/Chloe-cdq/devo/actions/runs/37910872389)
 verified every area above on both platforms.
-[Regular CI](https://github.com/Chloe-cdq/devo/actions/runs/37896011394)
-passed full-workspace tests, all-target compilation, Rustfmt and documentation
-checks. The active L1 requirement (revision 2) and L2 design (revision 4) are
-Implemented; historical revision 3 remains unchanged.
+[Regular CI](https://github.com/Chloe-cdq/devo/actions/runs/37910872306)
+passed full-workspace tests, all-target compilation, test traceability, Rustfmt
+and documentation checks. The active L1 requirement (revision 2) and L2 design
+(revision 4) are Implemented; historical revision 3 remains unchanged.
 
-Local Windows checks also passed all 297 server Memory module/runtime tests,
-the protocol suite, the affected privacy/approval-recovery integration tests,
-and full-workspace Clippy on Rust 1.97.1. Two verification limitations remain:
+The recall-status regression first failed because a real recall storage failure
+left healthy status and empty error classes, then passed after the correction.
+Local Windows verification passed all 297 server Memory module/runtime tests,
+9 recall integration tests and 3 affected Native contract/event tests.
+Independent Standards and Spec reviews found no remaining actionable issues.
+
+Two verification limitations remain under the user's accepted exclusions.
 CI Clippy on Rust 1.99 reports `double_must_use` on the unchanged `async_trait`
-surface at `crates/safety/src/lib.rs:646`; a local full-workspace rerun failed
-with LNK1104 because an earlier hung loopback fixture still holds its test
-executable. Repository instructions prohibit interrupting that Rust command,
-so no complete local Windows workspace pass is claimed. Neither limitation
-failed the Windows/Unix Memory acceptance tests.
+surface at `crates/safety/src/lib.rs:646`. Compared with main
+`045d17af7caffb5c50742a6b14119519c65ef0a1`, the safety source file and manifest,
+the async-trait lockfile entry, and the Clippy toolchain/check command are
+identical; no separate main Clippy run was launched. An earlier local
+full-workspace run hung in a proxy-dependent fixture, and a rerun failed with
+LNK1104 because the old process still holds its test executable. Local proxy
+issues are temporarily outside scope, and repository instructions prohibit
+interrupting that Rust command. No complete local Windows workspace pass is
+claimed. Neither limitation failed the Windows/Unix Memory acceptance tests or
+the regular CI full-workspace tests.
 
-The subsequent closeout commit changes documentation and specification status
-only; its source, tests and workflow are identical to the verified source commit.
+The final verification-record commit changes this document only; its source,
+tests and workflow are identical to the verified source commit.
