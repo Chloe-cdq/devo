@@ -156,3 +156,107 @@ async fn exercise_admission(outcome: ParentPreparation) -> Result<()> {
     runtime.shutdown().await;
     Ok(())
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 Failure and Observability / DD-6.
+/// Verifies: root and automation turns and ping survive a busy background store, then ordinary recall resumes.
+#[tokio::test]
+async fn memory_contention_keeps_turns_and_ping_available() -> Result<()> {
+    let data = configured_data_root()?;
+    let provider = Arc::new(ScriptedProvider::new([
+        ScriptedProvider::completed("root"),
+        ScriptedProvider::completed("automation"),
+    ]));
+    let runtime = build_runtime_with_workspace_config(data.path(), provider.clone())?;
+    let (connection, mut notifications, root) =
+        start_subscribed_session(&runtime, data.path(), /*request_id*/ 210).await?;
+    remember(&runtime, connection, /*request_id*/ 211, "Use tabs").await?;
+    let created = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({
+                "id": 212, "method": "session/new", "params": {
+                    "cwd": data.path(), "source": "automation", "idempotencyKey": "busy-automation"
+                }
+            }),
+        )
+        .await
+        .context("automation")?;
+    let automation = serde_json::from_value(created["result"]["session"]["id"].clone())?;
+    runtime.handle_incoming(connection, serde_json::json!({
+        "id": 213, "method": "subscription/create", "params": {
+            "selectors": [{"kind": "session", "sessionId": automation}], "includeSnapshot": false
+        }
+    })).await.context("subscribe automation")?;
+    let memory = runtime.memory.as_ref().context("memory")?;
+    let (held, release, worker) = crate::memory::test_support::hold_storage(Arc::clone(memory));
+    held.await?;
+    let result = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        for session in [root, automation] {
+            start_turn_with_approval_policy(
+                &runtime,
+                connection,
+                session,
+                "Use tabs",
+                Some("never"),
+            )
+            .await?;
+            let completed = crate::support::wait_for_session_notification(
+                &mut notifications,
+                "turn/completed",
+                session,
+            )
+            .await?;
+            assert_eq!(
+                completed["params"]["turn"]["status"],
+                serde_json::json!("completed")
+            );
+        }
+        let ping = runtime
+            .handle_incoming(
+                connection,
+                serde_json::json!({
+                    "id": 214, "method": "runtime/ping", "params": {}
+                }),
+            )
+            .await
+            .context("ping")?;
+        anyhow::ensure!(ping.get("result").is_some(), "ping failed: {ping}");
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    let _ = release.send(());
+    worker.join().unwrap();
+    result.context("foreground must not queue behind memory storage")??;
+    for request in provider.requests() {
+        assert!(
+            message_texts(&request)
+                .iter()
+                .all(|text| !text.contains("<advisory_memory>"))
+        );
+    }
+    // Startup maintenance queued behind the holder may finish after its release.
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            provider.push_scripts([ScriptedProvider::completed("recall resumed")]);
+            start_turn_with_approval_policy(&runtime, connection, root, "Use tabs", Some("never"))
+                .await?;
+            crate::support::wait_for_session_notification(
+                &mut notifications,
+                "turn/completed",
+                root,
+            )
+            .await?;
+            if message_texts(provider.requests().last().context("resumed recall")?)
+                .iter()
+                .any(|text| text.contains("<advisory_memory>"))
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .context("recall must resume after storage contention")??;
+    runtime.shutdown().await;
+    Ok(())
+}

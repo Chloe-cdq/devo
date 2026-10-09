@@ -43,11 +43,19 @@ impl MemoryRuntime {
     /// Expire only recallable inference. Its accepted verification timestamp is
     /// `updated_at`; recalls extend its lifetime without revising that timestamp.
     pub(super) fn expire_inferred(&self, now: DateTime<Utc>) -> Result<(), MemoryError> {
-        let cutoff = self.inferred_expiry_cutoff(now).to_rfc3339();
         let connection = self
             .connection
             .lock()
             .map_err(|_| MemoryError::LockPoisoned)?;
+        self.expire_inferred_with_connection(&connection, now)
+    }
+
+    pub(super) fn expire_inferred_with_connection(
+        &self,
+        connection: &Connection,
+        now: DateTime<Utc>,
+    ) -> Result<(), MemoryError> {
+        let cutoff = self.inferred_expiry_cutoff(now).to_rfc3339();
         let transaction = connection.unchecked_transaction()?;
         let expired = {
             let mut statement = transaction.prepare(
@@ -80,7 +88,7 @@ impl MemoryRuntime {
         }
         transaction.commit()?;
         for (scope, scope_id) in scopes {
-            self.refresh_projection(&connection, parse_scope(&scope)?, &scope_id)?;
+            self.refresh_projection(connection, parse_scope(&scope)?, &scope_id)?;
         }
         Ok(())
     }

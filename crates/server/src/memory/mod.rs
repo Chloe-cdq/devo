@@ -52,7 +52,7 @@ pub(crate) mod source_read_test_support;
 mod source_worker;
 mod stored_values;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 
@@ -313,8 +313,11 @@ impl MemoryRuntime {
         }
         self.deletion_ledger.as_ref().is_some_and(|db| {
             db.has_memory_source_deletion_intent(source)
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "failed to check memory source intent");
+                .unwrap_or_else(|_| {
+                    tracing::warn!(
+                        error_class = "storage_error",
+                        "failed to check memory source intent"
+                    );
                     true
                 })
         })

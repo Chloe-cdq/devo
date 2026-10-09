@@ -74,13 +74,13 @@ impl MemoryRuntime {
             return Ok(prepared);
         }
         let now = (self.clock)();
-        self.expire_inferred(now)?;
         let expiry_cutoff = self.inferred_expiry_cutoff(now).to_rfc3339();
         let mut pending_source_deletion = self.has_pending_source_deletions();
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| MemoryError::LockPoisoned)?;
+        let connection = self.connection.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => MemoryError::StorageBusy,
+            std::sync::TryLockError::Poisoned(_) => MemoryError::LockPoisoned,
+        })?;
+        self.expire_inferred_with_connection(&connection, now)?;
         loop {
             let transaction = connection.unchecked_transaction()?;
             let mut statement = transaction.prepare(

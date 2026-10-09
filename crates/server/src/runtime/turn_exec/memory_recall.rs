@@ -49,17 +49,19 @@ impl ServerRuntime {
             let context = prepared.advisory_context();
             return (!context.is_empty()).then(|| Arc::from(context));
         }
-        let memory = self.memory.as_ref()?;
-        let prepared = match memory
-            .prepare_turn(PrepareMemoryRequest {
-                query: query.to_string(),
-                workspace_root: state.core.cwd.clone(),
-                session_recall: state.memory_settings.recall,
-            })
-            .await
+        let memory = Arc::clone(self.memory.as_ref()?);
+        let request = PrepareMemoryRequest {
+            query: query.to_string(),
+            workspace_root: state.core.cwd.clone(),
+            session_recall: state.memory_settings.recall,
+        };
+        let prepared = match tokio::task::spawn_blocking(move || {
+            futures::executor::block_on(memory.prepare_turn(request))
+        })
+        .await
         {
-            Ok(prepared) => prepared,
-            Err(_) => {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(_)) | Err(_) => {
                 // Error values can contain corrupt stored strings; never log them.
                 tracing::warn!(%session_id, "memory recall preparation failed");
                 PreparedMemory::from_entries(/*project_scope_id*/ None, Vec::new())

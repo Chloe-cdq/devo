@@ -52,8 +52,11 @@ impl MemoryRuntime {
                             tracing::warn!("memory source projection refresh remains pending");
                             true
                         }
-                        Err(error) => {
-                            tracing::warn!(%error, "memory source deletion remains pending");
+                        Err(_) => {
+                            tracing::warn!(
+                                error_class = "storage_error",
+                                "memory source deletion remains pending"
+                            );
                             false
                         }
                     };
@@ -63,19 +66,25 @@ impl MemoryRuntime {
                             match db.get_session(&source) {
                                 Ok(None) => completed.push(source),
                                 Ok(Some(_)) => {}
-                                Err(error) => {
-                                    tracing::warn!(%error, %source, "failed to inspect deleted session")
+                                Err(_) => {
+                                    tracing::warn!(error_class = "storage_error", %source, "failed to inspect deleted session")
                                 }
                             }
                         }
-                        if let Err(error) = db.finish_memory_source_deletions(&completed) {
-                            tracing::warn!(%error, "failed to finish memory source deletion ledger");
+                        if db.finish_memory_source_deletions(&completed).is_err() {
+                            tracing::warn!(
+                                error_class = "storage_error",
+                                "failed to finish memory source deletion ledger"
+                            );
                         }
                     }
                 }
                 Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "failed to read memory source deletion ledger")
+                Err(_) => {
+                    tracing::warn!(
+                        error_class = "storage_error",
+                        "failed to read memory source deletion ledger"
+                    )
                 }
             }
         }
@@ -100,8 +109,8 @@ impl MemoryRuntime {
                     match db.get_session(&source_id) {
                         Ok(None) => completed.push(source),
                         Ok(Some(_)) => {}
-                        Err(error) => {
-                            tracing::warn!(%error, %source, "failed to inspect deleted session")
+                        Err(_) => {
+                            tracing::warn!(error_class = "storage_error", %source, "failed to inspect deleted session")
                         }
                     }
                 }
@@ -119,8 +128,11 @@ impl MemoryRuntime {
                 transaction.commit()?;
                 Ok(())
             })();
-            if let Err(error) = release_retry_entries {
-                tracing::warn!(%error, "memory source retry identity cleanup remains pending");
+            if release_retry_entries.is_err() {
+                tracing::warn!(
+                    error_class = "storage_error",
+                    "memory source retry identity cleanup remains pending"
+                );
             }
         }
         // Projection repair owns its durable scopes after canonical cleanup has
@@ -146,8 +158,11 @@ impl MemoryRuntime {
                 .collect::<Result<Vec<_>, _>>()?;
             self.refresh_deleted_source_projections(&connection, &sources)
         })();
-        if let Err(error) = repair {
-            tracing::warn!(%error, "memory source projection repair remains pending");
+        if repair.is_err() {
+            tracing::warn!(
+                error_class = "projection_error",
+                "memory source projection repair remains pending"
+            );
         }
     }
 
@@ -255,7 +270,8 @@ impl MemoryRuntime {
 
     /// Prunes short-lived detail while retaining a minimal idempotency receipt.
     pub(crate) fn prune_expired(&self, now: DateTime<Utc>) -> Result<(), MemoryError> {
-        self.expire_inferred(now)?;
+        // Projection failure during ageing must not retain expired raw detail.
+        let lifecycle_result = self.expire_inferred(now);
         let retention = Duration::try_days(
             self.config
                 .candidate_and_job_retention_days
@@ -305,6 +321,6 @@ impl MemoryRuntime {
         for (scope, scope_id) in scopes {
             self.refresh_projection(&connection, parse_scope(&scope)?, &scope_id)?;
         }
-        Ok(())
+        lifecycle_result
     }
 }

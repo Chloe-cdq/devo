@@ -48,8 +48,8 @@ impl ServerRuntime {
                     tracing::error!("memory status command returned an unexpected result");
                     unavailable_memory_status(configured_enabled)
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "memory status unavailable");
+                Err(_) => {
+                    tracing::warn!(error_class = "storage_error", "memory status unavailable");
                     unavailable_memory_status(configured_enabled)
                 }
             },

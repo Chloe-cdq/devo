@@ -6,7 +6,7 @@ active_baseline: yes
 supersedes: revision 3
 superseded_by:
 owner: Human + Assistant
-last_updated: 2026-09-24
+last_updated: 2026-10-09
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -34,10 +34,10 @@ Revision 4 is the active Approved authority and supersedes revision 3. Revision 
 ## Current-State Audit
 
 - The storage foundation is implemented: the server owns `MemoryRuntime`, a dedicated SQLite schema and migrations, configuration gating, safe status reporting, and generated Markdown projections.
-- Explicit control currently implements status, remember, list, search, and durable forget through Native/root-agent paths for User and Project scopes. Export, reset, rebuild, and lifecycle closeout remain pending.
+- Explicit control implements status, remember, list, durable forget, export, reset and deliberate scoped rebuild through Native/root-agent paths for User and Project scopes. Root-agent search/read use the same server module.
 - The session-settings slice is implemented: canonical `memory_recall` and `memory_contribution` patch fields, global-default resolution, field-level rollout persistence and replay, and best-effort actor synchronization.
-- The runtime `prepare_turn` seam can construct a prototype User-scope snapshot bounded by entry count. Project retrieval, token budgeting, production root-turn query-loop recall/advisory injection, and the Memory Recall item/event remain pending.
-- The runtime `enqueue_source` seam currently applies contribution gating only; background source discovery, external-context eligibility, extraction, jobs/retries, and passive contribution remain pending.
+- The runtime `prepare_turn` seam implements ranked User/Project retrieval, entry/token budgeting, stable root-turn advisory injection, subagent snapshot inheritance, and persisted Native Memory Recall items/events.
+- The runtime `enqueue_source` seam implements background source discovery, current eligibility and external-context exclusion, tool-free extraction, durable jobs/leases, quota checks and bounded retries. Source deletion, conflict/staleness, reset fences and retained-history rebuild are implemented. Final cross-platform acceptance is tracked in `docs/memory-hardening.md`; status remains Approved until verification succeeds.
 - Session JSONL persistence, resume, replay, and compaction implement Session History, not General Persistent Memory.
 - Desktop automations maintain a separate per-automation `memory.md`; this is Automation Run Memory and remains separate.
 - Native is the single retained protocol surface per L2-DES-APP-008. Memory behavior must not be implemented independently in legacy or ACP handlers.

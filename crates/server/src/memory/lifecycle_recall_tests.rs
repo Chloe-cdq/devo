@@ -498,3 +498,28 @@ async fn inactive_on_demand_inspection_does_not_renew_inference() {
         }]
     );
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 Failure and Observability.
+/// Verifies: an occupied background storage mutex omits recall promptly rather than queuing the foreground turn.
+#[tokio::test]
+async fn busy_storage_does_not_queue_foreground_recall() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(open_runtime(root.path()));
+    contribute(&runtime, "I prefer tabs.", "indentation", epoch());
+    let (held_rx, release_tx, worker) =
+        super::super::test_support::hold_storage(Arc::clone(&runtime));
+    held_rx.await.unwrap();
+    let result = runtime
+        .prepare_turn(PrepareMemoryRequest {
+            query: "tabs".into(),
+            workspace_root: root.path().to_path_buf(),
+            session_recall: MemorySetting::On,
+        })
+        .await;
+    let _ = release_tx.send(());
+    worker.join().unwrap();
+    assert!(
+        matches!(result, Err(super::super::MemoryError::StorageBusy)),
+        "{result:?}"
+    );
+}

@@ -1,0 +1,1271 @@
+{
+  "memory/export": {
+    "errorCodes": [],
+    "idempotency": "None",
+    "params": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Parameters for exporting one explicit memory scope.",
+      "properties": {
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        }
+      },
+      "required": [
+        "scope"
+      ],
+      "title": "MemoryExportParams",
+      "type": "object"
+    },
+    "requiredCapability": null,
+    "result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "MemoryScopeLifecycle": {
+          "description": "Content-free lifecycle metadata included in a portable memory export.",
+          "properties": {
+            "ignoreSourcesBefore": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lastRebuildAt": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "revocationCount": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "revocationCount"
+          ],
+          "type": "object"
+        }
+      },
+      "description": "Portable readable bundle without raw candidates, extraction output, or transcripts.",
+      "properties": {
+        "lifecycle": {
+          "$ref": "#/definitions/MemoryScopeLifecycle"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        }
+      },
+      "required": [
+        "lifecycle",
+        "markdown",
+        "scope"
+      ],
+      "title": "MemoryExportResult",
+      "type": "object"
+    }
+  },
+  "memory/forget": {
+    "errorCodes": [],
+    "idempotency": "None",
+    "params": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ItemId": {
+          "type": "string"
+        },
+        "MemoryEntryId": {
+          "type": "string"
+        },
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Parameters for safely retiring a memory entry.\n\nCallers must provide exactly one of `entryId` or `text`. Text-based requests return candidate entries when more than one identity matches; they never mutate an ambiguous request.",
+      "properties": {
+        "entryId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryEntryId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MemoryScope"
+            }
+          ],
+          "default": "user"
+        },
+        "sourceUserItemId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ItemId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional when the request is a direct Native command rather than a root-agent action bound to the current user item."
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "MemoryForgetParams",
+      "type": "object"
+    },
+    "requiredCapability": null,
+    "result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ItemId": {
+          "type": "string"
+        },
+        "MemoryEntry": {
+          "description": "Canonical, readable projection of one memory entry.",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "entryId": {
+              "$ref": "#/definitions/MemoryEntryId"
+            },
+            "kind": {
+              "$ref": "#/definitions/MemoryKind"
+            },
+            "normalizedKey": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/definitions/MemoryOrigin"
+            },
+            "provenance": {
+              "items": {
+                "$ref": "#/definitions/MemoryProvenance"
+              },
+              "type": "array"
+            },
+            "replacementEntryId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryEntryId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "scope": {
+              "$ref": "#/definitions/MemoryScope"
+            },
+            "scopeId": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/definitions/MemoryState"
+            },
+            "updatedAt": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "body",
+            "createdAt",
+            "entryId",
+            "kind",
+            "normalizedKey",
+            "origin",
+            "provenance",
+            "scope",
+            "scopeId",
+            "state",
+            "updatedAt"
+          ],
+          "type": "object"
+        },
+        "MemoryEntryId": {
+          "type": "string"
+        },
+        "MemoryKind": {
+          "description": "Approved semantic kind for a memory entry.",
+          "enum": [
+            "preference",
+            "feedback",
+            "fact",
+            "reference"
+          ],
+          "type": "string"
+        },
+        "MemoryOrigin": {
+          "description": "Origin of a memory entry.",
+          "enum": [
+            "explicit_user",
+            "inferred_session"
+          ],
+          "type": "string"
+        },
+        "MemoryProvenance": {
+          "description": "Provenance summary safe to return with a memory entry.",
+          "properties": {
+            "sourceSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sourceTurnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sourceUserItemId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ItemId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "MemoryState": {
+          "description": "Lifecycle state of a memory entry.",
+          "oneOf": [
+            {
+              "enum": [
+                "active",
+                "stale",
+                "conflicted",
+                "retired"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "An explicitly remembered identity that was previously retired.",
+              "enum": [
+                "restored"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Result of a memory forget request.\n\n`forgotten` is populated only after an exact identity was retired. `candidates` is populated for an ambiguous text request and signals that the caller must select an entry ID before retrying.",
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/definitions/MemoryEntry"
+          },
+          "type": "array"
+        },
+        "forgotten": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryEntry"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "candidates"
+      ],
+      "title": "MemoryForgetResult",
+      "type": "object"
+    }
+  },
+  "memory/list": {
+    "errorCodes": [],
+    "idempotency": "None",
+    "params": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryKind": {
+          "description": "Approved semantic kind for a memory entry.",
+          "enum": [
+            "preference",
+            "feedback",
+            "fact",
+            "reference"
+          ],
+          "type": "string"
+        },
+        "MemoryOrigin": {
+          "description": "Origin of a memory entry.",
+          "enum": [
+            "explicit_user",
+            "inferred_session"
+          ],
+          "type": "string"
+        },
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "MemoryState": {
+          "description": "Lifecycle state of a memory entry.",
+          "oneOf": [
+            {
+              "enum": [
+                "active",
+                "stale",
+                "conflicted",
+                "retired"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "An explicitly remembered identity that was previously retired.",
+              "enum": [
+                "restored"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Parameters for safe memory inspection.",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "MemoryListParams",
+      "type": "object"
+    },
+    "requiredCapability": null,
+    "result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ItemId": {
+          "type": "string"
+        },
+        "MemoryEntry": {
+          "description": "Canonical, readable projection of one memory entry.",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "entryId": {
+              "$ref": "#/definitions/MemoryEntryId"
+            },
+            "kind": {
+              "$ref": "#/definitions/MemoryKind"
+            },
+            "normalizedKey": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/definitions/MemoryOrigin"
+            },
+            "provenance": {
+              "items": {
+                "$ref": "#/definitions/MemoryProvenance"
+              },
+              "type": "array"
+            },
+            "replacementEntryId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryEntryId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "scope": {
+              "$ref": "#/definitions/MemoryScope"
+            },
+            "scopeId": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/definitions/MemoryState"
+            },
+            "updatedAt": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "body",
+            "createdAt",
+            "entryId",
+            "kind",
+            "normalizedKey",
+            "origin",
+            "provenance",
+            "scope",
+            "scopeId",
+            "state",
+            "updatedAt"
+          ],
+          "type": "object"
+        },
+        "MemoryEntryId": {
+          "type": "string"
+        },
+        "MemoryKind": {
+          "description": "Approved semantic kind for a memory entry.",
+          "enum": [
+            "preference",
+            "feedback",
+            "fact",
+            "reference"
+          ],
+          "type": "string"
+        },
+        "MemoryOrigin": {
+          "description": "Origin of a memory entry.",
+          "enum": [
+            "explicit_user",
+            "inferred_session"
+          ],
+          "type": "string"
+        },
+        "MemoryProvenance": {
+          "description": "Provenance summary safe to return with a memory entry.",
+          "properties": {
+            "sourceSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sourceTurnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sourceUserItemId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ItemId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "MemoryState": {
+          "description": "Lifecycle state of a memory entry.",
+          "oneOf": [
+            {
+              "enum": [
+                "active",
+                "stale",
+                "conflicted",
+                "retired"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "An explicitly remembered identity that was previously retired.",
+              "enum": [
+                "restored"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "properties": {
+        "data": {
+          "items": {
+            "$ref": "#/definitions/MemoryEntry"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "title": "Page_for_MemoryEntry",
+      "type": "object"
+    }
+  },
+  "memory/rebuild": {
+    "errorCodes": [],
+    "idempotency": "None",
+    "params": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Parameters for deliberately reprocessing retained eligible history. Clients confirm the explicit scope before dispatch; there is no default scope.",
+      "properties": {
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        }
+      },
+      "required": [
+        "scope"
+      ],
+      "title": "MemoryRebuildParams",
+      "type": "object"
+    },
+    "requiredCapability": null,
+    "result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Durable acceptance of a background rebuild. Retries in one reset epoch share the same identity; this response does not imply extraction has finished.",
+      "properties": {
+        "rebuildId": {
+          "type": "string"
+        },
+        "requestedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        }
+      },
+      "required": [
+        "rebuildId",
+        "requestedAt",
+        "scope"
+      ],
+      "title": "MemoryRebuildResult",
+      "type": "object"
+    }
+  },
+  "memory/remember": {
+    "errorCodes": [],
+    "idempotency": "None",
+    "params": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ItemId": {
+          "type": "string"
+        },
+        "MemoryKind": {
+          "description": "Approved semantic kind for a memory entry.",
+          "enum": [
+            "preference",
+            "feedback",
+            "fact",
+            "reference"
+          ],
+          "type": "string"
+        },
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Parameters for an explicit User- or Project-scope memory write.",
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MemoryScope"
+            }
+          ],
+          "default": "user"
+        },
+        "sourceUserItemId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ItemId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional when the request is a direct Native command rather than a root-agent action bound to the current user item."
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "MemoryRememberParams",
+      "type": "object"
+    },
+    "requiredCapability": null,
+    "result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ItemId": {
+          "type": "string"
+        },
+        "MemoryEntryId": {
+          "type": "string"
+        },
+        "MemoryKind": {
+          "description": "Approved semantic kind for a memory entry.",
+          "enum": [
+            "preference",
+            "feedback",
+            "fact",
+            "reference"
+          ],
+          "type": "string"
+        },
+        "MemoryOrigin": {
+          "description": "Origin of a memory entry.",
+          "enum": [
+            "explicit_user",
+            "inferred_session"
+          ],
+          "type": "string"
+        },
+        "MemoryProvenance": {
+          "description": "Provenance summary safe to return with a memory entry.",
+          "properties": {
+            "sourceSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sourceTurnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sourceUserItemId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ItemId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "MemoryState": {
+          "description": "Lifecycle state of a memory entry.",
+          "oneOf": [
+            {
+              "enum": [
+                "active",
+                "stale",
+                "conflicted",
+                "retired"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "An explicitly remembered identity that was previously retired.",
+              "enum": [
+                "restored"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Canonical, readable projection of one memory entry.",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "entryId": {
+          "$ref": "#/definitions/MemoryEntryId"
+        },
+        "kind": {
+          "$ref": "#/definitions/MemoryKind"
+        },
+        "normalizedKey": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/definitions/MemoryOrigin"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/definitions/MemoryProvenance"
+          },
+          "type": "array"
+        },
+        "replacementEntryId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryEntryId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        },
+        "scopeId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/MemoryState"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "createdAt",
+        "entryId",
+        "kind",
+        "normalizedKey",
+        "origin",
+        "provenance",
+        "scope",
+        "scopeId",
+        "state",
+        "updatedAt"
+      ],
+      "title": "MemoryEntry",
+      "type": "object"
+    }
+  },
+  "memory/reset": {
+    "errorCodes": [],
+    "idempotency": "None",
+    "params": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Parameters for resetting one scope. Clients confirm the scope before dispatch. No default scope is permitted for this destructive command.",
+      "properties": {
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        }
+      },
+      "required": [
+        "scope"
+      ],
+      "title": "MemoryResetParams",
+      "type": "object"
+    },
+    "requiredCapability": null,
+    "result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryScope": {
+          "description": "Scope that owns a memory entry.",
+          "oneOf": [
+            {
+              "description": "Memory shared by the current user across projects.",
+              "enum": [
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Memory associated with the current project identity.",
+              "enum": [
+                "project"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "Canonical outcome of a scoped reset, committed atomically with its exclusion fence.",
+      "properties": {
+        "clearedCandidateCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "clearedEntryCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "ignoreSourcesBefore": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        }
+      },
+      "required": [
+        "clearedCandidateCount",
+        "clearedEntryCount",
+        "ignoreSourcesBefore",
+        "scope"
+      ],
+      "title": "MemoryResetResult",
+      "type": "object"
+    }
+  },
+  "memory/status": {
+    "errorCodes": [],
+    "idempotency": "None",
+    "params": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Parameters for `memory/status`.",
+      "title": "MemoryStatusParams",
+      "type": "object"
+    },
+    "requiredCapability": null,
+    "result": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MemoryRebuildStatus": {
+          "description": "Aggregate rebuild progress. These counts contain no source paths or content.",
+          "properties": {
+            "completedJobCount": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "errorJobCount": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "pendingJobCount": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "pendingRequestCount": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "retryingJobCount": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "runningJobCount": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "completedJobCount",
+            "errorJobCount",
+            "pendingJobCount",
+            "pendingRequestCount",
+            "retryingJobCount",
+            "runningJobCount"
+          ],
+          "type": "object"
+        },
+        "MemorySourceExclusionReason": {
+          "description": "Content-free reasons a passive source was excluded. No session identity, journal path, transcript text, or provider output is exposed.",
+          "enum": [
+            "external_context_used",
+            "ephemeral",
+            "non_root",
+            "automation",
+            "fork_history",
+            "not_persisted",
+            "source_unavailable",
+            "invalid_history",
+            "source_fenced",
+            "active"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "Safe, aggregate memory health information exposed to Native clients.\n\nCounts intentionally exclude row contents and error details. The server may report `unavailable` while ordinary session operations continue.",
+      "properties": {
+        "candidateCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "enabled": {
+          "description": "Effective global memory state after applying the global feature gate.",
+          "type": "boolean"
+        },
+        "entryCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "errorClasses": {
+          "description": "Distinct redacted failure classifications for current error jobs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "errorJobCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "lastSuccessfulScanAt": {
+          "description": "Completion time of the most recent successful source scan.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pendingJobCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "rebuild": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryRebuildStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Content-free aggregate progress for explicitly authorized rebuilds."
+        },
+        "retryingJobCount": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sourceExclusionReasons": {
+          "default": [],
+          "description": "Distinct source exclusions observed by this runtime, in enum order. The bounded set is reset on restart and populated by subsequent scans.",
+          "items": {
+            "$ref": "#/definitions/MemorySourceExclusionReason"
+          },
+          "type": "array"
+        },
+        "storageHealth": {
+          "description": "Redacted storage health classification, such as `healthy` or `unavailable`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidateCount",
+        "enabled",
+        "entryCount",
+        "errorClasses",
+        "errorJobCount",
+        "pendingJobCount",
+        "retryingJobCount",
+        "storageHealth"
+      ],
+      "title": "MemoryStatus",
+      "type": "object"
+    }
+  }
+}

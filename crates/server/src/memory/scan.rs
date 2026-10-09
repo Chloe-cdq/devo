@@ -442,8 +442,11 @@ impl MemoryRuntime {
         let source = source.to_owned();
         match tokio::task::spawn_blocking(move || memory.source_has_intent(&source)).await {
             Ok(blocked) => blocked,
-            Err(error) => {
-                tracing::warn!(%error, "memory source intent check task failed");
+            Err(_) => {
+                tracing::warn!(
+                    error_class = "worker_error",
+                    "memory source intent check task failed"
+                );
                 true
             }
         }

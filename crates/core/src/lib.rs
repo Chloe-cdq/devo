@@ -16,7 +16,6 @@ mod instruction_discovery;
 mod jsonl_store;
 mod logging;
 pub mod mcp;
-pub mod memory;
 mod message_edit;
 mod model_catalog;
 mod permission;
@@ -75,7 +74,6 @@ pub use instruction_discovery::*;
 pub use jsonl_store::*;
 pub use logging::*;
 pub use mcp::*;
-pub use memory::*;
 pub use message_edit::*;
 #[allow(ambiguous_glob_reexports)]
 pub use model_catalog::*;
