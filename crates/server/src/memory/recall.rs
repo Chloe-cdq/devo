@@ -1,6 +1,7 @@
 //! Deterministic, bounded foreground recall. No model calls occur here.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::Ordering;
 
 use chrono::{DateTime, Utc};
 use devo_protocol::approx_tokens_from_byte_count;
@@ -55,6 +56,21 @@ impl PreparedMemory {
 impl MemoryRuntime {
     /// Prepare one lexical snapshot. The caller reuses it for the entire root turn.
     pub async fn prepare_turn(
+        &self,
+        request: PrepareMemoryRequest,
+    ) -> Result<PreparedMemory, MemoryError> {
+        // Keep the health signal at this public seam so every snapshot error,
+        // including early returns, is recorded without retaining error content.
+        let result = self.prepare_turn_snapshot(request);
+        if let Err(error) = &result
+            && !matches!(error, MemoryError::StorageBusy)
+        {
+            self.recall_storage_failed.store(true, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn prepare_turn_snapshot(
         &self,
         request: PrepareMemoryRequest,
     ) -> Result<PreparedMemory, MemoryError> {

@@ -182,6 +182,7 @@ pub struct MemoryRuntime {
     deletion_ledger: Option<Arc<crate::db::Database>>,
     reconcile_state: Mutex<ReconcileState>,
     source_provenance_storage_failed: AtomicBool,
+    recall_storage_failed: AtomicBool,
     source_rollout_store: Option<crate::persistence::RolloutStore>,
     source_recovery_pending: AtomicBool,
     pending_external_sources: Mutex<HashSet<SessionId>>,
@@ -259,6 +260,7 @@ impl MemoryRuntime {
             deletion_ledger: None,
             reconcile_state: Mutex::new(ReconcileState::default()),
             source_provenance_storage_failed: AtomicBool::new(false),
+            recall_storage_failed: AtomicBool::new(false),
             source_rollout_store: None,
             source_recovery_pending: AtomicBool::new(false),
             pending_external_sources: Mutex::new(HashSet::new()),
@@ -583,15 +585,19 @@ impl MemoryRuntime {
         let source_storage_failed = self
             .source_provenance_storage_failed
             .load(Ordering::Relaxed);
+        let recall_storage_failed = self.recall_storage_failed.load(Ordering::Relaxed);
         let mut error_classes = error_classes(&connection)?;
         if source_storage_failed {
             error_classes.push("source_provenance_storage".into());
-            error_classes.sort();
-            error_classes.dedup();
         }
+        if recall_storage_failed {
+            error_classes.push("storage_error".into());
+        }
+        error_classes.sort();
+        error_classes.dedup();
         Ok(MemoryStatus {
             enabled: self.config.enabled,
-            storage_health: if source_storage_failed {
+            storage_health: if source_storage_failed || recall_storage_failed {
                 "degraded"
             } else {
                 "healthy"

@@ -32,7 +32,10 @@ not prevent expired detail from being pruned. See [memory-lifecycle.md](memory-l
 Routine memory diagnostics carry fixed error classes and safe IDs/counts.
 Database messages, invalid stored values, filesystem paths, provider error
 bodies, extraction output and conversation content are omitted. Status also
-whitelists stored error classes. Background failures remain isolated from
+whitelists stored error classes. An observed recall storage failure also retains
+a fixed `storage_error` class and `degraded` health for the runtime's lifetime,
+even when no background job exists. Ordinary storage-mutex contention does not
+record a health failure. Background failures remain isolated from
 interactive and automation turns; foreground recall falls back to an empty
 snapshot when memory storage is unavailable or held by background work.
 Synchronous recall work runs on the blocking pool so filesystem work does not
@@ -47,7 +50,7 @@ safe errors rather than claiming a failed write succeeded.
 | Provider failures, credentials, quota and asynchronous scanning | `runtime::memory_scan_tests`, `memory_passive_extraction` |
 | Malformed output and exhausted retries | `memory::extraction::tests`, `memory::jobs::tests` |
 | Background mutex contention and continued recall | `busy_storage_does_not_queue_foreground_recall`, `memory_contention_keeps_turns_and_ping_available` |
-| Recall storage failure and automation isolation | `memory_turn_recall`, `memory_automation` |
+| Recall storage failure visibility, foreground survival and automation isolation | `memory_turn_recall`, `memory_automation` |
 | Recovered explicit intent and approval source binding | `memory_explicit_recovery`, `memory_turn_recovery` |
 | Native method schemas and retry/capability metadata | `memory_contract::every_native_memory_method_matches_pinned_contract` |
 | Recall item and replayable completion event | `memory_recall` in `devo-protocol` |

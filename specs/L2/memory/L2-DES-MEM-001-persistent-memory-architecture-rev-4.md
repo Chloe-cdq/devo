@@ -330,7 +330,7 @@ Ambiguous natural-language forget requests use search first. Subagents receive n
 - A configurable fast auxiliary model produces one structured candidate set per source session.
 - The scanner processes at most two sources per start by default and does not start below 25% remaining provider quota.
 - Transient failures use bounded exponential backoff with at most three attempts. Invalid structured output, unavailable credentials, and permanent provider errors are recorded safely and do not block sessions.
-- Status exposes counts, last successful scan, pending/retrying/error jobs, and redacted error classes. Logs and telemetry include IDs, counts, durations, and token usage, never entry bodies or transcript text.
+- Status exposes counts, last successful scan, pending/retrying/error jobs, and redacted error classes. Logs and telemetry include IDs, counts, durations, and token usage, never entry bodies or transcript text. Foreground recall storage failures also retain a fixed `storage_error` class and degraded health for the runtime lifetime, independently of job state; ordinary storage-mutex contention does not record a health failure.
 
 ## Configuration
 

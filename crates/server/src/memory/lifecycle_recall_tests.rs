@@ -506,6 +506,7 @@ async fn busy_storage_does_not_queue_foreground_recall() {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(open_runtime(root.path()));
     contribute(&runtime, "I prefer tabs.", "indentation", epoch());
+    let healthy = runtime.status().unwrap();
     let (held_rx, release_tx, worker) =
         super::super::contention_test_support::hold_storage(Arc::clone(&runtime));
     held_rx.await.unwrap();
@@ -522,4 +523,5 @@ async fn busy_storage_does_not_queue_foreground_recall() {
         matches!(result, Err(super::super::MemoryError::StorageBusy)),
         "{result:?}"
     );
+    assert_eq!(runtime.status().unwrap(), healthy);
 }
