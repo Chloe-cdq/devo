@@ -62,6 +62,24 @@ The regular workflow continues to run the full workspace suite, format and lint
 checks. The obsolete core extraction/consolidation skeleton has no remaining
 callers and is removed; the core keeps only query context and tool contracts.
 
-Approved specifications must stay Approved until the corresponding acceptance
-verification succeeds on both platforms. Record outstanding environmental or
-test failures instead of treating a partial run as closeout.
+Acceptance tests passed on Windows and Unix on 2026-10-09 at source commit
+`d39bb4a8e6284384b4a1fc5f5f9ea93380ec35a2`.
+[Memory acceptance](https://github.com/Chloe-cdq/devo/actions/runs/37896011392)
+verified every area above on both platforms.
+[Regular CI](https://github.com/Chloe-cdq/devo/actions/runs/37896011394)
+passed full-workspace tests, all-target compilation, Rustfmt and documentation
+checks. The active L1 requirement (revision 2) and L2 design (revision 4) are
+Implemented; historical revision 3 remains unchanged.
+
+Local Windows checks also passed all 297 server Memory module/runtime tests,
+the protocol suite, the affected privacy/approval-recovery integration tests,
+and full-workspace Clippy on Rust 1.97.1. Two verification limitations remain:
+CI Clippy on Rust 1.99 reports `double_must_use` on the unchanged `async_trait`
+surface at `crates/safety/src/lib.rs:646`; a local full-workspace rerun failed
+with LNK1104 because an earlier hung loopback fixture still holds its test
+executable. Repository instructions prohibit interrupting that Rust command,
+so no complete local Windows workspace pass is claimed. Neither limitation
+failed the Windows/Unix Memory acceptance tests.
+
+The subsequent closeout commit changes documentation and specification status
+only; its source, tests and workflow are identical to the verified source commit.

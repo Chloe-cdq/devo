@@ -1,7 +1,7 @@
 ---
 artifact_id: L2-DES-MEM-001
 revision: 4
-status: Approved
+status: Implemented
 active_baseline: yes
 supersedes: revision 3
 superseded_by:
@@ -29,7 +29,7 @@ This document defines:
 - Session deletion, reset, rebuild, retention, failure, and observability behavior
 - Server module seam, rollout plan, and verification requirements
 
-Revision 4 is the active Approved authority and supersedes revision 3. Revision 3 remains the historical approved design that finalized structural explicit-memory authorization and schema-v5 identity. The implementation-status audit below records independently shipped slices.
+Revision 4 is the active Implemented authority and supersedes revision 3. Revision 3 remains the historical approved design that finalized structural explicit-memory authorization and schema-v5 identity. The implementation-status audit below records independently shipped slices.
 
 ## Current-State Audit
 
@@ -37,7 +37,7 @@ Revision 4 is the active Approved authority and supersedes revision 3. Revision 
 - Explicit control implements status, remember, list, durable forget, export, reset and deliberate scoped rebuild through Native/root-agent paths for User and Project scopes. Root-agent search/read use the same server module.
 - The session-settings slice is implemented: canonical `memory_recall` and `memory_contribution` patch fields, global-default resolution, field-level rollout persistence and replay, and best-effort actor synchronization.
 - The runtime `prepare_turn` seam implements ranked User/Project retrieval, entry/token budgeting, stable root-turn advisory injection, subagent snapshot inheritance, and persisted Native Memory Recall items/events.
-- The runtime `enqueue_source` seam implements background source discovery, current eligibility and external-context exclusion, tool-free extraction, durable jobs/leases, quota checks and bounded retries. Source deletion, conflict/staleness, reset fences and retained-history rebuild are implemented. Final cross-platform acceptance is tracked in `docs/memory-hardening.md`; status remains Approved until verification succeeds.
+- The runtime `enqueue_source` seam implements background source discovery, current eligibility and external-context exclusion, tool-free extraction, durable jobs/leases, quota checks and bounded retries. Source deletion, conflict/staleness, reset fences and retained-history rebuild are implemented. Windows and Unix acceptance passed at d39bb4a8; verification and outstanding environment/toolchain limitations are recorded in `docs/memory-hardening.md`.
 - Session JSONL persistence, resume, replay, and compaction implement Session History, not General Persistent Memory.
 - Desktop automations maintain a separate per-automation `memory.md`; this is Automation Run Memory and remains separate.
 - Native is the single retained protocol surface per L2-DES-APP-008. Memory behavior must not be implemented independently in legacy or ACP handlers.
@@ -437,3 +437,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 3 | 2026-09-23 | Human | Approval | Approved in the Codex task: "批准 **L2-DES-MEM-001 revision 3**". |
 | 4 | 2026-09-24 | Human + Assistant | Concurrency and revocation revision | Human-approved durable forget design adds server-global RAII deletion leases, pending candidate binding, mutation epochs, cancellation semantics, and transactional revocation lifecycle preservation on v4-to-v5 migration. |
 | 4 | 2026-09-30 | Assistant | Local clarification | Clarifies that one root-turn lexical retrieval may use bounded FTS batches so every distinct request term remains eligible without changing the prepared snapshot or output limits. |
+| 4 | 2026-10-09 | Assistant | Implementation verification | Verified retention boundaries and rollback, content-free diagnostics, foreground/automation isolation, pinned Native contracts, unchanged ACP boundaries and platform-native projections on Windows and Unix. Removed the obsolete core skeleton and marked Implemented; see docs/memory-hardening.md for evidence and limitations. |
