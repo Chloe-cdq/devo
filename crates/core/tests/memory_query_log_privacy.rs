@@ -75,8 +75,9 @@ async fn verify_query_error_log_privacy(path: ErrorPath) -> Result<()> {
         }
     });
     let http_provider = OpenAIProvider::new(format!("http://{address}/v1")).with_http_options(
+        // Pin loopback routing independently of machine proxy settings.
         ProviderHttpOptions::from_raw_with_no_proxy(
-            /*proxy_url*/ None,
+            /*proxy_url*/ Some(format!("http://{address}")),
             Some("127.0.0.1".into()),
             /*headers*/ None,
         )?,

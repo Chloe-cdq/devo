@@ -232,8 +232,9 @@ async fn verify_provider_log_privacy(mode: ProviderRequestMode) -> Result<()> {
         Ok::<_, anyhow::Error>(request)
     });
     let provider = OpenAIProvider::new(format!("http://{address}/v1")).with_http_options(
+        // Pin loopback routing independently of machine proxy settings.
         ProviderHttpOptions::from_raw_with_no_proxy(
-            /*proxy_url*/ None,
+            /*proxy_url*/ Some(format!("http://{address}")),
             Some("127.0.0.1".into()),
             /*headers*/ None,
         )?,
