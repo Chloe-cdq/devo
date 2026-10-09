@@ -21,6 +21,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Isolate Windows test-harness filesystem load
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"RUST_TEST_THREADS=1" >> $env:GITHUB_ENV'
       - name: Memory module and runtime acceptance
         run: cargo test -p devo-server --lib --jobs 1 memory
       - name: Memory integration acceptance

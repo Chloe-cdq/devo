@@ -51,7 +51,7 @@ safe errors rather than claiming a failed write succeeded.
 | ACP compatibility | Existing ACP protocol/server tests; unchanged adapter sources and protocol lock |
 
 The `Memory acceptance` workflow runs the Memory module, every memory integration
-test, Native/ACP protocol tests, and core/config memory tests on Windows and Unix.
+test, Native/ACP protocol tests, and core/config memory tests on Windows and Unix. Windows runs independent test cases serially to isolate filesystem load; concurrency scenarios still run their own tasks, threads and barriers.
 The regular workflow continues to run the full workspace suite, format and lint
 checks. The obsolete core extraction/consolidation skeleton has no remaining
 callers and is removed; the core keeps only query context and tool contracts.
