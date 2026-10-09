@@ -34,7 +34,10 @@ Database messages, invalid stored values, filesystem paths, provider error
 bodies, extraction output and conversation content are omitted. Status also
 whitelists stored error classes. Background failures remain isolated from
 interactive and automation turns; foreground recall falls back to an empty
-snapshot when memory storage is unavailable or held by background work. Synchronous recall work runs on the blocking pool so filesystem work does not block Tokio workers. Filesystem and external SQLite access retain their existing individual-operation latency; there is no new recall deadline. Management commands still report
+snapshot when memory storage is unavailable or held by background work.
+Synchronous recall work runs on the blocking pool so filesystem work does not
+block Tokio workers. Filesystem and external SQLite access retain their existing
+individual-operation latency; there is no new recall deadline. Management commands still report
 safe errors rather than claiming a failed write succeeded.
 
 | Acceptance area | Verification |
@@ -45,13 +48,16 @@ safe errors rather than claiming a failed write succeeded.
 | Malformed output and exhausted retries | `memory::extraction::tests`, `memory::jobs::tests` |
 | Background mutex contention and continued recall | `busy_storage_does_not_queue_foreground_recall`, `memory_contention_keeps_turns_and_ping_available` |
 | Recall storage failure and automation isolation | `memory_turn_recall`, `memory_automation` |
+| Recovered explicit intent and approval source binding | `memory_explicit_recovery`, `memory_turn_recovery` |
 | Native method schemas and retry/capability metadata | `memory_contract::every_native_memory_method_matches_pinned_contract` |
 | Recall item and replayable completion event | `memory_recall` in `devo-protocol` |
 | Platform-native identity and atomic projection replacement | `memory::identity::tests`, `memory_identity_compatibility`, `memory_foundation` |
 | ACP compatibility | Existing ACP protocol/server tests; unchanged adapter sources and protocol lock |
 
 The `Memory acceptance` workflow runs the Memory module, every memory integration
-test, Native/ACP protocol tests, and core/config memory tests on Windows and Unix. Windows runs independent test cases serially to isolate filesystem load; concurrency scenarios still run their own tasks, threads and barriers.
+test, Native/ACP protocol tests, and core/config memory tests on Windows and Unix.
+Windows runs independent test cases serially to isolate filesystem load;
+concurrency scenarios still run their own tasks, threads and barriers.
 The regular workflow continues to run the full workspace suite, format and lint
 checks. The obsolete core extraction/consolidation skeleton has no remaining
 callers and is removed; the core keeps only query context and tool contracts.
