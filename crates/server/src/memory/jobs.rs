@@ -121,17 +121,17 @@ impl MemoryRuntime {
                 rusqlite::params![request.id, source.session_id.as_str(), watermark],
             )?;
         }
-        if matches!(target, ScanTarget::Automatic)
-            && let Some(legacy_watermark) = &source.legacy_watermark
-        {
-            transaction.execute(
+        if matches!(target, ScanTarget::Automatic) {
+            for legacy_watermark in &source.legacy_watermarks {
+                transaction.execute(
                 "INSERT OR IGNORE INTO memory_job_receipts(source_session_id, source_watermark, completed_at, job_kind)
                  SELECT source_session_id, ?2, completed_at, job_kind FROM memory_job_receipts
                     WHERE source_session_id = ?1 AND source_watermark = ?3
                  UNION ALL SELECT source_session_id, ?2, updated_at, job_kind FROM memory_jobs
                     WHERE source_session_id = ?1 AND source_watermark = ?3 AND state = 'completed'",
                 rusqlite::params![source.session_id.as_str(), watermark, legacy_watermark],
-            )?;
+                )?;
+            }
         }
         if transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_deleted_sources WHERE source_session_id = ?1)

@@ -68,7 +68,7 @@ fn reads_only_explicit_user_and_assistant_text_with_source_identity() {
             session_contribution: MemorySetting::Inherit,
             observed_at: "2026-07-01T12:00:11Z".parse().unwrap(),
             watermark: source.watermark.clone(),
-            legacy_watermark: None,
+            legacy_watermarks: Vec::new(),
             messages: vec![
                 SourceMessage {
                     turn_id: TurnId::from_string(TURN.into()),

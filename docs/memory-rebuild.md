@@ -42,7 +42,10 @@ queued jobs. Leases prevent concurrent workers from admitting the same job.
 Queueing and completion update request state atomically with pending jobs, so
 a late worker cannot hide recoverable work behind a completed request.
 Validated v10 full-journal scan receipts are copied to the stable accounting-free
-identity before admission, preventing upgrade replay. Expired leases allow
+identity before automatic admission, preventing upgrade replay even after rebuild
+accounting has been appended. Compatibility accepts only journal prefixes whose
+remaining suffix consists entirely of verified accounting records; any semantic
+append or rewrite invalidates that prefix. Expired leases allow
 restart recovery without allowing the former owner to
 commit. Queueing due to unknown or insufficient quota spends no attempts.
 Provider retries retain the existing bounded backoff and three-attempt limit.

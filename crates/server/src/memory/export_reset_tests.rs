@@ -105,7 +105,7 @@ async fn reset_fences_old_evidence_but_keeps_other_scopes_and_new_sources() {
         session_contribution: MemorySetting::On,
         observed_at: epoch() - Duration::hours(1),
         watermark: "old-snapshot".into(),
-        legacy_watermark: None,
+        legacy_watermarks: Vec::new(),
         messages: vec![SourceMessage {
             turn_id: turn.clone(),
             item_id: ItemId::new(),

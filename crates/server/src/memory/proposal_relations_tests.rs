@@ -38,7 +38,7 @@ fn contribute(
         session_contribution: MemorySetting::On,
         observed_at: now - Duration::hours(7),
         watermark: "finished-source".into(),
-        legacy_watermark: None,
+        legacy_watermarks: Vec::new(),
         messages: vec![SourceMessage {
             turn_id: turn_id.clone(),
             item_id: ItemId::new(),

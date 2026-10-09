@@ -26,9 +26,9 @@ pub(crate) struct ExtractableSource {
     pub(crate) session_contribution: MemorySetting,
     pub(crate) observed_at: DateTime<Utc>,
     pub(crate) watermark: String,
-    /// Prior full-journal fingerprint, for upgrading existing scan receipts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) legacy_watermark: Option<String>,
+    /// Prior full-journal fingerprints differing only by verified trailing accounting.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) legacy_watermarks: Vec<String>,
     pub(crate) messages: Vec<SourceMessage>,
 }
 
@@ -91,9 +91,13 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     let mut field_contribution = None;
     let mut native_session_pending = false;
     let mut watermark = Sha256::new();
+    let mut journal_watermark = Sha256::new();
+    let mut legacy_watermarks = Vec::new();
 
     for raw in text.split_inclusive('\n') {
         if raw.trim().is_empty() {
+            legacy_watermarks.clear();
+            journal_watermark.update(raw.as_bytes());
             watermark.update(raw.as_bytes());
             continue;
         }
@@ -118,8 +122,14 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
             if inverse.project_line(line).is_err() {
                 return Ok(None);
             }
+            // Only accounting appended after this prefix may be omitted when
+            // proving that a v10 receipt covers the current semantic history.
+            legacy_watermarks.push(format!("{:x}", journal_watermark.clone().finalize()));
+            journal_watermark.update(raw.as_bytes());
             continue;
         }
+        legacy_watermarks.clear();
+        journal_watermark.update(raw.as_bytes());
         watermark.update(raw.as_bytes());
         let lines = match parsed {
             ParsedRolloutLine::Legacy(line) => vec![*line],
@@ -523,8 +533,8 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     }
     // Preserve the raw-byte identity of every semantic journal line.
     let watermark = format!("{:x}", watermark.finalize());
-    let legacy_watermark = format!("{:x}", Sha256::digest(&bytes));
-    let legacy_watermark = (legacy_watermark != watermark).then_some(legacy_watermark);
+    legacy_watermarks.push(format!("{:x}", journal_watermark.finalize()));
+    legacy_watermarks.retain(|legacy| legacy != &watermark);
     #[cfg(test)]
     super::source_read_test_support::run(
         path,
@@ -536,7 +546,7 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
         session_contribution: field_contribution.unwrap_or(snapshot_contribution),
         observed_at,
         watermark,
-        legacy_watermark,
+        legacy_watermarks,
         messages,
     }))
 }

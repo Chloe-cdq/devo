@@ -14,7 +14,7 @@ fn source() -> ExtractableSource {
         session_contribution: MemorySetting::Inherit,
         observed_at: Utc::now() - Duration::hours(7),
         watermark: "watermark-one".into(),
-        legacy_watermark: None,
+        legacy_watermarks: Vec::new(),
         messages: vec![SourceMessage {
             turn_id: TurnId::new(),
             item_id: ItemId::new(),

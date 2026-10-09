@@ -19,7 +19,7 @@ fn source() -> ExtractableSource {
             .expect("valid timestamp")
             .with_timezone(&chrono::Utc),
         watermark: "private-watermark".into(),
-        legacy_watermark: None,
+        legacy_watermarks: Vec::new(),
         messages: vec![
             SourceMessage {
                 turn_id: TurnId::from("turn_first"),

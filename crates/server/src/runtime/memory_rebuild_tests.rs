@@ -521,3 +521,88 @@ async fn project_identity_change_during_rebuild_prevents_dispatch() -> Result<()
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+/// Trace: L2-DES-MEM-001 DD-9, DD-12.
+/// Verifies: v10 receipts survive rebuild accounting before or after the trigger's own scan, restart, and semantic changes.
+#[tokio::test]
+async fn legacy_receipts_survive_rebuild_accounting_and_restart() -> Result<()> {
+    use sha2::{Digest, Sha256};
+    for source_count in [2, 1] {
+        for receipt_sql in [
+            "INSERT INTO memory_job_receipts(source_session_id, source_watermark, completed_at, job_kind)
+             VALUES (?1, ?2, ?3, 'source_scan')",
+            "INSERT INTO memory_jobs(job_id, job_key, source_session_id, source_watermark, job_kind,
+                state, created_at, updated_at)
+             VALUES (?1, ?1, ?1, ?2, 'source_scan', 'completed', ?3, ?3)",
+        ] {
+            let (root, runtime, provider) = setup(source_count, /*permits*/ 8)?;
+            let sources = runtime.deps.db.list_sessions()?;
+            let trigger = sources.last().unwrap().session_id;
+            let recorded = Utc::now() - chrono::Duration::hours(7);
+            let db = rusqlite::Connection::open(root.path().join("memory/memory.sqlite3"))?;
+            for source in &sources {
+                let path = runtime.deps.db.get_session_index(&source.session_id)?
+                    .unwrap().rollout_path.unwrap();
+                runtime.rollout_store.append_usage_record(
+                    &path,
+                    source.session_id,
+                    devo_protocol::native::usage::UsageRecord {
+                        call_id: "prior-extraction".into(),
+                        session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(
+                            uuid::Uuid::from(source.session_id),
+                        ),
+                        turn_id: None,
+                        purpose: devo_protocol::native::usage::UsagePurpose::MemoryExtraction,
+                        model: devo_protocol::native::model::ModelBinding {
+                            provider: "test".into(), model: "test-fast".into(),
+                            variant: None, reasoning_effort: None,
+                        },
+                        outcome: devo_protocol::native::usage::UsageCallOutcome::Succeeded,
+                        usage: None, estimated_cost: None, recorded_at: recorded,
+                    },
+                )?;
+                let watermark = format!("{:x}", Sha256::digest(std::fs::read(path)?));
+                db.execute(receipt_sql, rusqlite::params![
+                    source.session_id.to_string(), watermark, recorded.to_rfc3339()
+                ])?;
+            }
+            db.execute("UPDATE memory_schema_meta SET value = '10' WHERE key = 'schema_version'", [])?;
+            drop(db);
+            runtime.shutdown().await;
+            drop(runtime);
+            let runtime = open_scan_runtime(root.path(), Arc::clone(&provider))?;
+            let connection = connect(&runtime).await?;
+            bind_source(&runtime, connection).await?;
+            authorize(&runtime, connection, devo_protocol::native::rpc_memory::MemoryScope::User).await?;
+            let path = runtime.deps.db.get_session_index(&trigger)?.unwrap().rollout_path.unwrap();
+            let before = std::fs::read(&path)?;
+            // A later-listed trigger receives the first source's accounting before its own claim.
+            Arc::clone(runtime.memory.as_ref().unwrap())
+                .run_background_scan(crate::memory::scan::ScanContext {
+                    db: Arc::clone(&runtime.deps.db),
+                    model_context: runtime.deps.context_for_workspace(root.path()).await?,
+                    usage_ledger: runtime.usage_ledger.clone(), triggering_session: trigger,
+                    activity: Arc::new(IdleSources),
+                }).await?;
+            assert_eq!(provider.calls.load(Ordering::SeqCst), source_count);
+            assert_ne!(std::fs::read(&path)?, before, "rebuild must persist accounting to its trigger");
+            runtime.shutdown().await;
+            drop(runtime);
+            let runtime = open_scan_runtime(root.path(), Arc::clone(&provider))?;
+            scan(&runtime, root.path()).await?;
+            assert_eq!(provider.calls.load(Ordering::SeqCst), source_count,
+                "ordinary scanning must not replay v10 history after rebuild accounting");
+            // A later semantic append must not reuse a receipt for an earlier prefix.
+            let lines = std::fs::read_to_string(&path)?.lines()
+                .map(serde_json::from_str::<Value>).collect::<Result<Vec<_>, _>>()?;
+            let mut changed = lines[2].clone();
+            changed["Item"]["item"]["input_items"][0]["UserMessage"]["text"] = json!("I prefer spaces");
+            use std::io::Write;
+            writeln!(std::fs::OpenOptions::new().append(true).open(&path)?, "{}", changed)?;
+            scan(&runtime, root.path()).await?;
+            assert_eq!(provider.calls.load(Ordering::SeqCst), source_count + 1,
+                "changed semantic history must still be scanned");
+        }
+    }
+    Ok(())
+}

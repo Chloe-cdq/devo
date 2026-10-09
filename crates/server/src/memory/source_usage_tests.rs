@@ -19,10 +19,10 @@ fn memory_accounting_does_not_change_extractable_source() {
     let path = write_lines(&root, &lines);
     let mut expected = before.clone();
     use sha2::{Digest, Sha256};
-    expected.legacy_watermark = Some(format!(
+    expected.legacy_watermarks = vec![format!(
         "{:x}",
         Sha256::digest(std::fs::read(&path).unwrap())
-    ));
+    )];
     assert_eq!(read_source(&path).unwrap(), Some(expected));
     usage["entry"]["record"]["purpose"] = json!("turnQuery");
     *lines.last_mut().unwrap() = usage;

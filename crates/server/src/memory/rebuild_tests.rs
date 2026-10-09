@@ -43,7 +43,7 @@ fn fixture(workspace: &Path) -> (ExtractableSource, ExtractionCandidate) {
         session_contribution: MemorySetting::On,
         observed_at: epoch() - Duration::days(60),
         watermark: "retained-history".into(),
-        legacy_watermark: None,
+        legacy_watermarks: Vec::new(),
         messages: vec![SourceMessage {
             turn_id: turn.clone(),
             item_id: ItemId::new(),
