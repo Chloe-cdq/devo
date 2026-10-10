@@ -70,29 +70,31 @@ The regular workflow continues to run the full workspace suite, format and lint
 checks. The obsolete core extraction/consolidation skeleton has no remaining
 callers and is removed; the core keeps only query context and tool contracts.
 
-The preceding acceptance baseline passed on Windows and Unix on 2026-10-09 at
-source commit `3a7bc4675b7ac13e4b7142b966ec2d2ffa0dda27`.
-[Memory acceptance](https://github.com/Chloe-cdq/devo/actions/runs/37910872389)
-passed on both platforms, and
-[regular CI](https://github.com/Chloe-cdq/devo/actions/runs/37910872306)
+Acceptance passed on Windows and Unix on 2026-10-10 at source commit
+`eb011adc84f461723e6ecedf808c06d391ecc881`, including foreground recall,
+background scanning and Memory source-cleanup failure observability.
+[Memory acceptance](https://github.com/Chloe-cdq/devo/actions/runs/38018146930)
+verified every area above on both platforms.
+[Regular CI](https://github.com/Chloe-cdq/devo/actions/runs/38018146916)
 passed full-workspace tests, all-target compilation, test traceability, Rustfmt
 and documentation checks. The active L1 requirement (revision 2) and L2 design
 (revision 4) are Implemented; historical revision 3 remains unchanged.
 
-The latest maintenance correction was verified locally on Windows on 2026-10-10:
-all 300 server Memory module/runtime tests, 9 recall integration tests and the
-storage-failure privacy/isolation integration test passed. All three new
-maintenance-status regressions first failed on healthy status and empty error
-classes, then passed after the correction. They cover SQLite retention,
-maintenance projection and deleted-source projection repair failures without
-error jobs, successful foreground recall, and retention of safe failure status
-after recovery. Rustfmt, test traceability and independent Standards/Spec
-reviews passed. Windows/Unix acceptance and regular CI will be rerun on this
-correction after it is pushed.
+All three maintenance-status regressions first failed on healthy status and
+empty error classes, then passed after the correction. They cover SQLite
+retention, maintenance projection and deleted-source projection repair failures
+without error jobs, successful foreground recall, and retention of safe failure
+status after recovery. Local Windows verification passed all 300 server Memory
+module/runtime tests, 9 recall integration tests and the storage-failure
+privacy/isolation integration test. Rustfmt and test traceability passed.
+Independent Standards and Spec reviews found no actionable issues in the final
+correction; the maintenance-status P2 and related Memory source-cleanup gaps are
+resolved.
 
 Two verification limitations remain under the user's accepted exclusions.
-CI Clippy on Rust 1.99 reports `double_must_use` on the unchanged `async_trait`
-surface at `crates/safety/src/lib.rs:646`. Compared with main
+[CI Clippy](https://github.com/Chloe-cdq/devo/actions/runs/38018146916/job/114112952010)
+on Rust 1.99 reports `double_must_use` on the unchanged `async_trait` surface at
+`crates/safety/src/lib.rs:646`. Compared with main
 `045d17af7caffb5c50742a6b14119519c65ef0a1`, the safety source file and manifest,
 the async-trait lockfile entry, and the Clippy toolchain/check command are
 identical; no separate main Clippy run was launched. An earlier local
@@ -100,3 +102,8 @@ full-workspace run hung in a proxy-dependent fixture, and a rerun failed with
 LNK1104 because the old process then held its test executable. Local proxy
 issues are temporarily outside scope, and repository instructions prohibit
 interrupting Rust commands. No complete local Windows workspace pass is claimed.
+Neither limitation failed the Windows/Unix Memory acceptance tests or the
+regular CI full-workspace tests.
+
+The final verification-record commit changes this document only; its source,
+tests, manifests and workflows are identical to the verified source commit.
