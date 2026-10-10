@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 
 use chrono::{DateTime, Duration, Utc};
 use devo_protocol::SessionId;
@@ -49,10 +50,12 @@ impl MemoryRuntime {
                     ) {
                         Ok(_) => true,
                         Err(MemoryError::SourceDeletionCommitted { .. }) => {
+                            self.storage_failed.store(true, Ordering::Relaxed);
                             tracing::warn!("memory source projection refresh remains pending");
                             true
                         }
                         Err(_) => {
+                            self.storage_failed.store(true, Ordering::Relaxed);
                             tracing::warn!(
                                 error_class = "storage_error",
                                 "memory source deletion remains pending"
@@ -129,6 +132,7 @@ impl MemoryRuntime {
                 Ok(())
             })();
             if release_retry_entries.is_err() {
+                self.storage_failed.store(true, Ordering::Relaxed);
                 tracing::warn!(
                     error_class = "storage_error",
                     "memory source retry identity cleanup remains pending"
@@ -159,6 +163,7 @@ impl MemoryRuntime {
             self.refresh_deleted_source_projections(&connection, &sources)
         })();
         if repair.is_err() {
+            self.storage_failed.store(true, Ordering::Relaxed);
             tracing::warn!(
                 error_class = "projection_error",
                 "memory source projection repair remains pending"

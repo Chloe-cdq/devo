@@ -65,7 +65,7 @@ impl MemoryRuntime {
         if let Err(error) = &result
             && !matches!(error, MemoryError::StorageBusy)
         {
-            self.recall_storage_failed.store(true, Ordering::Relaxed);
+            self.storage_failed.store(true, Ordering::Relaxed);
         }
         result
     }

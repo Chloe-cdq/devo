@@ -8,6 +8,8 @@ mod rebuild_tests;
 mod deletion_tests;
 #[path = "memory_scan_latency_tests.rs"]
 mod latency_tests;
+#[path = "memory_scan_maintenance_tests.rs"]
+mod maintenance_tests;
 #[path = "memory_scan_model_tests.rs"]
 mod model_tests;
 #[path = "memory_source_eligibility_tests.rs"]
