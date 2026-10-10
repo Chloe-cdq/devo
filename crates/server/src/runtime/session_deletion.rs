@@ -25,6 +25,9 @@ impl ServerRuntime {
                     .db
                     .record_memory_source_deletions(&session_ids)
                     .map_err(|error| {
+                        if let Some(memory) = runtime.memory.as_ref() {
+                            memory.note_storage_failure();
+                        }
                         format!("failed to record session deletion intent: {error}")
                     })?;
             }
@@ -80,6 +83,9 @@ impl ServerRuntime {
                     .db
                     .record_memory_source_deletions(&session_ids)
                     .map_err(|error| {
+                        if let Some(memory) = runtime.memory.as_ref() {
+                            memory.note_storage_failure();
+                        }
                         format!("failed to record session deletion intent: {error}")
                     })?;
             }
@@ -125,6 +131,9 @@ impl ServerRuntime {
                     .finish_memory_source_deletions(&session_ids)
                     .is_err()
             {
+                if let Some(memory) = runtime.memory.as_ref() {
+                    memory.note_storage_failure();
+                }
                 tracing::warn!(
                     error_class = "storage_error",
                     "failed to finish memory source deletion ledger"

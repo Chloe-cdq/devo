@@ -4,6 +4,8 @@ use crate::memory::scan::ScanTrigger;
 #[path = "memory_rebuild_tests.rs"]
 mod rebuild_tests;
 
+#[path = "memory_deletion_failure_tests.rs"]
+mod deletion_failure_tests;
 #[path = "memory_scan_deletion_tests.rs"]
 mod deletion_tests;
 #[path = "memory_scan_latency_tests.rs"]

@@ -269,3 +269,224 @@ async fn deletion_projection_failure_remains_visible_after_successful_scan() -> 
     );
     Ok(())
 }
+
+enum DeletionLedgerFailure {
+    ReadIntent,
+    FinishIntent,
+    InspectDeletedSource,
+    InspectRetrySource,
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 Failure and Observability.
+/// Verifies: unreadable Memory deletion intents are visible without an error job.
+#[tokio::test]
+async fn deletion_ledger_read_failure_is_visible_without_error_job() -> Result<()> {
+    assert_deletion_ledger_failure_is_visible(DeletionLedgerFailure::ReadIntent).await
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 Failure and Observability.
+/// Verifies: failed Memory deletion ledger completion is visible despite successful canonical cleanup.
+#[tokio::test]
+async fn deletion_ledger_completion_failure_is_visible_without_error_job() -> Result<()> {
+    assert_deletion_ledger_failure_is_visible(DeletionLedgerFailure::FinishIntent).await
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 Failure and Observability.
+/// Verifies: failed source inspection during Memory deletion reconciliation is visible.
+#[tokio::test]
+async fn deletion_ledger_source_inspection_failure_is_visible_without_error_job() -> Result<()> {
+    assert_deletion_ledger_failure_is_visible(DeletionLedgerFailure::InspectDeletedSource).await
+}
+
+/// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 Failure and Observability.
+/// Verifies: failed source inspection during Memory retry cleanup is visible with no pending deletion intent.
+#[tokio::test]
+async fn deletion_ledger_retry_inspection_failure_is_visible_without_error_job() -> Result<()> {
+    assert_deletion_ledger_failure_is_visible(DeletionLedgerFailure::InspectRetrySource).await
+}
+
+async fn assert_deletion_ledger_failure_is_visible(failure: DeletionLedgerFailure) -> Result<()> {
+    let (root, runtime, _) = setup(/*sources*/ 0, /*permits*/ 0)?;
+    let source = SessionId::new();
+    let memory = runtime.memory.as_ref().unwrap();
+    let result = memory
+        .execute_command(MemoryCommand::Remember(MemoryRememberRequest {
+            text: "Use tabs".into(),
+            scope: MemoryScope::User,
+            kind: Some(MemoryKind::Fact),
+            source: MemorySourceContext {
+                user_item_id: None,
+                session_id: source,
+                turn_id: None,
+                workspace_root: root.path().into(),
+            },
+        }))
+        .await?;
+    let MemoryCommandResult::Remember(entry) = result else {
+        panic!("remember result");
+    };
+    let connection = connect(&runtime).await?;
+    let mut expected = MemoryStatus {
+        enabled: true,
+        storage_health: "healthy".into(),
+        entry_count: 1,
+        candidate_count: 0,
+        pending_job_count: 0,
+        retrying_job_count: 0,
+        error_job_count: 0,
+        last_successful_scan_at: None,
+        rebuild: None,
+        error_classes: vec![],
+        source_exclusion_reasons: vec![],
+    };
+    let healthy = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({"id": 100, "method": "memory/status", "params": {}}),
+        )
+        .await
+        .context("healthy Memory deletion ledger status")?;
+    assert_eq!(
+        serde_json::from_value::<MemoryStatus>(healthy["result"].clone())?,
+        expected
+    );
+    let ledger = rusqlite::Connection::open(root.path().join("devo.db"))?;
+    let database = rusqlite::Connection::open(root.path().join("memory").join("memory.sqlite3"))?;
+    match failure {
+        DeletionLedgerFailure::ReadIntent => ledger.execute_batch(
+            "INSERT INTO pending_memory_source_deletions(source_session_id, requested_at)
+             VALUES ('private invalid ledger value', '2000-01-01T00:00:00Z');",
+        )?,
+        DeletionLedgerFailure::FinishIntent => {
+            ledger.execute_batch(
+                "CREATE TRIGGER reject_memory_ledger_completion
+                 BEFORE DELETE ON pending_memory_source_deletions
+                 BEGIN SELECT RAISE(ABORT, 'private ledger diagnostic'); END;",
+            )?;
+            runtime.deps.db.record_memory_source_deletions(&[source])?;
+        }
+        DeletionLedgerFailure::InspectDeletedSource => {
+            ledger.execute_batch("ALTER TABLE sessions RENAME TO unavailable_sessions")?;
+            // Use a source without evidence so retry inspection cannot mask this branch.
+            runtime
+                .deps
+                .db
+                .record_memory_source_deletions(&[SessionId::new()])?;
+        }
+        DeletionLedgerFailure::InspectRetrySource => {
+            ledger.execute_batch("ALTER TABLE sessions RENAME TO unavailable_sessions")?;
+            database.execute(
+                "INSERT INTO memory_deleted_source_entries(source_session_id, entry_id)
+                 VALUES (?1, ?2)",
+                rusqlite::params![source.to_string(), entry.entry_id.as_str()],
+            )?;
+        }
+    }
+    memory.reconcile_source_intents();
+    let pending: i64 = ledger.query_row(
+        "SELECT COUNT(*) FROM pending_memory_source_deletions",
+        [],
+        |row| row.get(/*idx*/ 0),
+    )?;
+    let retry: i64 = database.query_row(
+        "SELECT COUNT(*) FROM memory_deleted_source_entries",
+        [],
+        |row| row.get(/*idx*/ 0),
+    )?;
+    assert_eq!(
+        (pending, retry),
+        match failure {
+            DeletionLedgerFailure::ReadIntent
+            | DeletionLedgerFailure::FinishIntent
+            | DeletionLedgerFailure::InspectDeletedSource => (1, 0),
+            DeletionLedgerFailure::InspectRetrySource => (0, 1),
+        }
+    );
+    let recalled = memory
+        .prepare_turn(PrepareMemoryRequest {
+            query: "Use tabs".into(),
+            workspace_root: root.path().into(),
+            session_recall: MemorySetting::On,
+        })
+        .await?;
+    let mut expected_recall = vec![MemoryRecallEntry {
+        entry_id: entry.entry_id,
+        scope: MemoryScope::User,
+        kind: MemoryKind::Fact,
+        summary: "Use tabs".into(),
+        source_summary: match failure {
+            DeletionLedgerFailure::InspectRetrySource => "Explicit user memory (1 source)",
+            DeletionLedgerFailure::ReadIntent
+            | DeletionLedgerFailure::FinishIntent
+            | DeletionLedgerFailure::InspectDeletedSource => "Explicit user memory",
+        }
+        .into(),
+    }];
+    assert_eq!(recalled.entries, expected_recall);
+    expected.storage_health = "degraded".into();
+    expected.error_classes = vec!["storage_error".into()];
+    let degraded = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({"id": 101, "method": "memory/status", "params": {}}),
+        )
+        .await
+        .context("failed Memory deletion ledger status")?;
+    assert_eq!(
+        serde_json::from_value::<MemoryStatus>(degraded["result"].clone())?,
+        expected
+    );
+
+    match failure {
+        DeletionLedgerFailure::ReadIntent => ledger.execute_batch(
+            "DELETE FROM pending_memory_source_deletions
+             WHERE source_session_id = 'private invalid ledger value'",
+        )?,
+        DeletionLedgerFailure::FinishIntent => {
+            ledger.execute_batch("DROP TRIGGER reject_memory_ledger_completion")?
+        }
+        DeletionLedgerFailure::InspectDeletedSource | DeletionLedgerFailure::InspectRetrySource => {
+            ledger.execute_batch("ALTER TABLE unavailable_sessions RENAME TO sessions")?
+        }
+    }
+    memory.reconcile_source_intents();
+    let pending: i64 = ledger.query_row(
+        "SELECT COUNT(*) FROM pending_memory_source_deletions",
+        [],
+        |row| row.get(/*idx*/ 0),
+    )?;
+    let retry: i64 = database.query_row(
+        "SELECT COUNT(*) FROM memory_deleted_source_entries",
+        [],
+        |row| row.get(/*idx*/ 0),
+    )?;
+    assert_eq!((pending, retry), (0, 0));
+    scan(&runtime, root.path()).await?;
+    expected_recall[0].source_summary = match failure {
+        DeletionLedgerFailure::ReadIntent
+        | DeletionLedgerFailure::InspectRetrySource
+        | DeletionLedgerFailure::InspectDeletedSource => "Explicit user memory (1 source)",
+        DeletionLedgerFailure::FinishIntent => "Explicit user memory (0 sources)",
+    }
+    .into();
+    let recalled = memory
+        .prepare_turn(PrepareMemoryRequest {
+            query: "Use tabs".into(),
+            workspace_root: root.path().into(),
+            session_recall: MemorySetting::On,
+        })
+        .await?;
+    assert_eq!(recalled.entries, expected_recall);
+    let recovered = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({"id": 102, "method": "memory/status", "params": {}}),
+        )
+        .await
+        .context("retained Memory deletion ledger failure status")?;
+    assert_eq!(
+        serde_json::from_value::<MemoryStatus>(recovered["result"].clone())?,
+        expected
+    );
+    Ok(())
+}

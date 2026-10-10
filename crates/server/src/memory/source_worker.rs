@@ -42,6 +42,7 @@ impl MemoryRuntime {
                             .busy_timeout(Duration::from_millis(previous_timeout))
                             .is_err()
                         {
+                            memory.note_storage_failure();
                             tracing::warn!(
                                 error_class = "storage_error",
                                 "failed to restore memory storage timeout"
@@ -49,6 +50,11 @@ impl MemoryRuntime {
                         }
                         result
                     })();
+                    if let Err(error) = &result
+                        && !matches!(error, super::MemoryError::StorageBusy)
+                    {
+                        memory.note_storage_failure();
+                    }
                     let _ = reply.send(result);
                 });
             }

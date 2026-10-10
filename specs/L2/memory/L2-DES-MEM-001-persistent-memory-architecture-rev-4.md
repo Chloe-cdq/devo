@@ -6,7 +6,7 @@ active_baseline: yes
 supersedes: revision 3
 superseded_by:
 owner: Human + Assistant
-last_updated: 2026-10-09
+last_updated: 2026-10-10
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -330,7 +330,7 @@ Ambiguous natural-language forget requests use search first. Subagents receive n
 - A configurable fast auxiliary model produces one structured candidate set per source session.
 - The scanner processes at most two sources per start by default and does not start below 25% remaining provider quota.
 - Transient failures use bounded exponential backoff with at most three attempts. Invalid structured output, unavailable credentials, and permanent provider errors are recorded safely and do not block sessions.
-- Status exposes counts, last successful scan, pending/retrying/error jobs, and redacted error classes. Logs and telemetry include IDs, counts, durations, and token usage, never entry bodies or transcript text. Foreground recall storage failures and errors returned by background scanning or encountered during Memory source-intent reconciliation also retain a fixed `storage_error` class and degraded health for the runtime lifetime, independently of job state. This includes retention and maintenance projection failures before any job is created, deleted-source cleanup, and deferred projection repair; successful later recall or scanning does not clear the observed failure. Ordinary foreground storage-mutex contention does not record a health failure.
+- Status exposes counts, last successful scan, pending/retrying/error jobs, and redacted error classes. Logs and telemetry include IDs, counts, durations, and token usage, never entry bodies or transcript text. Foreground recall storage failures and errors returned by background scanning or encountered during Memory source-intent reconciliation (including its dedicated deletion ledger in the session index) also retain a fixed `storage_error` class and degraded health for the runtime lifetime, independently of job state. This includes retention and maintenance projection failures before any job is created, deleted-source cleanup, and deferred projection repair; successful later recall or scanning does not clear the observed failure. Ordinary foreground storage-mutex contention does not record a health failure.
 
 ## Configuration
 

@@ -70,11 +70,13 @@ impl MemoryRuntime {
                                 Ok(None) => completed.push(source),
                                 Ok(Some(_)) => {}
                                 Err(_) => {
+                                    self.storage_failed.store(true, Ordering::Relaxed);
                                     tracing::warn!(error_class = "storage_error", %source, "failed to inspect deleted session")
                                 }
                             }
                         }
                         if db.finish_memory_source_deletions(&completed).is_err() {
+                            self.storage_failed.store(true, Ordering::Relaxed);
                             tracing::warn!(
                                 error_class = "storage_error",
                                 "failed to finish memory source deletion ledger"
@@ -84,6 +86,7 @@ impl MemoryRuntime {
                 }
                 Ok(_) => {}
                 Err(_) => {
+                    self.storage_failed.store(true, Ordering::Relaxed);
                     tracing::warn!(
                         error_class = "storage_error",
                         "failed to read memory source deletion ledger"
@@ -113,6 +116,7 @@ impl MemoryRuntime {
                         Ok(None) => completed.push(source),
                         Ok(Some(_)) => {}
                         Err(_) => {
+                            self.storage_failed.store(true, Ordering::Relaxed);
                             tracing::warn!(error_class = "storage_error", %source, "failed to inspect deleted session")
                         }
                     }

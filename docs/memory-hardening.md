@@ -37,7 +37,9 @@ returned by background scanning, and Memory source-intent reconciliation
 failures retain a fixed `storage_error` class and `degraded` health for the
 runtime's lifetime, even when no background job exists. This includes retention
 and maintenance projection failures before job creation, deleted-source cleanup,
-and deferred projection repair. Later successful recall, scanning or repair does
+and deferred projection repair. The Memory-specific deletion ledger in the
+session index follows the same failure policy. Later successful recall, scanning
+or repair does
 not clear the observed failure. Ordinary foreground storage-mutex contention
 does not record a health failure. Background failures remain isolated from
 interactive and automation turns; foreground recall falls back to an empty
@@ -54,7 +56,7 @@ safe errors rather than claiming a failed write succeeded.
 | Provider failures, credentials, quota and asynchronous scanning | `runtime::memory_scan_tests`, `memory_passive_extraction` |
 | Malformed output and exhausted retries | `memory::extraction::tests`, `memory::jobs::tests` |
 | Background mutex contention and continued recall | `busy_storage_does_not_queue_foreground_recall`, `memory_contention_keeps_turns_and_ping_available` |
-| Background maintenance and deleted-source repair failure visibility with usable recall | `runtime::memory_scan_tests::maintenance_tests` |
+| Background maintenance, deletion ledger and source repair failure visibility with usable recall | `runtime::memory_scan_tests::maintenance_tests`, `memory::source_intent_tests::ledger_failure_tests`, `runtime::memory_scan_tests::deletion_failure_tests` |
 | Recall storage failure visibility, foreground survival and automation isolation | `memory_turn_recall`, `memory_automation` |
 | Recovered explicit intent and approval source binding | `memory_explicit_recovery`, `memory_turn_recovery` |
 | Native method schemas and retry/capability metadata | `memory_contract::every_native_memory_method_matches_pinned_contract` |
@@ -70,7 +72,7 @@ The regular workflow continues to run the full workspace suite, format and lint
 checks. The obsolete core extraction/consolidation skeleton has no remaining
 callers and is removed; the core keeps only query context and tool contracts.
 
-Acceptance passed on Windows and Unix on 2026-10-10 at source commit
+The preceding baseline passed acceptance on Windows and Unix on 2026-10-10 at source commit
 `eb011adc84f461723e6ecedf808c06d391ecc881`, including foreground recall,
 background scanning and Memory source-cleanup failure observability.
 [Memory acceptance](https://github.com/Chloe-cdq/devo/actions/runs/38018146930)
@@ -87,9 +89,7 @@ without error jobs, successful foreground recall, and retention of safe failure
 status after recovery. Local Windows verification passed all 300 server Memory
 module/runtime tests, 9 recall integration tests and the storage-failure
 privacy/isolation integration test. Rustfmt and test traceability passed.
-Independent Standards and Spec reviews found no actionable issues in the final
-correction; the maintenance-status P2 and related Memory source-cleanup gaps are
-resolved.
+Those baseline checks precede the additional deletion-ledger correction below.
 
 Two verification limitations remain under the user's accepted exclusions.
 [CI Clippy](https://github.com/Chloe-cdq/devo/actions/runs/38018146916/job/114112952010)
@@ -105,5 +105,22 @@ interrupting Rust commands. No complete local Windows workspace pass is claimed.
 Neither limitation failed the Windows/Unix Memory acceptance tests or the
 regular CI full-workspace tests.
 
-The final verification-record commit changes this document only; its source,
-tests, manifests and workflows are identical to the verified source commit.
+The follow-up deletion-ledger correction records observed failures at foreground
+recall, extraction admission, explicit writes, session deletion and background
+cleanup boundaries. It preserves the existing fail-closed decisions and retry
+behavior. Its regressions independently exercise four reconciliation failures,
+three ledger read failures and three deletion write/worker failures, retaining
+the fixed health signal after storage repair. They also verify that pending
+records survive failed cleanup and explicit memory remains usable where the
+operation permits recall. Ordinary storage-mutex contention remains healthy.
+
+For this correction, all ten new regressions first reproduced missing health
+signals, then passed with the fix. Local Windows verification passed all 310
+Memory module/runtime tests and ten affected integration tests. Rustfmt and
+test traceability passed. Independent Standards and Spec reviews found no
+remaining actionable findings in the correction.
+
+Latest CI results for the updated source are available in
+[PR #60 checks](https://github.com/Chloe-cdq/devo/pull/60/checks).
+The baseline run links above identify their verified commit rather than
+claiming results for subsequent changes.

@@ -283,6 +283,12 @@ impl MemoryRuntime {
             .store(true, Ordering::Relaxed);
     }
 
+    /// Retain only a content-free health signal for observed Memory storage failures.
+    /// Successful retries do not clear this runtime-lifetime diagnostic.
+    pub(crate) fn note_storage_failure(&self) {
+        self.storage_failed.store(true, Ordering::Relaxed);
+    }
+
     fn has_pending_source_deletions(&self) -> bool {
         if self.source_recovery_pending.load(Ordering::Acquire)
             || self
@@ -292,9 +298,13 @@ impl MemoryRuntime {
         {
             return true;
         }
-        self.deletion_ledger
-            .as_ref()
-            .is_some_and(|db| db.has_pending_memory_source_deletions().unwrap_or(true))
+        self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_pending_memory_source_deletions()
+                .unwrap_or_else(|_| {
+                    self.note_storage_failure();
+                    true
+                })
+        })
     }
 
     fn source_has_intent(&self, source: &str) -> bool {
@@ -318,6 +328,7 @@ impl MemoryRuntime {
         self.deletion_ledger.as_ref().is_some_and(|db| {
             db.has_memory_source_deletion_intent(source)
                 .unwrap_or_else(|_| {
+                    self.note_storage_failure();
                     tracing::warn!(
                         error_class = "storage_error",
                         "failed to check memory source intent"
