@@ -693,3 +693,6 @@ fn startup_imports_reconciled_legacy_exclusion_without_primary_writes() {
     newer.watermark = "after-legacy-import".into();
     assert_eq!(runtime.claim_source(&newer, now).unwrap(), None);
 }
+
+#[path = "source_ledger_failure_tests.rs"]
+mod ledger_failure_tests;

@@ -33,7 +33,12 @@ pub fn log_subscriber(
 }
 
 pub async fn read_http_request(listener: &TcpListener) -> Result<(TcpStream, serde_json::Value)> {
-    let (mut socket, _) = listener.accept().await?;
+    let (mut socket, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 10),
+        listener.accept(),
+    )
+    .await
+    .context("local HTTP fixture did not receive a request")??;
     let mut bytes = Vec::new();
     let (header_end, content_length) = loop {
         let mut chunk = [0_u8; 4096];

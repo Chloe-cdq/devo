@@ -12,6 +12,7 @@ use devo_protocol::native::session::MemorySetting;
 use devo_provider::ModelProviderSDK;
 use devo_provider::error::ProviderError;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// Live source activity supplied by the session runtime. Implementations must
@@ -54,31 +55,39 @@ impl MemoryRuntime {
         self: Arc<Self>,
         context: ScanContext,
     ) -> anyhow::Result<()> {
-        let memory = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || memory.prune_expired((memory.clock)())).await??;
-        if !self.config.enabled || self.config.max_sources_per_scan == 0 {
-            return Ok(());
-        }
-        // Ordinary learning must not wait for another scope's deferred rebuild.
-        // An explicit rebuild invocation never authorizes an ordinary scan.
-        if matches!(context.trigger, ScanTrigger::SessionStart) {
-            self.run_source_scan(&context, ScanTarget::Automatic)
-                .await?;
-        }
-        let memory = Arc::clone(&self);
-        let rebuilds = tokio::task::spawn_blocking(move || memory.pending_rebuilds()).await??;
-        for request in rebuilds {
-            loop {
-                let (admitted, complete) = self
-                    .run_source_scan(&context, ScanTarget::Rebuild(request.clone()))
-                    .await?;
-                if complete || admitted == 0 {
-                    break;
-                }
-                tokio::task::yield_now().await;
+        let result: anyhow::Result<()> = async {
+            let memory = Arc::clone(&self);
+            tokio::task::spawn_blocking(move || memory.prune_expired((memory.clock)())).await??;
+            if !self.config.enabled || self.config.max_sources_per_scan == 0 {
+                return Ok(());
             }
+            // Ordinary learning must not wait for another scope's deferred rebuild.
+            // An explicit rebuild invocation never authorizes an ordinary scan.
+            if matches!(context.trigger, ScanTrigger::SessionStart) {
+                self.run_source_scan(&context, ScanTarget::Automatic)
+                    .await?;
+            }
+            let memory = Arc::clone(&self);
+            let rebuilds = tokio::task::spawn_blocking(move || memory.pending_rebuilds()).await??;
+            for request in rebuilds {
+                loop {
+                    let (admitted, complete) = self
+                        .run_source_scan(&context, ScanTarget::Rebuild(request.clone()))
+                        .await?;
+                    if complete || admitted == 0 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+            Ok(())
         }
-        Ok(())
+        .await;
+        if result.is_err() {
+            // Maintenance can fail before any job exists; retain only safe health state.
+            self.storage_failed.store(true, Ordering::Relaxed);
+        }
+        result
     }
 
     async fn run_source_scan(
@@ -442,8 +451,11 @@ impl MemoryRuntime {
         let source = source.to_owned();
         match tokio::task::spawn_blocking(move || memory.source_has_intent(&source)).await {
             Ok(blocked) => blocked,
-            Err(error) => {
-                tracing::warn!(%error, "memory source intent check task failed");
+            Err(_) => {
+                tracing::warn!(
+                    error_class = "worker_error",
+                    "memory source intent check task failed"
+                );
                 true
             }
         }

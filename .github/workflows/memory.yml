@@ -1,0 +1,49 @@
+name: Memory acceptance
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/memory.yml"
+  workflow_dispatch:
+
+jobs:
+  memory:
+    name: Memory (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Isolate Windows test-harness filesystem load
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"RUST_TEST_THREADS=1" >> $env:GITHUB_ENV'
+      - name: Memory module and runtime acceptance
+        run: cargo test -p devo-server --lib --jobs 1 memory
+      - name: Memory integration acceptance
+        shell: bash
+        run: |
+          targets=()
+          for test in crates/server/tests/memory*.rs; do
+            targets+=(--test "$(basename "$test" .rs)")
+          done
+          cargo test -p devo-server --jobs 1 "${targets[@]}"
+      - name: Native and ACP contracts
+        run: cargo test -p devo-protocol --jobs 1
+      - name: Core memory tools and configuration gate
+        run: cargo test -p devo-core -p devo-config --lib --jobs 1 memory
+      - name: Core recall, compaction and privacy acceptance
+        shell: bash
+        run: |
+          targets=()
+          for test in crates/core/tests/memory*.rs; do
+            targets+=(--test "$(basename "$test" .rs)")
+          done
+          cargo test -p devo-core --jobs 1 "${targets[@]}"

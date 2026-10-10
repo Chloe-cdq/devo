@@ -144,8 +144,12 @@ impl MemoryRuntime {
         let source_id = request.source.session_id.to_string();
         let pending_deletion = self.deletion_ledger.as_ref().is_some_and(|db| {
             db.has_memory_source_deletion_intent(&source_id)
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "failed to check explicit memory source intent");
+                .unwrap_or_else(|_| {
+                    self.note_storage_failure();
+                    tracing::warn!(
+                        error_class = "storage_error",
+                        "failed to check explicit memory source intent"
+                    );
                     true
                 })
         });

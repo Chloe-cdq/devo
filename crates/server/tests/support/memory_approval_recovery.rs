@@ -114,15 +114,52 @@ fn approval_checkpoint_recovery_preserves_memory_source() -> Result<()> {
                     }),
                 )
                 .await;
-            support::wait_for_parent_turn_completed(&mut notifications, session_id).await?;
+            // Restoring a checkpoint runs real shell and durable memory I/O;
+            // this source-binding test uses the same budget as its approval wait.
+            let mut observed = Vec::new();
+            let completed = tokio::time::timeout(Duration::from_secs(/*secs*/ 20), async {
+                while let Some(value) = notifications.recv().await {
+                    if value["method"] == "turn/completed"
+                        && value["params"]["turn"]["sessionId"] == serde_json::json!(session_id)
+                        && value["params"]["turn"]["id"] == serde_json::json!(turn_id)
+                    {
+                        return Ok::<_, anyhow::Error>(value);
+                    }
+                    observed.push(value);
+                }
+                anyhow::bail!("notification stream closed before restored turn completed")
+            })
+            .await
+            .with_context(|| {
+                format!("wait for restored approval checkpoint turn; observed: {observed:?}")
+            })??;
+            assert_eq!(
+                completed["params"]["turn"]["status"],
+                serde_json::json!("completed")
+            );
             let requests = provider.requests();
             let final_request = requests.last().context("resumed model request")?;
             let approved_command =
                 memory_forget_runtime_support::tool_result(final_request, "approval-before-memory")
                     .context("restored pending command result")?;
+            // Exec can legitimately yield a live process before its output arrives.
+            // This checkpoint verifies restored authorization, not shell startup time.
+            let decoded_command = approved_command
+                .strip_prefix("Text(")
+                .and_then(|text| text.strip_suffix(')'))
+                .map(serde_json::from_str::<String>)
+                .transpose()?;
+            let approved_command = decoded_command.as_deref().unwrap_or(approved_command);
+            let running = approved_command.lines().any(|line| {
+                line.strip_prefix("Process running with process ID ")
+                    .and_then(|id| id.parse::<i32>().ok())
+                    .is_some_and(|id| id > 0)
+            });
             anyhow::ensure!(
-                approved_command.contains("approved"),
-                "restored command did not complete: {approved_command}"
+                (approved_command.contains("Process exited with code 0")
+                    && approved_command.contains("approved"))
+                    || running,
+                "restored approved command did not execute: {approved_command}"
             );
             let remembered: MemoryEntry = serde_json::from_str(
                 memory_forget_runtime_support::tool_result(

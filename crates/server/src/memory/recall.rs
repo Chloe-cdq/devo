@@ -1,6 +1,7 @@
 //! Deterministic, bounded foreground recall. No model calls occur here.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::Ordering;
 
 use chrono::{DateTime, Utc};
 use devo_protocol::approx_tokens_from_byte_count;
@@ -58,6 +59,21 @@ impl MemoryRuntime {
         &self,
         request: PrepareMemoryRequest,
     ) -> Result<PreparedMemory, MemoryError> {
+        // Keep the health signal at this public seam so every snapshot error,
+        // including early returns, is recorded without retaining error content.
+        let result = self.prepare_turn_snapshot(request);
+        if let Err(error) = &result
+            && !matches!(error, MemoryError::StorageBusy)
+        {
+            self.storage_failed.store(true, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn prepare_turn_snapshot(
+        &self,
+        request: PrepareMemoryRequest,
+    ) -> Result<PreparedMemory, MemoryError> {
         if self.config.resolve_recall(request.session_recall) != MemorySetting::On {
             return Ok(PreparedMemory::default());
         }
@@ -74,13 +90,13 @@ impl MemoryRuntime {
             return Ok(prepared);
         }
         let now = (self.clock)();
-        self.expire_inferred(now)?;
         let expiry_cutoff = self.inferred_expiry_cutoff(now).to_rfc3339();
         let mut pending_source_deletion = self.has_pending_source_deletions();
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| MemoryError::LockPoisoned)?;
+        let connection = self.connection.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => MemoryError::StorageBusy,
+            std::sync::TryLockError::Poisoned(_) => MemoryError::LockPoisoned,
+        })?;
+        self.expire_inferred_with_connection(&connection, now)?;
         loop {
             let transaction = connection.unchecked_transaction()?;
             let mut statement = transaction.prepare(

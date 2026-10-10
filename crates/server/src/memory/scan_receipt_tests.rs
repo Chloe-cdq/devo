@@ -197,3 +197,123 @@ fn receipt_kind_migration_rolls_back_and_retries() {
         )
     );
 }
+
+/// Trace: L2-DES-MEM-001 Rev 4 Storage Model / Failure and Observability.
+/// Verifies: projection failure during ageing cannot retain expired raw candidates or completed job detail.
+#[test]
+fn retention_runs_despite_ageing_projection_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    let source = contribute(&runtime, "I prefer tabs.", "indentation", epoch());
+    let projection = root.path().join("user").join("MEMORY.md");
+    std::fs::remove_file(&projection).unwrap();
+    std::fs::create_dir(&projection).unwrap();
+
+    assert!(
+        runtime
+            .prune_expired(epoch() + Duration::days(/*days*/ 90))
+            .is_err()
+    );
+    let snapshot: (i64, i64, i64, String) = runtime
+        .connection
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM memory_candidates),
+            (SELECT COUNT(*) FROM memory_jobs),
+            (SELECT COUNT(*) FROM memory_job_receipts),
+            (SELECT state FROM memory_entries)",
+            [],
+            |row| {
+                Ok((
+                    row.get(/*idx*/ 0)?,
+                    row.get(/*idx*/ 1)?,
+                    row.get(/*idx*/ 2)?,
+                    row.get(/*idx*/ 3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(snapshot, (0, 0, 1, "stale".into()));
+    assert_eq!(runtime.claim_source(&source, epoch()).unwrap(), None);
+
+    std::fs::remove_dir(&projection).unwrap();
+    runtime
+        .prune_expired(epoch() + Duration::days(/*days*/ 90))
+        .unwrap();
+    drop(runtime);
+    assert_eq!(
+        open_runtime(root.path())
+            .claim_source(&source, epoch())
+            .unwrap(),
+        None
+    );
+}
+
+/// Trace: L2-DES-MEM-001 Rev 4 Storage Model / DD-8.
+/// Verifies: retention is inclusive at 30 days, preserves entries/revocations and active jobs, and rolls back receipts with detail.
+#[tokio::test]
+async fn retention_boundary_preserves_authority_and_rolls_back_atomically() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = open_runtime(root.path());
+    contribute(&runtime, "I prefer tabs.", "indentation", epoch());
+    let explicit = super::remember(&runtime, "Use Rust").await;
+    {
+        let connection = runtime.connection.lock().unwrap();
+        connection.execute_batch(
+            "INSERT INTO memory_revocations(revocation_id,scope_type,scope_id,normalized_key,revoked_at)
+             VALUES ('revoked','user','user','forgotten','2030-01-01T00:00:00Z');
+             INSERT INTO memory_jobs(job_id,job_key,source_session_id,source_watermark,state,created_at,updated_at)
+             VALUES ('active','active','other','pending','pending','2030-01-01T00:00:00Z','2030-01-01T00:00:00Z');"
+        ).unwrap();
+    }
+    let before = super::entries(&runtime);
+    let now = epoch() + Duration::days(/*days*/ 30);
+    runtime
+        .prune_expired(now - Duration::milliseconds(/*milliseconds*/ 1))
+        .unwrap();
+    assert_eq!(runtime.status().unwrap().candidate_count, 1);
+    runtime
+        .connection
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_prune BEFORE DELETE ON memory_candidates
+         BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .unwrap();
+    assert!(runtime.prune_expired(now).is_err());
+    let unchanged: (i64, i64, i64) = runtime
+        .connection
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM memory_candidates), (SELECT COUNT(*) FROM memory_jobs),
+            (SELECT COUNT(*) FROM memory_job_receipts)",
+            [],
+            |row| {
+                Ok((
+                    row.get(/*idx*/ 0)?,
+                    row.get(/*idx*/ 1)?,
+                    row.get(/*idx*/ 2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(unchanged, (1, 2, 0));
+    runtime
+        .connection
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_prune")
+        .unwrap();
+    runtime.prune_expired(now).unwrap();
+    assert_eq!(super::entries(&runtime), before);
+    assert!(before.contains(&explicit));
+    let retained: (i64, i64, i64, String) = runtime.connection.lock().unwrap().query_row(
+        "SELECT (SELECT COUNT(*) FROM memory_candidates), (SELECT COUNT(*) FROM memory_job_receipts),
+            (SELECT COUNT(*) FROM memory_revocations), (SELECT state FROM memory_jobs)",
+        [], |row| Ok((row.get(/*idx*/ 0)?, row.get(/*idx*/ 1)?, row.get(/*idx*/ 2)?, row.get(/*idx*/ 3)?)),
+    ).unwrap();
+    assert_eq!(retained, (0, 1, 1, "pending".into()));
+}

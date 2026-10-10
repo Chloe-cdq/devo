@@ -6,6 +6,8 @@
 pub(crate) mod command_execution;
 mod command_types;
 mod competing_projection;
+#[cfg(test)]
+pub(crate) mod contention_test_support;
 mod entries;
 mod entry_identity;
 mod equivalence;
@@ -180,6 +182,7 @@ pub struct MemoryRuntime {
     deletion_ledger: Option<Arc<crate::db::Database>>,
     reconcile_state: Mutex<ReconcileState>,
     source_provenance_storage_failed: AtomicBool,
+    storage_failed: AtomicBool,
     source_rollout_store: Option<crate::persistence::RolloutStore>,
     source_recovery_pending: AtomicBool,
     pending_external_sources: Mutex<HashSet<SessionId>>,
@@ -257,6 +260,7 @@ impl MemoryRuntime {
             deletion_ledger: None,
             reconcile_state: Mutex::new(ReconcileState::default()),
             source_provenance_storage_failed: AtomicBool::new(false),
+            storage_failed: AtomicBool::new(false),
             source_rollout_store: None,
             source_recovery_pending: AtomicBool::new(false),
             pending_external_sources: Mutex::new(HashSet::new()),
@@ -279,6 +283,12 @@ impl MemoryRuntime {
             .store(true, Ordering::Relaxed);
     }
 
+    /// Retain only a content-free health signal for observed Memory storage failures.
+    /// Successful retries do not clear this runtime-lifetime diagnostic.
+    pub(crate) fn note_storage_failure(&self) {
+        self.storage_failed.store(true, Ordering::Relaxed);
+    }
+
     fn has_pending_source_deletions(&self) -> bool {
         if self.source_recovery_pending.load(Ordering::Acquire)
             || self
@@ -288,9 +298,13 @@ impl MemoryRuntime {
         {
             return true;
         }
-        self.deletion_ledger
-            .as_ref()
-            .is_some_and(|db| db.has_pending_memory_source_deletions().unwrap_or(true))
+        self.deletion_ledger.as_ref().is_some_and(|db| {
+            db.has_pending_memory_source_deletions()
+                .unwrap_or_else(|_| {
+                    self.note_storage_failure();
+                    true
+                })
+        })
     }
 
     fn source_has_intent(&self, source: &str) -> bool {
@@ -313,8 +327,12 @@ impl MemoryRuntime {
         }
         self.deletion_ledger.as_ref().is_some_and(|db| {
             db.has_memory_source_deletion_intent(source)
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "failed to check memory source intent");
+                .unwrap_or_else(|_| {
+                    self.note_storage_failure();
+                    tracing::warn!(
+                        error_class = "storage_error",
+                        "failed to check memory source intent"
+                    );
                     true
                 })
         })
@@ -578,15 +596,19 @@ impl MemoryRuntime {
         let source_storage_failed = self
             .source_provenance_storage_failed
             .load(Ordering::Relaxed);
+        let storage_failed = self.storage_failed.load(Ordering::Relaxed);
         let mut error_classes = error_classes(&connection)?;
         if source_storage_failed {
             error_classes.push("source_provenance_storage".into());
-            error_classes.sort();
-            error_classes.dedup();
         }
+        if storage_failed {
+            error_classes.push("storage_error".into());
+        }
+        error_classes.sort();
+        error_classes.dedup();
         Ok(MemoryStatus {
             enabled: self.config.enabled,
-            storage_health: if source_storage_failed {
+            storage_health: if source_storage_failed || storage_failed {
                 "degraded"
             } else {
                 "healthy"

@@ -1,12 +1,12 @@
 ---
 artifact_id: L1-REQ-MEM-001
 revision: 2
-status: Approved
+status: Implemented
 active_baseline: yes
 supersedes: revision 1 draft
 superseded_by:
 owner: Human
-last_updated: 2026-08-25
+last_updated: 2026-10-09
 ---
 
 # L1-REQ-MEM-001 — General Persistent Memory
@@ -120,3 +120,4 @@ None for the first-release design.
 | 1 | 2026-05-22 | Assistant | Initial | Initial internal persistent-memory ownership requirement. |
 | 1 | 2026-05-22 | Human | Refinement | Kept memory outside routine client management. |
 | 2 | 2026-08-25 | Human + Assistant | Replacement | Human-approved design interview replaced the internal-only requirement with opt-in, inspectable User/Project memory and explicit lifecycle controls. |
+| 2 | 2026-10-09 | Assistant | Implementation verification | Marked Implemented after Windows and Unix Memory acceptance at d39bb4a8; verification and limitations are recorded in docs/memory-hardening.md. No requirement meaning changed. |

@@ -25,6 +25,9 @@ impl ServerRuntime {
                     .db
                     .record_memory_source_deletions(&session_ids)
                     .map_err(|error| {
+                        if let Some(memory) = runtime.memory.as_ref() {
+                            memory.note_storage_failure();
+                        }
                         format!("failed to record session deletion intent: {error}")
                     })?;
             }
@@ -49,8 +52,11 @@ impl ServerRuntime {
                     .map_err(|error| format!("memory source cleanup worker failed: {error}"))?
                 {
                     Ok(forgotten) => Some(forgotten),
-                    Err(error) if related_memory == RelatedMemoryDeletion::Preserve => {
-                        tracing::warn!(%error, "memory source deletion remains pending");
+                    Err(_) if related_memory == RelatedMemoryDeletion::Preserve => {
+                        tracing::warn!(
+                            error_class = "storage_error",
+                            "memory source deletion remains pending"
+                        );
                         None
                     }
                     Err(error) => return Err(format!("failed to delete related memory: {error}")),
@@ -77,6 +83,9 @@ impl ServerRuntime {
                     .db
                     .record_memory_source_deletions(&session_ids)
                     .map_err(|error| {
+                        if let Some(memory) = runtime.memory.as_ref() {
+                            memory.note_storage_failure();
+                        }
                         format!("failed to record session deletion intent: {error}")
                     })?;
             }
@@ -116,9 +125,19 @@ impl ServerRuntime {
                 }
             }
             if cleanup_committed
-                && let Err(error) = runtime.deps.db.finish_memory_source_deletions(&session_ids)
+                && runtime
+                    .deps
+                    .db
+                    .finish_memory_source_deletions(&session_ids)
+                    .is_err()
             {
-                tracing::warn!(%error, "failed to finish memory source deletion ledger");
+                if let Some(memory) = runtime.memory.as_ref() {
+                    memory.note_storage_failure();
+                }
+                tracing::warn!(
+                    error_class = "storage_error",
+                    "failed to finish memory source deletion ledger"
+                );
             }
             if let Some(memory) = runtime.memory.as_ref() {
                 memory.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);

@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-MEM-001
 revision: 4
-status: Approved
+status: Implemented
 active_baseline: yes
 supersedes: revision 3
 superseded_by:
 owner: Human + Assistant
-last_updated: 2026-09-24
+last_updated: 2026-10-10
 ---
 
 # L2-DES-MEM-001 — General Persistent Memory Architecture
@@ -29,15 +29,15 @@ This document defines:
 - Session deletion, reset, rebuild, retention, failure, and observability behavior
 - Server module seam, rollout plan, and verification requirements
 
-Revision 4 is the active Approved authority and supersedes revision 3. Revision 3 remains the historical approved design that finalized structural explicit-memory authorization and schema-v5 identity. The implementation-status audit below records independently shipped slices.
+Revision 4 is the active Implemented authority and supersedes revision 3. Revision 3 remains the historical approved design that finalized structural explicit-memory authorization and schema-v5 identity. The implementation-status audit below records independently shipped slices.
 
 ## Current-State Audit
 
 - The storage foundation is implemented: the server owns `MemoryRuntime`, a dedicated SQLite schema and migrations, configuration gating, safe status reporting, and generated Markdown projections.
-- Explicit control currently implements status, remember, list, search, and durable forget through Native/root-agent paths for User and Project scopes. Export, reset, rebuild, and lifecycle closeout remain pending.
+- Explicit control implements status, remember, list, durable forget, export, reset and deliberate scoped rebuild through Native/root-agent paths for User and Project scopes. Root-agent search/read use the same server module.
 - The session-settings slice is implemented: canonical `memory_recall` and `memory_contribution` patch fields, global-default resolution, field-level rollout persistence and replay, and best-effort actor synchronization.
-- The runtime `prepare_turn` seam can construct a prototype User-scope snapshot bounded by entry count. Project retrieval, token budgeting, production root-turn query-loop recall/advisory injection, and the Memory Recall item/event remain pending.
-- The runtime `enqueue_source` seam currently applies contribution gating only; background source discovery, external-context eligibility, extraction, jobs/retries, and passive contribution remain pending.
+- The runtime `prepare_turn` seam implements ranked User/Project retrieval, entry/token budgeting, stable root-turn advisory injection, subagent snapshot inheritance, and persisted Native Memory Recall items/events.
+- The runtime `enqueue_source` seam implements background source discovery, current eligibility and external-context exclusion, tool-free extraction, durable jobs/leases, quota checks and bounded retries. Source deletion, conflict/staleness, reset fences and retained-history rebuild are implemented. Windows and Unix acceptance passed at d39bb4a8; verification and outstanding environment/toolchain limitations are recorded in `docs/memory-hardening.md`.
 - Session JSONL persistence, resume, replay, and compaction implement Session History, not General Persistent Memory.
 - Desktop automations maintain a separate per-automation `memory.md`; this is Automation Run Memory and remains separate.
 - Native is the single retained protocol surface per L2-DES-APP-008. Memory behavior must not be implemented independently in legacy or ACP handlers.
@@ -330,7 +330,7 @@ Ambiguous natural-language forget requests use search first. Subagents receive n
 - A configurable fast auxiliary model produces one structured candidate set per source session.
 - The scanner processes at most two sources per start by default and does not start below 25% remaining provider quota.
 - Transient failures use bounded exponential backoff with at most three attempts. Invalid structured output, unavailable credentials, and permanent provider errors are recorded safely and do not block sessions.
-- Status exposes counts, last successful scan, pending/retrying/error jobs, and redacted error classes. Logs and telemetry include IDs, counts, durations, and token usage, never entry bodies or transcript text.
+- Status exposes counts, last successful scan, pending/retrying/error jobs, and redacted error classes. Logs and telemetry include IDs, counts, durations, and token usage, never entry bodies or transcript text. Foreground recall storage failures and errors returned by background scanning or encountered during Memory source-intent reconciliation (including its dedicated deletion ledger in the session index) also retain a fixed `storage_error` class and degraded health for the runtime lifetime, independently of job state. This includes retention and maintenance projection failures before any job is created, deleted-source cleanup, and deferred projection repair; successful later recall or scanning does not clear the observed failure. Ordinary foreground storage-mutex contention does not record a health failure.
 
 ## Configuration
 
@@ -437,3 +437,4 @@ Tests must not mutate process environment variables. Filesystem tests must use p
 | 3 | 2026-09-23 | Human | Approval | Approved in the Codex task: "批准 **L2-DES-MEM-001 revision 3**". |
 | 4 | 2026-09-24 | Human + Assistant | Concurrency and revocation revision | Human-approved durable forget design adds server-global RAII deletion leases, pending candidate binding, mutation epochs, cancellation semantics, and transactional revocation lifecycle preservation on v4-to-v5 migration. |
 | 4 | 2026-09-30 | Assistant | Local clarification | Clarifies that one root-turn lexical retrieval may use bounded FTS batches so every distinct request term remains eligible without changing the prepared snapshot or output limits. |
+| 4 | 2026-10-09 | Assistant | Implementation verification | Verified retention boundaries and rollback, content-free diagnostics, foreground/automation isolation, pinned Native contracts, unchanged ACP boundaries and platform-native projections on Windows and Unix. Removed the obsolete core skeleton and marked Implemented; see docs/memory-hardening.md for evidence and limitations. |

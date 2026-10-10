@@ -387,8 +387,11 @@ impl ServerRuntime {
                     runtime.enqueue_source(crate::memory::scan::MemorySourceWork::Reconcile);
                     Some(runtime)
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "failed to initialize persistent memory runtime");
+                Err(_) => {
+                    tracing::warn!(
+                        error_class = "storage_error",
+                        "failed to initialize persistent memory runtime"
+                    );
                     None
                 }
             };

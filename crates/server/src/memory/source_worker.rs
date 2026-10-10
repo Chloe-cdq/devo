@@ -38,13 +38,23 @@ impl MemoryRuntime {
                             memory.inferred_expiry_cutoff(now),
                             related_memory,
                         );
-                        if let Err(error) =
-                            connection.busy_timeout(Duration::from_millis(previous_timeout))
+                        if connection
+                            .busy_timeout(Duration::from_millis(previous_timeout))
+                            .is_err()
                         {
-                            tracing::warn!(%error, "failed to restore memory storage timeout");
+                            memory.note_storage_failure();
+                            tracing::warn!(
+                                error_class = "storage_error",
+                                "failed to restore memory storage timeout"
+                            );
                         }
                         result
                     })();
+                    if let Err(error) = &result
+                        && !matches!(error, super::MemoryError::StorageBusy)
+                    {
+                        memory.note_storage_failure();
+                    }
                     let _ = reply.send(result);
                 });
             }
@@ -52,15 +62,22 @@ impl MemoryRuntime {
                 let memory = Arc::clone(self);
                 tokio::spawn(async move {
                     let repair = Arc::clone(&memory);
-                    if let Err(error) = tokio::task::spawn_blocking(move || {
+                    if tokio::task::spawn_blocking(move || {
                         repair.reconcile_source_intents();
                     })
                     .await
+                    .is_err()
                     {
-                        tracing::warn!(%error, "memory source reconciliation task failed");
+                        tracing::warn!(
+                            error_class = "worker_error",
+                            "memory source reconciliation task failed"
+                        );
                     }
-                    if let Err(error) = memory.run_background_scan(context).await {
-                        tracing::warn!(%error, error_class = "storage_error", "background memory scan failed");
+                    if memory.run_background_scan(context).await.is_err() {
+                        tracing::warn!(
+                            error_class = "storage_error",
+                            "background memory scan failed"
+                        );
                     }
                 });
             }

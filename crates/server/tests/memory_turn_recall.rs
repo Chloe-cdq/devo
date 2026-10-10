@@ -124,10 +124,14 @@ async fn root_turn_reuses_recall_after_forget_and_persists_safe_native_item() ->
 }
 
 /// Trace: L1-REQ-MEM-001, L2-DES-MEM-001 Rev 4 DD-6
-/// Verifies: recall storage failure yields an empty snapshot without failing the foreground turn.
+/// Verifies: recall storage failure preserves the foreground turn and exposes only a safe status error class.
 #[tokio::test]
 async fn recall_storage_failure_leaves_foreground_turn_successful() -> Result<()> {
     let data = memory_support::configured_data_root()?;
+    std::fs::write(
+        data.path().join(".devo").join("config.toml"),
+        "[memory]\nenabled = true\ndefault_contribution = 'off'\n",
+    )?;
     let provider = Arc::new(support::ScriptedProvider::new([
         support::ScriptedProvider::completed("ok"),
     ]));
@@ -136,6 +140,28 @@ async fn recall_storage_failure_leaves_foreground_turn_successful() -> Result<()
         memory_support::start_subscribed_session(&runtime, data.path(), /*request_id*/ 40).await?;
     memory_support::remember(&runtime, connection, /*request_id*/ 41, "Use tabs").await?;
     let db = rusqlite::Connection::open(data.path().join("memory").join("memory.sqlite3"))?;
+    let healthy = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({"id": 42, "method": "memory/status", "params": {}}),
+        )
+        .await
+        .context("healthy memory status")?;
+    // Source admission can add asynchronous exclusions independently of recall.
+    let mut status = healthy["result"].clone();
+    status
+        .as_object_mut()
+        .context("memory status object")?
+        .remove("sourceExclusionReasons");
+    assert_eq!(
+        status,
+        serde_json::json!({
+            "enabled": true, "storageHealth": "healthy", "entryCount": 1,
+            "candidateCount": 0, "pendingJobCount": 0, "retryingJobCount": 0,
+            "errorJobCount": 0, "lastSuccessfulScanAt": null,
+            "errorClasses": []
+        })
+    );
     db.execute_batch("DROP TABLE memory_entries_fts;")?;
     memory_support::run_turn(
         &runtime,
@@ -149,6 +175,28 @@ async fn recall_storage_failure_leaves_foreground_turn_successful() -> Result<()
     let items = recall_items(&runtime, connection, session).await?;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["entries"], serde_json::json!([]));
+    let degraded = runtime
+        .handle_incoming(
+            connection,
+            serde_json::json!({"id": 43, "method": "memory/status", "params": {}}),
+        )
+        .await
+        .context("failed recall memory status")?;
+    // Source admission can add asynchronous exclusions independently of recall.
+    let mut status = degraded["result"].clone();
+    status
+        .as_object_mut()
+        .context("memory status object")?
+        .remove("sourceExclusionReasons");
+    assert_eq!(
+        status,
+        serde_json::json!({
+            "enabled": true, "storageHealth": "degraded", "entryCount": 1,
+            "candidateCount": 0, "pendingJobCount": 0, "retryingJobCount": 0,
+            "errorJobCount": 0, "lastSuccessfulScanAt": null,
+            "errorClasses": ["storage_error"]
+        })
+    );
     runtime.shutdown().await;
     Ok(())
 }
