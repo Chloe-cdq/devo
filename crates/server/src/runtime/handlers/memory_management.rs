@@ -4,15 +4,25 @@ use crate::memory::{
 };
 use devo_protocol::native::rpc_memory::{MemoryExportParams, MemoryScope};
 
+#[derive(Clone, Copy)]
+pub(crate) enum MemoryManagementOperation {
+    Export,
+    Reset,
+}
+
 impl ServerRuntime {
     /// Native scoped management. Dispatch is the client's confirmed reset command.
     pub(crate) async fn handle_native_memory_management(
         self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
-        method: &'static str,
+        operation: MemoryManagementOperation,
         params: serde_json::Value,
     ) -> serde_json::Value {
+        let method = match operation {
+            MemoryManagementOperation::Export => "memory/export",
+            MemoryManagementOperation::Reset => "memory/reset",
+        };
         // Export and reset share the same required-scope wire shape.
         let params: MemoryExportParams = match serde_json::from_value(params) {
             Ok(params) => params,
@@ -37,13 +47,14 @@ impl ServerRuntime {
                     scope: MemoryScope::User,
                     workspace_root: Default::default(),
                 };
-                if method == "memory/export" {
-                    MemoryCommand::Export(request)
-                } else {
-                    let context = self.memory_command_sessions(connection_id, &[]).await;
-                    MemoryCommand::ResetUser {
-                        user_session: context.user_session,
-                        sessions: context.sessions,
+                match operation {
+                    MemoryManagementOperation::Export => MemoryCommand::Export(request),
+                    MemoryManagementOperation::Reset => {
+                        let context = self.memory_command_sessions(connection_id, &[]).await;
+                        MemoryCommand::ResetUser {
+                            user_session: context.user_session,
+                            sessions: context.sessions,
+                        }
                     }
                 }
             }
@@ -61,10 +72,9 @@ impl ServerRuntime {
                     .sessions;
                 MemoryCommand::Project {
                     candidates,
-                    operation: if method == "memory/export" {
-                        ProjectMemoryOperation::Export
-                    } else {
-                        ProjectMemoryOperation::Reset
+                    operation: match operation {
+                        MemoryManagementOperation::Export => ProjectMemoryOperation::Export,
+                        MemoryManagementOperation::Reset => ProjectMemoryOperation::Reset,
                     },
                 }
             }

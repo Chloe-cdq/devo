@@ -473,22 +473,19 @@ fn native_session_metadata_update_params_roundtrip() {
         }
     }))
     .expect("deserialize canonical params");
+    assert_eq!(
+        params.settings,
+        Some(devo_protocol::native::rpc_session::SessionSettingsPatch {
+            permission_profile: Some(PermissionProfile::FullAccess),
+            sandbox_profile: Some("workspace".into()),
+            reasoning_effort: Some("high".into()),
+            mode: None,
+            effective_context_window: None,
+            memory_recall: Some(devo_protocol::native::session::MemorySetting::Off),
+            memory_contribution: Some(devo_protocol::native::session::MemorySetting::On),
+        })
+    );
     assert_eq!(params.expected_version, 3);
-    let settings = params.settings.clone().expect("settings present");
-    assert_eq!(
-        settings.permission_profile,
-        Some(PermissionProfile::FullAccess)
-    );
-    assert_eq!(settings.sandbox_profile.as_deref(), Some("workspace"));
-    assert_eq!(settings.reasoning_effort, Some("high".to_string()));
-    assert_eq!(
-        settings.memory_recall,
-        Some(devo_protocol::native::session::MemorySetting::Off)
-    );
-    assert_eq!(
-        settings.memory_contribution,
-        Some(devo_protocol::native::session::MemorySetting::On)
-    );
     let roundtripped: SessionMetadataUpdateParams =
         serde_json::from_value(serde_json::to_value(&params).expect("serialize canonical params"))
             .expect("re-deserialize canonical params");
@@ -499,18 +496,17 @@ fn native_session_metadata_update_params_roundtrip() {
         "permissionProfile": "default"
     }))
     .expect("minimal settings");
-    assert_eq!(minimal.permission_profile, PermissionProfile::Default);
-    assert_eq!(minimal.sandbox_profile, None);
-    assert_eq!(minimal.reasoning_effort, None);
-    assert_eq!(minimal.mode, None);
-    assert_eq!(minimal.effective_context_window, None);
     assert_eq!(
-        minimal.memory_recall,
-        devo_protocol::native::session::MemorySetting::Inherit
-    );
-    assert_eq!(
-        minimal.memory_contribution,
-        devo_protocol::native::session::MemorySetting::Inherit
+        minimal,
+        SessionSettings {
+            permission_profile: PermissionProfile::Default,
+            sandbox_profile: None,
+            reasoning_effort: None,
+            mode: None,
+            effective_context_window: None,
+            memory_recall: devo_protocol::native::session::MemorySetting::Inherit,
+            memory_contribution: devo_protocol::native::session::MemorySetting::Inherit,
+        }
     );
 }
 

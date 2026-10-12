@@ -378,6 +378,8 @@ mod tests {
         }
     }
 
+    /// Trace: L2-DES-APP-008 Rev 5.
+    /// Verifies: transitional session metadata preserves model and reasoning selections across serialization.
     #[test]
     fn session_metadata_roundtrips_with_model_and_reasoning_effort_selection() {
         let metadata = test_session_metadata();

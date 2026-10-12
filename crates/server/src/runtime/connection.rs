@@ -13,6 +13,7 @@ use crate::acp_auth_required_response;
 use crate::acp_notification_from_server_event;
 use devo_protocol::native::wire_projector::typed_item_notification_from_server_event;
 
+use super::handlers::MemoryManagementOperation;
 use super::handlers::acp::AcpRoute;
 use super::handlers::acp::acp_route;
 use super::outbound::OutboundDeliveryPolicy;
@@ -302,16 +303,26 @@ impl ServerRuntime {
                 .expect("serialize runtime/ping response"),
             ),
             "memory/export" => Some(
-                self.handle_native_memory_management(connection_id, id?, "memory/export", params)
-                    .await,
+                self.handle_native_memory_management(
+                    connection_id,
+                    id?,
+                    MemoryManagementOperation::Export,
+                    params,
+                )
+                .await,
             ),
             "memory/rebuild" => Some(
                 self.handle_native_memory_rebuild(connection_id, id?, params)
                     .await,
             ),
             "memory/reset" => Some(
-                self.handle_native_memory_management(connection_id, id?, "memory/reset", params)
-                    .await,
+                self.handle_native_memory_management(
+                    connection_id,
+                    id?,
+                    MemoryManagementOperation::Reset,
+                    params,
+                )
+                .await,
             ),
             "memory/status" => Some(self.handle_native_memory_status(id?, params).await),
             "memory/remember" => Some(

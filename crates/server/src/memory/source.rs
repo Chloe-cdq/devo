@@ -13,6 +13,7 @@ use devo_core::{
 use devo_protocol::ContentBlock;
 use devo_protocol::native::ids::{ItemId, SessionId, TurnId};
 use devo_protocol::native::item::{Item, ItemEnvelope, ItemState, ToolSource};
+use devo_protocol::native::rpc_memory::MemorySourceExclusionReason;
 use devo_protocol::native::session::{MemorySetting, SessionSource, SessionStatus};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -56,12 +57,14 @@ pub(crate) fn read_source(path: &Path) -> anyhow::Result<Option<ExtractableSourc
     }
     // Every read, including pre-attempt and pre-commit rereads, skips payloads
     // until the complete committed source prefix passes admission.
-    if crate::persistence::read_source_eligibility(BufReader::new(
+    if let Err(reason) = crate::persistence::read_source_eligibility(BufReader::new(
         file.by_ref().take(metadata.len()),
-    ))
-    .is_err()
-    {
-        return Ok(None);
+    )) {
+        return if reason == MemorySourceExclusionReason::SourceUnavailable {
+            Err(anyhow::anyhow!("source eligibility storage is unavailable"))
+        } else {
+            Ok(None)
+        };
     }
     file.rewind()?;
     #[cfg(test)]

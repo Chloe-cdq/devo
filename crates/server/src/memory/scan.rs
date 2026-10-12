@@ -4,7 +4,8 @@ use super::MemoryRuntime;
 use super::extraction::{build_extraction_request, parse_candidates};
 use super::jobs::{JobFailure, MAX_ATTEMPTS, SourceJobAction};
 use super::rebuild::ScanTarget;
-use super::source::{ExtractableSource, read_source};
+use super::scan_source::SourceReread;
+use super::source::ExtractableSource;
 use async_trait::async_trait;
 use devo_protocol::SessionId;
 use devo_protocol::native::rpc_memory::MemorySourceExclusionReason as SourceExclusion;
@@ -270,11 +271,14 @@ impl MemoryRuntime {
                     tokio::task::spawn_blocking(move || memory.release_job(&claim)).await??;
                     break;
                 }
-                let read_path = path.clone();
-                let latest = tokio::task::spawn_blocking(move || read_source(&read_path))
-                    .await?
-                    .ok()
-                    .flatten();
+                let latest = match self.reread_claimed_source(path.clone(), &claim).await? {
+                    SourceReread::Ready(source) => Some(source),
+                    SourceReread::Ineligible => None,
+                    SourceReread::Failed => {
+                        deferred = true;
+                        break;
+                    }
+                };
                 if !latest.as_ref().is_some_and(source_still_eligible) {
                     let memory = Arc::clone(self);
                     let source = source.clone();
@@ -361,11 +365,14 @@ impl MemoryRuntime {
                     Err(_) => Err(JobFailure::TransientProvider),
                 };
                 if let Ok(candidates) = result {
-                    let read_path = path.clone();
-                    let latest = tokio::task::spawn_blocking(move || read_source(&read_path))
-                        .await?
-                        .ok()
-                        .flatten();
+                    let latest = match self.reread_claimed_source(path.clone(), &claim).await? {
+                        SourceReread::Ready(source) => Some(source),
+                        SourceReread::Ineligible => None,
+                        SourceReread::Failed => {
+                            deferred = true;
+                            break;
+                        }
+                    };
                     let still_eligible = latest.as_ref().is_some_and(source_still_eligible)
                         && !context.activity.is_active(session_id).await
                         && !self.scan_source_has_intent(&source_id).await;

@@ -8,6 +8,7 @@ mod history;
 mod memory;
 mod memory_forget;
 mod memory_management;
+pub(super) use memory_management::MemoryManagementOperation;
 mod memory_rebuild;
 mod memory_source;
 mod message_edit;

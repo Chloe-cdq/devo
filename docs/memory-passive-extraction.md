@@ -142,6 +142,15 @@ the same live lease. Transient failures retry after 30 seconds and then 60
 seconds, with three attempts total. Permanent and exhausted failures remain
 visible through Native `memory/status` using content-free error classes.
 
+Source journal I/O failures during the pre-dispatch or pre-commit reread do not
+complete an empty extraction. They retain the source watermark in a retrying job,
+use the same 30/60-second backoff and three-attempt limit, and expose only
+`storage_error`. Status retains degraded health after recovery. A temporary
+unavailable source also defers an explicit rebuild rather than cancelling its
+pending authorization. Successfully read but invalidated history is still
+excluded from extraction; source text and filesystem error details are never
+stored in failure status.
+
 Deleting a source session first records durable deletion intent in the session
 index, then removes its rollout and session metadata even if memory storage or
 projection is unavailable. Cleanup is queued without waiting for the memory
