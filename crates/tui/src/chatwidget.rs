@@ -56,6 +56,7 @@ mod selection;
 
 mod slash_commands;
 
+mod memory_recall;
 mod restored_session;
 
 mod session_header;

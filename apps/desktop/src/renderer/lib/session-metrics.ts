@@ -523,7 +523,10 @@ export function computeSessionMetricsExtended(
 	allParts: Part[],
 	getCategory: (tool: string) => ToolCategory,
 ): SessionMetricsExtended {
-	const base = computeSessionMetrics(messages)
+	const recallMessageIds = new Set(allParts
+		.filter((part) => part.type === "text" && part.metadata?.["devo/itemKind"] === "memory_recall")
+		.map((part) => part.messageID))
+	const base = computeSessionMetrics(messages.filter((message) => !recallMessageIds.has(message.id)))
 	const partsMetrics = computePartsMetrics(allParts, getCategory)
 	return { ...base, ...partsMetrics }
 }

@@ -19,6 +19,7 @@ pub(super) struct JobClaim {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum JobFailure {
     TransientProvider,
+    SourceRead,
     PermanentProvider,
     ProviderUnavailable,
     InvalidOutput,
@@ -34,7 +35,7 @@ impl JobFailure {
             Self::ProviderUnavailable => "provider_unavailable",
             Self::InvalidOutput => "invalid_structured_output",
             Self::Credentials => "credentials_unavailable",
-            Self::Storage => "storage_error",
+            Self::SourceRead | Self::Storage => "storage_error",
         }
     }
 }
@@ -250,8 +251,10 @@ impl MemoryRuntime {
         failure: JobFailure,
         now: DateTime<Utc>,
     ) -> Result<(), MemoryError> {
-        let retry =
-            matches!(failure, JobFailure::TransientProvider) && claim.attempt < MAX_ATTEMPTS;
+        let retry = matches!(
+            failure,
+            JobFailure::TransientProvider | JobFailure::SourceRead
+        ) && claim.attempt < MAX_ATTEMPTS;
         let retry_at = retry.then(|| {
             (now + Duration::seconds(30 * (1_i64 << (claim.attempt - 1))))
                 .to_rfc3339_opts(SecondsFormat::Millis, /*use_z*/ true)

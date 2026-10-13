@@ -36,18 +36,14 @@ import type {
 	Agent,
 	FilePart,
 	Part,
-	ReasoningPart,
 	TextPart,
 	ToolPart,
 } from "../../lib/types"
+import { getPartsAndTools, type RenderablePart } from "./assistant-parts"
+import { MemoryRecallRow } from "./memory-recall-row"
 import { buildProcessTimeline, type ProcessTimelineItem } from "./process-timeline"
 import { ProcessTimelineView } from "./process-timeline-view"
 import { ProviderErrorRow } from "./provider-error-row"
-import {
-	COMPACTION_COMPLETED_TEXT,
-	compactionStatusFromMetadata,
-	isCompactionStatusText,
-} from "./compaction-status-divider"
 import { PlanBlock, PlanChecklistRow, isChecklistPlanPart, isProposedPlanPart } from "./plan-block"
 import { UserMessageBlock } from "./user-message-block"
 
@@ -265,63 +261,8 @@ function AttachmentThumbnail({
 // Part extraction helpers
 // ============================================================
 
-/** A renderable part — tool, text, reasoning, or inline compaction marker */
-type RenderablePart =
-	| { kind: "tool"; part: ToolPart }
-	| { kind: "text"; id: string; text: string; metadata?: Record<string, unknown> }
-	| { kind: "reasoning"; part: ReasoningPart }
-	| { kind: "compaction"; id: string; status: SessionCompactionStatus }
-
-type TextRenderablePart = Extract<RenderablePart, { kind: "text" }>
-
-function compactionStatusFromPart(part: {
-	text: string
-	metadata?: Record<string, unknown>
-}): SessionCompactionStatus | null {
-	const fromMeta = compactionStatusFromMetadata(part.metadata)
-	if (fromMeta) return fromMeta
-	if (!isCompactionStatusText(part.text)) return null
-	return part.text.trim() === COMPACTION_COMPLETED_TEXT ? "completed" : "started"
-}
-
-/**
- * Flattens all assistant parts into an ordered list of renderable items
- * AND extracts the tool-only subset in a single pass.
- * Preserves the natural order: text, reasoning, tool, compaction, text, tool...
- * Filters out synthetic text, todoread without output, and empty text.
- * Strips OpenRouter [REDACTED] chunks from reasoning and skips empty reasoning.
- */
-function getPartsAndTools(assistantMessages: ChatMessageEntry[]): {
-	ordered: RenderablePart[]
-	tools: ToolPart[]
-} {
-	const ordered: RenderablePart[] = []
-	const tools: ToolPart[] = []
-	for (const msg of assistantMessages) {
-		for (const part of msg.parts) {
-			if (part.type === "tool") {
-				tools.push(part)
-				if (part.tool === "todoread" && part.state.status !== "completed") continue
-				ordered.push({ kind: "tool", part })
-			} else if (part.type === "text" && !part.synthetic && part.text.trim()) {
-				const metadata = (part as { metadata?: Record<string, unknown> }).metadata
-				const compactionStatus = compactionStatusFromPart({ text: part.text, metadata })
-				if (compactionStatus) {
-					ordered.push({ kind: "compaction", id: part.id, status: compactionStatus })
-					continue
-				}
-				ordered.push({ kind: "text", id: part.id, text: part.text, metadata })
-			} else if (part.type === "reasoning") {
-				// Strip OpenRouter's encrypted [REDACTED] chunks
-				const cleaned = part.text.replace("[REDACTED]", "").trim()
-				if (cleaned) {
-					ordered.push({ kind: "reasoning", part })
-				}
-			}
-		}
-	}
-	return { ordered, tools }
-}
+type TimelinePart = Exclude<RenderablePart, { kind: "memory-recall" }>
+type TextRenderablePart = Extract<TimelinePart, { kind: "text" }>
 
 /**
  * Live session status can arrive before the synthetic assistant marker
@@ -329,10 +270,10 @@ function getPartsAndTools(assistantMessages: ChatMessageEntry[]): {
  * latest turn when the chronological parts do not already end with one.
  */
 function withLiveCompactionStatus(
-	ordered: RenderablePart[],
+	ordered: TimelinePart[],
 	sessionStatus: SessionCompactionStatus | null | undefined,
 	isLastTurn: boolean,
-): RenderablePart[] {
+): TimelinePart[] {
 	if (!isLastTurn || sessionStatus !== "started") return ordered
 	const last = ordered[ordered.length - 1]
 	if (last?.kind === "compaction" && last.status === "started") return ordered
@@ -346,7 +287,7 @@ function withLiveCompactionStatus(
  * Gets the last text part's content — used for the final streaming response
  * and the copy action. Returns undefined if no text parts exist.
  */
-function getLastResponseText(orderedParts: RenderablePart[]): string | undefined {
+function getLastResponseText(orderedParts: TimelinePart[]): string | undefined {
 	for (let i = orderedParts.length - 1; i >= 0; i--) {
 		const item = orderedParts[i]
 		if (item.kind === "text" && !isChecklistPlanPart(item.metadata)) return item.text
@@ -354,10 +295,10 @@ function getLastResponseText(orderedParts: RenderablePart[]): string | undefined
 	return undefined
 }
 
-function splitCompletedTurnParts(orderedParts: RenderablePart[]): {
-	completedProcessParts: RenderablePart[]
+function splitCompletedTurnParts(orderedParts: TimelinePart[]): {
+	completedProcessParts: TimelinePart[]
 	finalResponsePart: TextRenderablePart | undefined
-	trailingProcessParts: RenderablePart[]
+	trailingProcessParts: TimelinePart[]
 } {
 	let finalResponseIndex = -1
 	for (let i = orderedParts.length - 1; i >= 0; i--) {
@@ -701,8 +642,11 @@ export const ChatTurnComponent = memo(
 			() => getPartsAndTools(turn.assistantMessages),
 			[turn.assistantMessages],
 		)
+		const memoryRecalls = baseOrderedParts.filter(
+			(part): part is Extract<RenderablePart, { kind: "memory-recall" }> => part.kind === "memory-recall",
+		)
 		const orderedParts = useMemo(
-			() => withLiveCompactionStatus(baseOrderedParts, compactionStatus, isLast),
+			() => withLiveCompactionStatus(baseOrderedParts.filter((part) => part.kind !== "memory-recall"), compactionStatus, isLast),
 			[baseOrderedParts, compactionStatus, isLast],
 		)
 
@@ -905,6 +849,10 @@ export const ChatTurnComponent = memo(
 						)}
 					</UserMessageBlock>
 				)}
+
+				{memoryRecalls.map((part) => (
+					<MemoryRecallRow key={part.id} recall={part.recall} />
+				))}
 
 				{working && <WorkingTurnStatusStrip turn={turn} />}
 

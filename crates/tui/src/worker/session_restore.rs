@@ -15,7 +15,7 @@ use super::history;
 /// result (L2-DES-APP-008 Phase C).
 pub(crate) struct NativeSessionRestore {
     pub(crate) session: devo_protocol::native::session::Session,
-    pub(crate) history_items: Vec<devo_protocol::SessionHistoryItem>,
+    pub(crate) history_items: history::RestoredHistory,
     pub(crate) pending_texts: Vec<String>,
     pub(crate) last_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     pub(crate) last_query_total_tokens: usize,
@@ -154,9 +154,11 @@ pub(crate) fn session_switched_event_from_restore(
         last_query_total_tokens,
         last_query_input_tokens,
         prompt_token_estimate,
-        history_items: history::project_history_items(&restore.history_items),
-        rich_history_items: restore.history_items.clone(),
-        loaded_item_count: restore.history_items.len() as u64,
+        history_items: history::project_history_items(&restore.history_items.items),
+        rich_history_items: restore.history_items.items.clone(),
+        memory_recalls: restore.history_items.memory_recalls.clone(),
+        loaded_item_count: (restore.history_items.items.len()
+            + restore.history_items.memory_recalls.len()) as u64,
         pending_texts: restore.pending_texts.clone(),
         collaboration_mode: session
             .settings

@@ -127,6 +127,8 @@ mod tests {
     use super::super::RolloutStore;
     use super::super::parse_rollout_line;
 
+    /// Trace: L2-DES-CONV-002 Rev 2 DD-4, DD-10.
+    /// Verifies: the rollout write lock spans the complete append callback.
     #[test]
     fn locked_write_workflow_holds_the_file_lock_for_the_entire_callback() {
         let dir = tempfile::TempDir::new().expect("temp dir");
@@ -175,6 +177,8 @@ mod tests {
         workflow.join().expect("join write workflow");
     }
 
+    /// Trace: L2-DES-CONV-002 Rev 2 DD-4, DD-10.
+    /// Verifies: concurrent single and batch settings appends preserve atomic batches and monotonic epochs.
     #[test]
     fn concurrent_single_and_batch_settings_appends_preserve_batch_and_epochs() {
         let dir = tempfile::TempDir::new().expect("temp dir");

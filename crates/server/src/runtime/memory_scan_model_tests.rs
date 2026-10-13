@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "memory_scan_read_failure_tests.rs"]
+mod read_failure_tests;
+
 /// Trace: L2-DES-MEM-001 Rev 4 Background Scheduling and Failure Policy.
 /// Verifies: an unknown explicit extraction model yields a visible terminal error without invoking a provider.
 #[tokio::test]

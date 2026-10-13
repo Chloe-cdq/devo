@@ -771,6 +771,7 @@ mod tests {
             last_query_input_tokens: 40_000,
             prompt_token_estimate: 40_000,
             history_items: Vec::new(),
+            memory_recalls: Vec::new(),
             rich_history_items: Vec::new(),
             loaded_item_count: 0,
             pending_texts: Vec::new(),

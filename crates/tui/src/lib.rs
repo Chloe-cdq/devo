@@ -45,6 +45,7 @@ mod math_render;
 mod mcp_command_tests;
 mod mcp_picker;
 mod mcp_servers;
+mod memory_recall;
 #[cfg(test)]
 mod model_display_tests;
 mod onboarding;

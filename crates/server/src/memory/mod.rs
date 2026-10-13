@@ -542,7 +542,28 @@ impl MemoryRuntime {
                         entry.provenance.clear();
                     }
                 }
-                _ => {}
+                Ok(MemoryCommandResult::Status(_))
+                | Ok(MemoryCommandResult::PreparedForget(_))
+                | Ok(MemoryCommandResult::Search(_))
+                | Ok(MemoryCommandResult::Read(_))
+                | Ok(MemoryCommandResult::Reset(_))
+                | Ok(MemoryCommandResult::Rebuild(_))
+                | Err(MemoryError::Directory(_))
+                | Err(MemoryError::Database(_))
+                | Err(MemoryError::LockPoisoned)
+                | Err(MemoryError::StorageBusy)
+                | Err(MemoryError::InvalidCount(_))
+                | Err(MemoryError::InvalidTimestamp(_))
+                | Err(MemoryError::ProjectIdentity(_))
+                | Err(MemoryError::AmbiguousProjectScope)
+                | Err(MemoryError::ProjectSessionRequired)
+                | Err(MemoryError::ProjectSessionUnavailable)
+                | Err(MemoryError::Disabled)
+                | Err(MemoryError::InvalidRequest(_))
+                | Err(MemoryError::SecretContentRejected)
+                | Err(MemoryError::InvalidStoredValue(_))
+                | Err(MemoryError::SourceDeletionCommitted { .. })
+                | Err(MemoryError::ResetCommitted { .. }) => {}
             }
         }
         result

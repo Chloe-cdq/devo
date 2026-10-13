@@ -64,6 +64,8 @@ mod compaction_items;
 mod goals;
 mod history;
 mod item_dispatch;
+#[cfg(test)]
+mod memory_recall_tests;
 mod native_items;
 mod plan_items;
 

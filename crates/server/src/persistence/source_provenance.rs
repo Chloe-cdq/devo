@@ -261,7 +261,13 @@ pub(crate) fn read_source_eligibility(
     let mut source = None;
     let mut has_session = false;
     for row in serde_json::Deserializer::from_reader(reader).into_iter::<SourceHeader>() {
-        let header = row.map_err(|_| Reason::InvalidHistory)?;
+        let header = row.map_err(|error| {
+            if error.is_io() {
+                Reason::SourceUnavailable
+            } else {
+                Reason::InvalidHistory
+            }
+        })?;
         if !header.supported() {
             return Err(Reason::InvalidHistory);
         }
@@ -372,9 +378,32 @@ pub(crate) fn read_source_exclusions(reader: impl Read) -> Result<HashSet<String
 
 #[cfg(test)]
 mod tests {
-    use super::read_source_exclusions;
+    use super::{read_source_eligibility, read_source_exclusions};
+    use devo_protocol::native::rpc_memory::MemorySourceExclusionReason;
     use pretty_assertions::assert_eq;
     use std::collections::HashSet;
+
+    struct UnavailableReader;
+
+    impl std::io::Read for UnavailableReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("private-source-read-diagnostic"))
+        }
+    }
+
+    /// Trace: L2-DES-MEM-001 Rev 4 Background Scheduling and Failure Policy.
+    /// Verifies: eligibility stream I/O errors remain distinguishable from malformed history without exposing diagnostics.
+    #[test]
+    fn source_eligibility_distinguishes_io_failure_from_invalid_history() {
+        assert_eq!(
+            read_source_eligibility(UnavailableReader),
+            Err(MemorySourceExclusionReason::SourceUnavailable)
+        );
+        assert_eq!(
+            read_source_eligibility(b"invalid history".as_slice()),
+            Err(MemorySourceExclusionReason::InvalidHistory)
+        );
+    }
 
     /// Trace: L1-REQ-MEM-001 Acceptance, L2-DES-MEM-001 Rev 4 DD-7/DD-13.
     /// Verifies: null versions and duplicate headers cannot turn damaged provenance into an eligible source.

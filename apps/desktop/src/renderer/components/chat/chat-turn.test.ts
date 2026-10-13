@@ -5,6 +5,7 @@ const source = readFileSync(
   new URL("./chat-turn.tsx", import.meta.url),
   "utf8",
 );
+const assistantPartsSource = readFileSync(new URL("./assistant-parts.ts", import.meta.url), "utf8");
 const thoughtRowSource = readFileSync(
   new URL("./thought-row.tsx", import.meta.url),
   "utf8",
@@ -380,8 +381,8 @@ describe("ChatTurnComponent transcript controls", () => {
     const timelineViewIndex = processTimelineViewSource.indexOf('item.kind === "compaction"')
     expect({
       keepsCompactionInOrderedParts:
-        source.includes('ordered.push({ kind: "compaction"') &&
-        source.includes("compactionStatusFromPart"),
+        assistantPartsSource.includes('ordered.push({ kind: "compaction"') &&
+        assistantPartsSource.includes("compactionStatusFromPart"),
       surfacesLiveStartedInline: source.includes("withLiveCompactionStatus"),
       rendersInlineInProcessTimeline:
         timelineViewIndex >= 0 &&

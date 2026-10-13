@@ -993,6 +993,7 @@ fn handle_worker_event(
         | WorkerEvent::SessionDeleted { .. }
         | WorkerEvent::SessionDeleteFailed { .. }
         | WorkerEvent::SessionTitleUpdated { .. }
+        | WorkerEvent::MemoryRecallCompleted { .. }
         | WorkerEvent::ContextCompactionCompleted { .. }
         | WorkerEvent::InputHistoryLoaded { .. }
         | WorkerEvent::QueueUpdated { .. }

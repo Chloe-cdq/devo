@@ -1,5 +1,6 @@
 //! Shared current source admission for automatic scans and explicit rebuilds.
 use super::MemoryRuntime;
+use super::jobs::{JobClaim, JobFailure};
 use super::scan::ScanContext;
 use super::source::{ExtractableSource, MAX_SOURCE_BYTES, read_source};
 use devo_protocol::native::rpc_memory::MemorySourceExclusionReason as SourceExclusion;
@@ -16,7 +17,36 @@ pub(super) enum SourceAdmission {
     Excluded,
 }
 
+pub(super) enum SourceReread {
+    Ready(ExtractableSource),
+    Ineligible,
+    Failed,
+}
+
 impl MemoryRuntime {
+    /// Keep I/O failure distinct from ineligible history after a job is claimed.
+    pub(super) async fn reread_claimed_source(
+        self: &Arc<Self>,
+        path: PathBuf,
+        claim: &JobClaim,
+    ) -> anyhow::Result<SourceReread> {
+        match tokio::task::spawn_blocking(move || read_source(&path)).await? {
+            Ok(Some(source)) => Ok(SourceReread::Ready(source)),
+            Ok(None) => Ok(SourceReread::Ineligible),
+            Err(_) => {
+                // Filesystem diagnostics may contain source paths or private text.
+                self.note_storage_failure();
+                let memory = Arc::clone(self);
+                let claim = claim.clone();
+                tokio::task::spawn_blocking(move || {
+                    memory.fail_job(&claim, JobFailure::SourceRead, chrono::Utc::now())
+                })
+                .await??;
+                Ok(SourceReread::Failed)
+            }
+        }
+    }
+
     pub(super) async fn read_scan_source(
         self: &Arc<Self>,
         context: &ScanContext,
@@ -48,8 +78,15 @@ impl MemoryRuntime {
                 file.take(MAX_SOURCE_BYTES + 1),
             )))
         })
-        .await?
-        .unwrap_or(Err(SourceExclusion::SourceUnavailable));
+        .await?;
+        let exclusion = match exclusion {
+            Ok(exclusion) => exclusion,
+            Err(_) => {
+                self.note_storage_failure();
+                self.note_source_exclusion(SourceExclusion::SourceUnavailable);
+                return Ok(SourceAdmission::Deferred);
+            }
+        };
         match exclusion {
             Ok(identity) if identity == source_id => {}
             Ok(_) => {
@@ -58,6 +95,10 @@ impl MemoryRuntime {
             }
             Err(reason) => {
                 self.note_source_exclusion(reason);
+                if reason == SourceExclusion::SourceUnavailable {
+                    self.note_storage_failure();
+                    return Ok(SourceAdmission::Deferred);
+                }
                 return Ok(SourceAdmission::Excluded);
             }
         }
@@ -70,10 +111,14 @@ impl MemoryRuntime {
             return Ok(SourceAdmission::Deferred);
         }
         let read_path = path.clone();
-        let source = tokio::task::spawn_blocking(move || read_source(&read_path))
-            .await?
-            .ok()
-            .flatten();
+        let source = match tokio::task::spawn_blocking(move || read_source(&read_path)).await? {
+            Ok(source) => source,
+            Err(_) => {
+                self.note_storage_failure();
+                self.note_source_exclusion(SourceExclusion::SourceUnavailable);
+                return Ok(SourceAdmission::Deferred);
+            }
+        };
         let Some(source) = source else {
             self.note_source_exclusion(SourceExclusion::InvalidHistory);
             return Ok(SourceAdmission::Excluded);

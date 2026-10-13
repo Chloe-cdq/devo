@@ -47,6 +47,10 @@ pub(crate) fn dispatch_typed_item_lifecycle(
         return;
     }
 
+    if let Some(recall) = crate::memory_recall::MemoryRecall::from_envelope(&payload.item) {
+        let _ = event_tx.send(WorkerEvent::MemoryRecallCompleted { recall });
+        return;
+    }
     if plan_items::handle_completed(item, item_id, event_tx) {
         return;
     }

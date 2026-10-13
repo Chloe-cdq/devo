@@ -181,11 +181,31 @@ pub(crate) fn project_history_items(items: &[SessionHistoryItem]) -> Vec<Transcr
 
     transcript
 }
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct RestoredHistory {
+    pub(crate) items: Vec<SessionHistoryItem>,
+    pub(crate) memory_recalls: Vec<crate::memory_recall::RestoredMemoryRecall>,
+}
+
+impl RestoredHistory {
+    fn append_native_item(&mut self, item: &devo_protocol::native::item::ItemEnvelope) {
+        if let Some(recall) = crate::memory_recall::MemoryRecall::from_envelope(item) {
+            self.memory_recalls
+                .push(crate::memory_recall::RestoredMemoryRecall {
+                    before_index: self.items.len(),
+                    recall,
+                });
+        } else if let Some(history) = typed_events::history_item_from_native_item(item) {
+            self.items.push(history);
+        }
+    }
+}
+
 pub(crate) fn restored_history_items(
     turns: Vec<devo_protocol::native::turn::Turn>,
     items: Vec<devo_protocol::native::item::ItemEnvelope>,
     fallback_mode: devo_protocol::CollaborationMode,
-) -> Vec<devo_protocol::SessionHistoryItem> {
+) -> RestoredHistory {
     let mut items_by_turn = HashMap::<String, Vec<_>>::new();
     for item in items {
         items_by_turn
@@ -193,25 +213,21 @@ pub(crate) fn restored_history_items(
             .or_default()
             .push(item);
     }
-    let mut history_items = Vec::new();
+    let mut history = RestoredHistory::default();
     for turn in &turns {
         if let Some(turn_items) = items_by_turn.remove(turn.id.as_str()) {
-            history_items.extend(
-                turn_items
-                    .iter()
-                    .filter_map(typed_events::history_item_from_native_item),
-            );
+            for item in &turn_items {
+                history.append_native_item(item);
+            }
         }
         if let Some(summary) = typed_events::history_item_from_native_turn(turn, fallback_mode) {
-            history_items.push(summary);
+            history.items.push(summary);
         }
     }
     let mut orphan_items = items_by_turn.into_values().flatten().collect::<Vec<_>>();
     orphan_items.sort_by_key(|item| item.seq);
-    history_items.extend(
-        orphan_items
-            .iter()
-            .filter_map(typed_events::history_item_from_native_item),
-    );
-    history_items
+    for item in &orphan_items {
+        history.append_native_item(item);
+    }
+    history
 }
