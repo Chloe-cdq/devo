@@ -6,7 +6,7 @@ active_baseline: yes
 supersedes: revision 1
 superseded_by:
 owner: Assistant
-last_updated: 2026-09-27
+last_updated: 2026-10-13
 ---
 
 # L2-DES-CONV-002 — Two-Plane Session Settings
@@ -107,8 +107,8 @@ Each field declares the decision point at which a change becomes visible and the
 | reasoning effort | each model call | Same as model |
 | collaboration mode | each system-prompt construction (per model call) | The next model call carries the new mode's prompt and tool policy; already-executed tool calls are unaffected. **Implementation status (Phase 4): deferred** — mode drives the session-context/system-prompt build, which is captured once per turn today; live mode requires per-iteration prompt rebuild and lands as a follow-up slice. Mid-turn mode changes currently take effect from the next turn. |
 | effective context window (compaction limit) | session/new and session restore (model resolution); each auto-compaction check reads the resolved budget | The value is no longer client-settable: `effectiveContextWindow` patches are ignored and the response echoes the model-derived window, so a patch never changes when auto-compaction runs |
-| memory recall | once at root-turn memory preparation, before the first model call | A change during an active turn takes effect next turn; the prepared memory snapshot is immutable for that turn and `applied_to_active_turn` is false. **Implementation status:** the canonical patch, global-default resolution, field-level persistence, replay, and actor synchronization are implemented; production turn preparation and recall injection remain pending. |
-| memory contribution | when the background memory scanner evaluates a source session | The next eligibility scan reads the latest persisted value; it does not change an active turn and `applied_to_active_turn` is false. **Implementation status:** the canonical patch, global-default resolution, field-level persistence, replay, and actor synchronization are implemented; production background source scanning, extraction, and contribution remain pending. |
+| memory recall | once at root-turn memory preparation, before the first model call | A change during an active turn takes effect next turn; the prepared memory snapshot is immutable for that turn and `applied_to_active_turn` is false. **Implementation status:** the canonical patch, global-default resolution, field-level persistence, replay, and actor synchronization are implemented; production turn preparation, bounded advisory recall injection, and immutable per-turn snapshot reuse are implemented. |
+| memory contribution | when the background memory scanner evaluates a source session | The next eligibility scan reads the latest persisted value; it does not change an active turn and `applied_to_active_turn` is false. **Implementation status:** the canonical patch, global-default resolution, field-level persistence, replay, and actor synchronization are implemented; production background source scanning, current source eligibility evaluation, extraction, and contribution are implemented. |
 
 The effective context window is **model-derived, not client-settable**: the applied limit is the session model's usable window (`context_window × effective_context_window_percent / 100`), resolved by `resolved_compaction_limit` in `crates/server/src/runtime/context_occupancy.rs` at session/new and again on resume/restore. `session/metadata/update.settings.effectiveContextWindow` is accepted only as a legacy echo: absolute patches are ignored, the response reports the model-derived window, and nothing is written to `config.toml`. The former global `compaction_token_limit` config field has been removed from the schema; leftover keys in old `config.toml` files are ignored by serde (`resolved_compaction_limit` derives purely from the model). Persistence for this value is therefore per-model configuration (the model's `context_window` / `effective_context_window_percent`), not a per-session or global field-line setting.
 
@@ -188,7 +188,7 @@ Findings that shape Phase 1, recorded during implementation:
 | related-to | L2-DES-SAFETY-001 | 1 | specs/L2/safety/L2-DES-SAFETY-001-permission-system.md | Permission profile semantics consumed by the promise matrix. |
 | related-to | L2-DES-SAFETY-002 | 1 | specs/L2/safety/L2-DES-SAFETY-002-approval-mechanism.md | Approval cache invalidation interacts with epoch semantics. |
 | related-to | L2-DES-CONV-001 | 1 | specs/L2/conv/L2-DES-CONV-001-session-jsonl-data-model.md | The field-level settings log extends the rollout data model. |
-| related-to | L2-DES-MEM-001 | 3 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture-rev-3.md | Declares the decision points and mid-turn promises for memory recall and contribution settings. |
+| related-to | L2-DES-MEM-001 | 4 | specs/L2/memory/L2-DES-MEM-001-persistent-memory-architecture-rev-4.md | Declares the decision points and mid-turn promises for memory recall and contribution settings. |
 
 ## Revision Notes
 
@@ -199,3 +199,4 @@ Findings that shape Phase 1, recorded during implementation:
 | 2 | 2026-09-08 | Assistant | Update | Align effective context window / compaction semantics with implementation: the limit is model-derived; `effectiveContextWindow` patches are ignored echoes; global `compaction_token_limit` was removed from the config schema and is ignored if present in old configs (supersedes DD-6 and phase-note text). |
 | 2 | 2026-09-12 | Assistant | Lineage and status repair | Split the Memory alignment from revision 1 into explicit revision 2 and distinguished the implemented settings slice from pending production recall and contribution. |
 | 2 | 2026-09-27 | Assistant | Merge alignment | Move already-merged main updates into active Rev 2 while retaining Memory settings promises; restore historical Rev 1 unchanged. This repairs revision placement without adding a new approval or design decision. |
+| 2 | 2026-10-13 | Assistant | Implementation status alignment | Mark production memory recall and background contribution as implemented and align the related Memory design link with active revision 4; retain the approved decision points and mid-turn promises. |
