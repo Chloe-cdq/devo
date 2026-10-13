@@ -46,6 +46,7 @@ import type {
 	SessionInterruptParams,
 	SessionSource,
 	MemorySetting,
+	MemoryRecallEntry,
 } from "./generated/native"
 import {
 	ProtocolValidationError,
@@ -61,6 +62,11 @@ export type {
 	ReferenceSearchResult,
 	ReferenceSearchSnapshot,
 } from "./reference-search-session"
+
+export type MemoryRecallSnapshot = {
+	snapshotRevision: string
+	entries: MemoryRecallEntry[]
+}
 
 export type JsonRpcId = number | string
 
@@ -1173,6 +1179,10 @@ function textPartMetadataFromUpdate(
 		if (typeof title === "string" && title) {
 			metadata[DEVO_RESEARCH_ARTIFACT_TITLE_META] = title
 		}
+	}
+	if (meta?.[DEVO_ITEM_KIND_META] === "memory_recall") {
+		metadata[DEVO_ITEM_KIND_META] = "memory_recall"
+		metadata["devo/memoryRecall"] = meta["devo/memoryRecall"]
 	}
 	if (meta?.[DEVO_ITEM_KIND_META] === "context_compaction") {
 		metadata[DEVO_ITEM_KIND_META] = "context_compaction"
@@ -2738,6 +2748,26 @@ class NativeClient {
 			if (!canUpgrade) return
 		}
 
+		if (itemType === "memoryRecall") {
+			if (!completed) return
+			const recall = item as unknown as MemoryRecallSnapshot
+			const count = recall.entries.length
+			this.replaceText(sessionId, directory, "assistant", {
+				messageId: id,
+				content: { text: `Recalled ${count} ${count === 1 ? "memory" : "memories"}` },
+				...nativeItemTimingFields(envelope, { includeCompletedAt: true }),
+				_meta: {
+					[DEVO_ITEM_KIND_META]: "memory_recall",
+					[DEVO_TURN_ID_META]: String(envelope.turnId ?? ""),
+					"devo/memoryRecall": {
+						snapshotRevision: recall.snapshotRevision,
+						entries: recall.entries,
+					},
+				},
+			})
+			this.renderedNativeItems.add(renderedKey)
+			return
+		}
 		if (itemType === "approval") {
 			const approvalId = String(item.approvalId ?? "")
 			if (!approvalId) return

@@ -66,6 +66,7 @@ impl ChatWidget {
     pub(super) fn rebuild_restored_session_history_from_rich_items(
         &mut self,
         history_items: &[SessionHistoryItem],
+        memory_recalls: &[crate::memory_recall::RestoredMemoryRecall],
         loaded_item_count: u64,
         session_id: &str,
         title: Option<&str>,
@@ -76,7 +77,7 @@ impl ChatWidget {
         self.active_tool_calls.clear();
         self.pending_tool_calls.clear();
 
-        if history_items.is_empty() {
+        if history_items.is_empty() && memory_recalls.is_empty() {
             self.add_history_entry_without_redraw(Box::new(history_cell::new_info_event(
                 format!(
                     "switched to {session_id}; title: {}; loaded items: {loaded_item_count}",
@@ -112,7 +113,14 @@ impl ChatWidget {
             .collect();
         let mut consumed_indexes = HashSet::new();
 
+        let mut recalls = memory_recalls.iter().peekable();
         for (index, item) in history_items.iter().enumerate() {
+            while recalls
+                .peek()
+                .is_some_and(|recall| recall.before_index <= index)
+            {
+                self.on_memory_recall(recalls.next().expect("peeked recall").recall.clone());
+            }
             if consumed_indexes.contains(&index) {
                 continue;
             }
@@ -283,6 +291,9 @@ impl ChatWidget {
             }
         }
 
+        for recall in recalls {
+            self.on_memory_recall(recall.recall.clone());
+        }
         self.frame_requester.schedule_frame();
         true
     }

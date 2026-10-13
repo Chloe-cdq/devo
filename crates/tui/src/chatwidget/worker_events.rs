@@ -1197,6 +1197,7 @@ impl ChatWidget {
                 prompt_token_estimate,
                 history_items,
                 rich_history_items,
+                memory_recalls,
                 loaded_item_count,
                 pending_texts: _,
                 collaboration_mode,
@@ -1246,6 +1247,7 @@ impl ChatWidget {
                 self.effective_context_window = effective_context_window;
                 if !self.rebuild_restored_session_history_from_rich_items(
                     &rich_history_items,
+                    &memory_recalls,
                     loaded_item_count,
                     &session_id,
                     title.as_deref(),
@@ -1391,6 +1393,10 @@ impl ChatWidget {
                     ));
                 }
                 self.set_status_message("Session compacted");
+            }
+            WorkerEvent::MemoryRecallCompleted { recall } => {
+                self.on_memory_recall(recall);
+                self.frame_requester.schedule_frame();
             }
             WorkerEvent::ContextCompactionCompleted { title: _ } => {
                 // Mid-turn auto-compaction only emits item lifecycle events (not

@@ -589,6 +589,8 @@ pub(crate) enum WorkerEvent {
         history_items: Vec<TranscriptItem>,
         /// Rich persisted history items used to rebuild semantic cells on resume.
         rich_history_items: Vec<SessionHistoryItem>,
+        /// Native recall rows and their positions in restored display history.
+        memory_recalls: Vec<crate::memory_recall::RestoredMemoryRecall>,
         /// Number of persisted items loaded for the resumed session.
         loaded_item_count: u64,
         /// Pending turn input texts queued for the next turn.
@@ -643,6 +645,10 @@ pub(crate) enum WorkerEvent {
         last_query_input_tokens: usize,
         /// Estimated prompt tokens currently visible to the model.
         prompt_token_estimate: usize,
+    },
+    /// A safe Native memory recall snapshot is ready for display.
+    MemoryRecallCompleted {
+        recall: crate::memory_recall::MemoryRecall,
     },
     /// A context-compaction transcript item was completed.
     ContextCompactionCompleted {

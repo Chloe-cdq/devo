@@ -768,6 +768,7 @@ fn session_switched_clears_resume_blocking_state() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: Vec::new(),
@@ -3167,6 +3168,7 @@ fn session_switch_restores_plan_mode_and_proposed_plan_actions() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: None,
             kind: devo_protocol::SessionHistoryItemKind::Assistant,
@@ -3225,6 +3227,7 @@ fn session_switch_restores_plan_turn_summary_label() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: None,
@@ -3297,6 +3300,7 @@ fn session_switch_restores_context_compaction_info_row() {
         last_query_input_tokens: 45_000,
         prompt_token_estimate: 50_000,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: None,
@@ -3368,6 +3372,7 @@ fn session_switch_after_implement_stays_in_build_without_plan_actions() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: None,
@@ -3525,6 +3530,7 @@ fn session_switch_restores_plan_metadata_into_progress() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: None,
             kind: devo_protocol::SessionHistoryItemKind::Assistant,
@@ -3585,6 +3591,7 @@ fn session_switch_restores_explored_metadata_into_history() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: Some("call-1".to_string()),
             kind: devo_protocol::SessionHistoryItemKind::CommandExecution,
@@ -3658,6 +3665,7 @@ fn session_switch_restores_edited_metadata_into_history() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: Some("call-1".to_string()),
             kind: devo_protocol::SessionHistoryItemKind::ToolResult,
@@ -3710,6 +3718,7 @@ fn session_switch_merges_consecutive_explored_items() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: vec![],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: Some("call-1".to_string()),
@@ -3795,6 +3804,7 @@ fn session_switch_restores_error_via_tool_result_cell_style() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: vec![],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: Some("call-1".to_string()),
             kind: devo_protocol::SessionHistoryItemKind::Error,
@@ -3851,6 +3861,7 @@ fn rich_session_restore_orders_terminal_error_before_single_failed_footer() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: vec![],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: Some("call-1".to_string()),
@@ -3962,6 +3973,7 @@ fn live_and_resume_error_share_same_rendering_chain() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: vec![],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: Some("call-1".to_string()),
             kind: devo_protocol::SessionHistoryItemKind::Error,
@@ -4036,6 +4048,7 @@ fn live_and_resume_native_grep_history_share_same_rendering_chain() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: vec![],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: Some("grep-1".to_string()),
@@ -4149,6 +4162,7 @@ fn live_and_resume_paired_read_tool_io_share_same_rendering_chain() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: vec![],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: Some("read-1".to_string()),
@@ -4279,6 +4293,7 @@ fn live_and_resume_consecutive_explore_history_share_same_rendering_chain() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: vec![],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: Some("call-1".to_string()),
@@ -4953,6 +4968,7 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
                 "world".to_string(),
             ),
         ],
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 2,
         pending_texts: vec![],
@@ -5032,6 +5048,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         last_query_input_tokens: 3,
         prompt_token_estimate: 3,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem::new(
                 None,
@@ -5109,6 +5126,7 @@ fn rich_session_switch_restores_user_spacing_before_assistant_response() {
         last_query_input_tokens: 3,
         prompt_token_estimate: 3,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem::new(
                 None,
@@ -6784,6 +6802,7 @@ fn restored_reasoning_text_is_visible_in_transcript() {
             "",
             "thinking text",
         )],
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 1,
         pending_texts: vec![],
@@ -7401,6 +7420,7 @@ fn session_switch_updates_session_identity_projection() {
         last_query_input_tokens: 3,
         prompt_token_estimate: 3,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
@@ -7448,6 +7468,7 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
         last_query_input_tokens: 42,
         prompt_token_estimate: 12,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
@@ -7530,6 +7551,7 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
         last_query_input_tokens: 8_500,
         prompt_token_estimate: 8_500,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
@@ -7582,6 +7604,7 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
         last_query_input_tokens: 30,
         prompt_token_estimate: 30,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
@@ -8797,6 +8820,7 @@ fn session_switch_sets_active_agent_footer_label() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
@@ -8843,6 +8867,7 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         last_query_input_tokens: 20,
         prompt_token_estimate: 20,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
@@ -8994,6 +9019,7 @@ fn new_session_prepared_clears_session_effective_window() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: Vec::new(),
@@ -9074,6 +9100,7 @@ fn new_session_prepared_restores_default_permissions_and_mode() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: Vec::new(),
@@ -10262,6 +10289,7 @@ fn restored_session_transcript_overlay_preserves_paired_tool_io() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: Some("call-1".to_string()),
@@ -10344,6 +10372,7 @@ fn legacy_restored_session_without_tool_io_keeps_existing_tool_result_rendering(
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![
             devo_protocol::SessionHistoryItem {
                 tool_call_id: Some("call-1".to_string()),
@@ -11708,6 +11737,7 @@ fn session_switch_without_rich_edited_metadata_degrades_to_tool_result_path() {
             "Ran apply_patch output",
             "{\"diff\":\"diff --git a/foo.txt b/foo.txt\\n--- a/foo.txt\\n+++ b/foo.txt\\n@@ -1 +1 @@\\n-old\\n+new\\n\",\"files\":[{\"path\":\"foo.txt\",\"kind\":\"update\",\"additions\":1,\"deletions\":1}]}",
         )],
+        memory_recalls: Vec::new(),
         rich_history_items: Vec::new(),
         loaded_item_count: 1,
         pending_texts: vec![],
@@ -11759,6 +11789,7 @@ fn session_switch_restores_added_file_content_in_edited_block() {
         last_query_input_tokens: 0,
         prompt_token_estimate: 0,
         history_items: Vec::new(),
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: Some("call-1".to_string()),
             kind: devo_protocol::SessionHistoryItemKind::ToolResult,
@@ -11818,6 +11849,7 @@ fn session_switch_without_rich_edited_metadata_still_restores_edited_block() {
             "Ran apply_patch output",
             "{\"diff\":\"diff --git a/foo.txt b/foo.txt\\n--- a/foo.txt\\n+++ b/foo.txt\\n@@ -1 +1 @@\\n-old\\n+new\\n\",\"files\":[{\"path\":\"foo.txt\",\"kind\":\"update\",\"additions\":1,\"deletions\":1}]}",
         )],
+        memory_recalls: Vec::new(),
         rich_history_items: vec![devo_protocol::SessionHistoryItem {
             tool_call_id: Some("call-1".to_string()),
             kind: devo_protocol::SessionHistoryItemKind::ToolResult,
@@ -11845,3 +11877,6 @@ fn session_switch_without_rich_edited_metadata_still_restores_edited_block() {
         "fallback parse should avoid tool-result degradation:\n{blob}"
     );
 }
+
+#[path = "chatwidget/memory_recall_tests.rs"]
+mod memory_recall_tests;
